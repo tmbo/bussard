@@ -76,17 +76,12 @@ those devices with ETS.
 - **System B communication flags.** The same holds on System B: a full flash
   clears the flag of every object your project does not link. With the device's
   product data, `plan` reads the group-object table and compares it with the
-  table a full flash would write, and names each object whose descriptor
-  changes. `apply` and `apply --line` write it with the link tables. Without
-  product data `plan` names each newly linked object whose flag it could not
-  check.
-- **System B link change.** With product data, every link change unloads the
-  group-object, association and address tables, reloads all three and
-  restarts the device, as ETS does (KNX 03_05_03 §3.9.3.5, ETS capture
-  `syn-minimal/apply`). `apply` waits for the device to answer again, then
-  reads it back. When links and parameters change together, the parameter
-  download sends the one restart; no ETS capture of that combination exists
-  yet.
+  table a full flash would write; when they differ, `apply` reloads the table
+  before the link tables and reads it back, and `plan` names each object whose
+  descriptor changes. `apply --line` does the same. Without product data `plan`
+  names each newly linked object whose flag it could not check. No ETS capture
+  of such a partial download exists yet, so the order follows the KNX
+  standard's partial download of the group-object table.
 - **System 7 restart.** Like ETS, `apply` restarts a System 7 device after
   writing its tables (a basic restart). It waits for the device to answer
   again, then reads the tables back, so the read-back also shows that the
@@ -218,8 +213,8 @@ Sweep manifest of 2026-11-10, coverage floor 95.0 %.
 |---|---|---|---|---|---|
 | `0701` | 0 | 0 | 364 | 29 | 5 |
 | `0705` | 1 | 275 | 0 | 9 | 8 |
-| `07B0` | 3 | 766 | 0 | 45 | 35 |
-| all | 4 | 1040 | 364 | 83 | 48 |
+| `07B0` | 3 | 766 | 0 | 45 | 36 |
+| all | 4 | 1040 | 364 | 83 | 49 |
 
 | Manufacturer | Proven | Likely | Known problems |
 |---|---|---|---|

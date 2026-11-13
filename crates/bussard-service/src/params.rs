@@ -1306,7 +1306,9 @@ pub fn allocation_refusal(target: IndividualAddress, why: &str) -> String {
 /// #321): the image holds one slot per shown ref, so neither a parameter
 /// push nor a flash writes them. Each says "`key` = value ignored: not shown
 /// under the current values (needs …)", so a stored value that will not be
-/// written is never silent. Empty without the product model's pages.
+/// written is never silent. A stored value a reached `<Assign>` replaces
+/// (issue #1070) gets one line too: "`key` = value replaced by …: an
+/// `<Assign>` copies … while …". Empty without the product model.
 pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Path) -> Vec<String> {
     let app = model
         .devices
@@ -1317,11 +1319,20 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
         return Vec::new();
     };
     let products = bussard_model::ProductModels::load_apps(dir, [app]);
-    bussard_model::device_view::DeviceAnalysis::new(model, &products, target)
-        .map(|a| a.ignored_overrides())
-        .unwrap_or_default()
+    let Ok(analysis) = bussard_model::device_view::DeviceAnalysis::new(model, &products, target)
+    else {
+        return Vec::new();
+    };
+    let ignored = analysis.ignored_overrides();
+    let assigned = analysis.assigned_overrides();
+    ignored
         .iter()
         .map(bussard_model::device_view::IgnoredOverride::sentence)
+        .chain(
+            assigned
+                .iter()
+                .map(bussard_model::device_view::AssignedOverride::sentence),
+        )
         .collect()
 }
 

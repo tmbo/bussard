@@ -146,8 +146,9 @@ pub struct ParameterRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<String>,
     /// Set when the file stores a value the configuration does not reach
-    /// (issue #321): the value is never written to the device. Says why, as
-    /// [`IgnoredOverride::reason`] does.
+    /// (issue #321), or one a reached `<Assign>` replaces (issue #1070): the
+    /// value is never written to the device. Says why, as
+    /// [`IgnoredOverride::reason`] and [`AssignedOverride::reason`] do.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignored: Option<String>,
     /// The value a `<ParameterCalculation>` computes for this parameter under
@@ -1380,6 +1381,16 @@ impl<'a> Pages<'a> {
     }
 
     /// Whether the configuration shows parameter ref `reference` of block
+    /// `i`: [`RefVisibility::shown`] of [`Self::ref_visibility`].
+    fn ref_shown(&self, i: usize, reference: &str) -> bool {
+        self.reached.contains(reference)
+            && self
+                .reached_at
+                .get(reference)
+                .is_some_and(|j| self.blocks[*j].id == self.blocks[i].id)
+    }
+
+    /// Whether the configuration shows parameter ref `reference` of block
     /// `i`, and what it needs when it does not (issue #321).
     fn ref_visibility(&self, i: usize, reference: &str) -> RefVisibility {
         let occurrences = self.occurrences_in(i, reference);
@@ -1394,11 +1405,7 @@ impl<'a> Pages<'a> {
             }
             [] => None,
         };
-        let shown = self.reached.contains(reference)
-            && self
-                .reached_at
-                .get(reference)
-                .is_some_and(|j| self.blocks[*j].id == self.blocks[i].id);
+        let shown = self.ref_shown(i, reference);
         let on_branch = shown
             || occurrences.is_empty()
             || occurrences.iter().any(|o| {
@@ -2538,6 +2545,12 @@ fn build_view(
         let ignored: HashMap<String, String> = ignored_in(device, pg)
             .into_iter()
             .map(|i| (i.reference.clone(), i.reason()))
+            // Issue #1070: a value an `<Assign>` replaces is not written either.
+            .chain(
+                assigned_in(device, &pg.evaluated)
+                    .into_iter()
+                    .map(|a| (a.reference.clone(), a.reason())),
+            )
             .collect();
         for row in &mut scope.parameters {
             row.ignored = ignored.get(&row.reference).cloned();
@@ -2819,6 +2832,18 @@ impl DeviceAnalysis<'_> {
             .unwrap_or_default()
     }
 
+    /// The refs [`Self::visibility`] marks shown, without working out the
+    /// conditions and values of the others (issue #1087: the words cost
+    /// most of a visibility map, and a caller that asks only whether a ref
+    /// is shown paid for them on every ref of every page). Empty without a
+    /// product model with pages.
+    pub fn shown_refs(&self) -> BTreeSet<String> {
+        self.pages
+            .as_ref()
+            .map(Pages::shown_refs)
+            .unwrap_or_default()
+    }
+
     /// [`Self::visibility`] of the module refs the evaluation reaches or
     /// the device stores, keyed by selector (`MD-2_M-3_MI-1_P-23_R-1`): shown
     /// when the evaluation places the ref as shown, else what it needs, from
@@ -2870,6 +2895,19 @@ impl DeviceAnalysis<'_> {
         self.pages
             .as_ref()
             .map(|pg| ignored_in(self.device, pg))
+            .unwrap_or_default()
+    }
+
+    /// Every value the device file stores for a parameter ref that a
+    /// reached `<Assign>` replaces with another value, by ref (issue #1070):
+    /// the image writes the assigned value, as ETS does, so a flash or a
+    /// parameter push never writes the stored one. Each names the value the
+    /// `<Assign>` puts in its place, what it copies and the conditions under
+    /// which it applies. These refs are not in [`Self::ignored_overrides`].
+    /// Empty without a product model.
+    pub fn assigned_overrides(&self) -> Vec<AssignedOverride> {
+        self.evaluated()
+            .map(|e| assigned_in(self.device, e))
             .unwrap_or_default()
     }
 }
@@ -2936,13 +2974,12 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
     if candidates.is_empty() || !has_pages(product) {
         return 0;
     }
-    let visibility = DeviceAnalysis::of_device(device, Some(product)).visibility();
+    let shown_refs = DeviceAnalysis::of_device(device, Some(product)).shown_refs();
     let mut moved = 0;
     for (hidden, visible) in candidates {
         let shown = hidden
             .split_once('@')
-            .and_then(|(_, r)| visibility.get(r))
-            .is_some_and(|v| v.shown);
+            .is_some_and(|(_, r)| shown_refs.contains(r));
         if !shown {
             continue;
         }
@@ -2971,6 +3008,31 @@ impl Pages<'_> {
     /// every module ref the evaluation reaches or the device stores, by its
     /// selector key ([`Self::module_visibility`], issue #1050).
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
+        self.visibility_where(|_| true)
+    }
+
+    /// The application refs [`Self::visibility`] marks shown: shown on one
+    /// of the pages that hold them.
+    fn shown_refs(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for (i, b) in self.blocks.iter().enumerate() {
+            if b.module.is_some() {
+                continue;
+            }
+            for reference in &b.parameters {
+                if !out.contains(reference) && self.ref_shown(i, reference) {
+                    out.insert(reference.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// [`Self::visibility`] of the application refs `wanted` accepts: each
+    /// one's entry is the same as in the whole map, without working out the
+    /// words of every other ref on every page (issue #1087: a caller that
+    /// looks up a few stored refs paid for all of them on every call).
+    fn visibility_where(&self, wanted: impl Fn(&str) -> bool) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
         // The application's own pages: a module channel's refs are keyed by
         // instance, see [`Self::module_visibilities`].
@@ -2978,7 +3040,7 @@ impl Pages<'_> {
             if b.module.is_some() {
                 continue;
             }
-            for reference in &b.parameters {
+            for reference in b.parameters.iter().filter(|r| wanted(r)) {
                 let seen = self.ref_visibility(i, reference);
                 match out.get_mut(reference) {
                     Some(v) if (seen.shown, seen.on_branch) > (v.shown, v.on_branch) => *v = seen,
@@ -3025,10 +3087,144 @@ impl IgnoredOverride {
     }
 }
 
+/// A value the device file stores for a parameter ref that a reached
+/// `<Assign>` replaces with another value (issue #1070): the image writes
+/// the assigned value, as ETS does (capture `syn-assign-rewrite/params`), so
+/// the stored one never reaches the device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AssignedOverride {
+    /// The key the device file uses (the lock's, else the in-memory key).
+    pub key: String,
+    /// The app-relative `ParameterRef` id, in a module instance's selector
+    /// form for a module ref.
+    pub reference: String,
+    /// The stored value, rendered as the file writes it.
+    pub value: String,
+    /// The value the `<Assign>` puts in its place, rendered like `value`.
+    pub assigned: String,
+    /// The parameter the `<Assign>` copies, by its text; `None` for an
+    /// `<Assign>` of a literal value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The `<when>` conditions under which the `<Assign>` applies, in words
+    /// ("Operating mode = automatic"); `None` for an unconditional one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+impl AssignedOverride {
+    /// Why the stored value is not written: "replaced by 300: an `<Assign>`
+    /// copies Delay (s) while Operating mode = automatic".
+    pub fn reason(&self) -> String {
+        let what = match &self.source {
+            Some(source) => format!("copies {source}"),
+            None => "sets it".to_string(),
+        };
+        let when = self
+            .condition
+            .as_ref()
+            .map(|c| format!(" while {c}"))
+            .unwrap_or_default();
+        format!("replaced by {}: an `<Assign>` {what}{when}", self.assigned)
+    }
+
+    /// The plan line: "`key` = value replaced by 300: an `<Assign>` …".
+    pub fn sentence(&self) -> String {
+        format!("`{}` = {} {}", self.key, self.value, self.reason())
+    }
+}
+
+/// The device-file form of app-relative `param_ref` in the evaluator's
+/// module instance `instance` (`""` at the application level), as the
+/// device file keys it ([`selector_key`]).
+fn instance_ref(instance: &str, param_ref: &str) -> String {
+    selector_key((!instance.is_empty()).then_some(instance), param_ref)
+}
+
+/// The text of parameter ref `reference` (app-relative or in a module
+/// instance's selector form) in `product`, else its name, else the ref.
+fn param_text(product: &ProductModel, reference: &str) -> String {
+    product
+        .parameters
+        .get(ref_param_id(&def_ref(reference)))
+        .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
+        .unwrap_or_else(|| reference.to_string())
+}
+
+/// [`DeviceAnalysis::assigned_overrides`] of `device` under `evaluated`:
+/// the evaluator's [`DynamicConfig::assigned_overrides`] that a visible key
+/// of the device file stores, in words.
+fn assigned_in(device: &Device, evaluated: &Evaluated<'_>) -> Vec<AssignedOverride> {
+    let product = evaluated.product;
+    let mut out = Vec::new();
+    for o in &evaluated.config.assigned_overrides {
+        let reference = instance_ref(&o.module_instance, &o.param_ref);
+        let stored = device.parameters.iter().find(|(k, _)| {
+            !crate::files::is_hidden_mem_key(k)
+                && k.split_once('@').is_some_and(|(_, r)| r == reference)
+        });
+        let Some((mem_key, value)) = stored else {
+            continue;
+        };
+        let def = product.parameters.get(ref_param_id(&def_ref(&reference)));
+        let condition: Vec<String> = o
+            .conditions
+            .iter()
+            .map(|c| {
+                let r = instance_ref(&c.module_instance, &c.param_ref);
+                let def = product.parameters.get(ref_param_id(&def_ref(&r)));
+                format!(
+                    "{} = {}",
+                    param_text(product, &r),
+                    display_value(def, &c.value)
+                )
+            })
+            .collect();
+        out.push(AssignedOverride {
+            key: device
+                .lock
+                .parameters
+                .get(&reference)
+                .map_or_else(|| mem_key.clone(), |p| p.key.clone()),
+            value: display_value(def, value),
+            assigned: display_value(def, &o.assigned),
+            source: o
+                .source
+                .as_ref()
+                .map(|(m, r)| param_text(product, &instance_ref(m, r))),
+            condition: (!condition.is_empty()).then(|| condition.join(" and ")),
+            reference,
+        });
+    }
+    out
+}
+
+/// The values the file of `device` stores that a reached `<Assign>` of
+/// `product` replaces (issue #1070), as [`DeviceAnalysis::assigned_overrides`]
+/// reports them. Evaluates the device only when it stores a value for a ref
+/// some `<Assign>` targets, so `bussard validate` stays cheap on devices
+/// without one.
+pub fn assigned_overrides_of(device: &Device, product: &ProductModel) -> Vec<AssignedOverride> {
+    let mut targets: HashSet<String> = HashSet::new();
+    walk_all(product, &mut |node, _| {
+        if let DynamicNode::Assign { target, .. } = node {
+            targets.insert(target.clone());
+        }
+        true
+    });
+    let stores_a_target = device
+        .parameters
+        .keys()
+        .filter_map(|k| k.split_once('@').map(|(_, r)| def_ref(r)))
+        .any(|r| targets.contains(&r));
+    if !stores_a_target {
+        return Vec::new();
+    }
+    assigned_in(device, &Evaluated::of_device(product, device))
+}
+
 /// [`DeviceAnalysis::ignored_overrides`] on the pages `pg` of `device`.
 fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
-    let mut visibility = pg.visibility();
-    visibility.extend(pg.module_visibilities(pg.entries.keys().map(String::as_str)));
     let config = &pg.evaluated.config;
     // The refs whose stored value the evaluation uses without showing them:
     // the source of a reached `<Assign>`, which the image writes and which
@@ -3047,6 +3243,14 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
                 .map(|i| selector_key(Some(&i.id), &p.param_ref_id)),
         })
         .collect();
+    // A value an `<Assign>` replaces is reported once, by
+    // [`DeviceAnalysis::assigned_overrides`], which names the `<Assign>`
+    // (issue #1070), not as a ref that needs a page.
+    let replaced: HashSet<String> = config
+        .assigned_overrides
+        .iter()
+        .map(|o| instance_ref(&o.module_instance, &o.param_ref))
+        .collect();
     // A module channel's label text parameter, which the lock names and a
     // file may store under another key (issue #1050).
     let module_labels: HashSet<&str> = device
@@ -3056,7 +3260,10 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         .map(String::as_str)
         .filter(|r| r.starts_with("MD-"))
         .collect();
-    let mut out = Vec::new();
+    // The stored values that can be ignored: not hidden, not a label, not
+    // at the default, not in effect. Only their refs' visibility is worked
+    // out (issue #1087: the whole map cost most of a call).
+    let mut candidates: Vec<(&String, &String, &str)> = Vec::new();
     for (mem_key, value) in &device.parameters {
         if crate::files::is_hidden_mem_key(mem_key) {
             continue;
@@ -3065,7 +3272,7 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
             continue;
         };
         // A channel label is the channel's name, never a parameter value.
-        if head == "label" || module_labels.contains(reference) {
+        if head == "label" || module_labels.contains(reference) || replaced.contains(reference) {
             continue;
         }
         let def = pg.def_of(reference);
@@ -3073,17 +3280,31 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         if default.is_some_and(|d| same_value(def, value, &d)) {
             continue;
         }
-        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
-            continue;
-        };
         if in_effect.contains(reference) {
             continue;
         }
+        candidates.push((mem_key, value, reference));
+    }
+    let wanted: HashSet<&str> = candidates.iter().map(|(_, _, r)| *r).collect();
+    let mut visibility = pg.visibility_where(|r| wanted.contains(r));
+    visibility.extend(
+        pg.module_visibilities(
+            pg.entries
+                .keys()
+                .map(String::as_str)
+                .filter(|k| wanted.contains(k)),
+        ),
+    );
+    let mut out = Vec::new();
+    for (mem_key, value, reference) in candidates {
+        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
+            continue;
+        };
         let locked = device.lock.parameters.get(reference);
         out.push(IgnoredOverride {
             key: locked.map_or_else(|| mem_key.clone(), |p| p.key.clone()),
             reference: reference.to_string(),
-            value: display_value(def, value),
+            value: display_value(pg.def_of(reference), value),
             needs,
         });
     }

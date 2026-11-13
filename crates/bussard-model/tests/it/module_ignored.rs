@@ -320,10 +320,26 @@ fn test_ignored_overrides_module_default_takes_the_base_value_argument() -> Test
 #[test]
 fn test_ignored_overrides_module_assign_target_in_a_reached_instance() -> TestResult {
     // The blinds instance is reached and its `<Assign>` sets "Fahrzeit",
-    // which "Jalousie" does not show: the image writes the assigned 9.
-    let got = ignored(&[("f@MD-3_M-18_MI-1_P-16_R-16", "3")])?;
+    // which "Jalousie" does not show: the image writes the assigned 9. The
+    // value is named by the `<Assign>`, not by a page it needs (#1086 point
+    // 3, #1070), exactly as an application ref.
+    let stored = [("f@MD-3_M-18_MI-1_P-16_R-16", "3")];
+    assert!(ignored(&stored)?.is_empty());
+    let replaced = model(&stored)?;
+    let got = DeviceAnalysis::new(&replaced, &products()?, ia()?)?.assigned_overrides();
     assert_eq!(got.len(), 1, "{got:?}");
-    assert_eq!(got[0].needs, "Betriebsart = Rollladen");
+    assert_eq!(got[0].reference, "MD-3_M-18_MI-1_P-16_R-16");
+    assert_eq!(
+        got[0].sentence(),
+        "`f@MD-3_M-18_MI-1_P-16_R-16` = 3 replaced by 9: an `<Assign>` sets it \
+         while Funktion = 1 x Jalousie"
+    );
+    // The assigned value stored is in effect: nothing to report.
+    let kept = model(&[("f@MD-3_M-18_MI-1_P-16_R-16", "9")])?;
+    let products = products()?;
+    let analysis = DeviceAnalysis::new(&kept, &products, ia()?)?;
+    assert!(analysis.assigned_overrides().is_empty());
+    assert!(analysis.ignored_overrides().is_empty());
     Ok(())
 }
 
