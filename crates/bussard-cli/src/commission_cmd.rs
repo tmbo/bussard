@@ -457,7 +457,10 @@ async fn assign_on_bus(
     let current = match flow.wait_for_one(bench).await {
         Ok(current) => current,
         Err(stop @ (Stop::Several(_) | Stop::Nothing { .. })) => {
-            stopped(stop, "commission")?;
+            // `stopped` prints why and gives the exit code a standalone
+            // command would end with; here the commission ends with the
+            // error below, which sets the exit code, so its code is unused.
+            let _ = stopped(stop, "commission")?;
             bail!(
                 "no single device was in programming mode; nothing was written for {}",
                 target.address
