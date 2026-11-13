@@ -830,7 +830,9 @@ pub enum FlashStep {
     /// memory write with an `A_Memory_Response` echo, which the executor
     /// compares with the chunk written.
     ///
-    /// On System 7 it runs before the first segment write (issue #116). On
+    /// On System 7 it precedes the first step that writes memory, and the
+    /// executor switches the mode on after that step's allocation record,
+    /// right before its first `A_Memory_Write` (issues #116, #1076). On
     /// System B (issue #705) it precedes the first `Verify="true"`
     /// `LdCtrlWriteRelMem` of an application written over the plain memory
     /// services, and the executor switches the mode on right before that

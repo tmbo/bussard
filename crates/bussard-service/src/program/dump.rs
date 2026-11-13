@@ -10,7 +10,9 @@
 //!   it (System 7 AbsSegments, `WriteMem`), else the target object and offset
 //!   (System B `WriteRelMem`: the device chooses the segment base), plus the
 //!   segment id, length and SHA-256 (and, for a System 7 segment, its
-//!   `write_mode`: `read-compare` or `blind`, issue #133), and the octets a
+//!   `write_mode`: `read-compare` or `blind`, issue #133; for a System B
+//!   segment its allocation pre-fills, the `prefill` octet and `fill_only`,
+//!   true when the executor streams none of it, issue #1088), and the octets a
 //!   parameter placement wrote in it (`placed`: count and offset ranges, the
 //!   denominator of the oracle's coverage, issue #347); the allocation
 //!   records; and the table images with their addresses;
@@ -318,6 +320,12 @@ fn load_control_records(plan: &FlashPlan, step: &FlashStep) -> Vec<Value> {
         .collect()
 }
 
+/// The `sent` marker of the verify-mode step in `plan.json`: its
+/// `PID_DEVICE_CONTROL` write goes out right before the next memory write
+/// (the first octets of the next image that writes any), not where the step
+/// stands (issue #1076). `tools/knxtrace/sequence.py` reads it.
+pub const VERIFY_MODE_SENT: &str = "before-next-memory-write";
+
 /// Writes the dry-run dump for `plan` into `dir` (created if missing).
 ///
 /// `table_images` are the System B table images keyed by object index (1 =
@@ -342,6 +350,11 @@ pub fn write_dump(
     // (step number, absolute address when known).
     let mut table_steps: BTreeMap<u32, (usize, Option<u32>)> = BTreeMap::new();
     let mut load_control_count = 0usize;
+    // The octet each object's allocation pre-fills its segment with (its
+    // `Mode` bit 0), and the most recent allocation's, as the executor keeps
+    // them (`segment_fills`, `last_alloc_fill`) for its `WriteRelMem`.
+    let mut prefills: BTreeMap<Option<u32>, Option<u8>> = BTreeMap::new();
+    let mut last_prefill: Option<u8> = None;
 
     for (i, step) in plan.steps.iter().enumerate() {
         let n = i + 1;
@@ -385,6 +398,27 @@ pub fn write_dump(
                     table_steps.insert(*t, (n, None));
                 }
                 record["image"] = rec;
+                // The executor streams only the octets of a pre-filled
+                // segment that differ from the fill (issue #123), so an
+                // image of nothing but the fill goes out as no memory write
+                // at all. ETS does the same (issue #1088): after a `Mode="1"
+                // Fill="0"` allocation it wrote no memory to object 4 in
+                // `captures/synthetic/syn-trailing-writeprop/defaults`
+                // (16 octets of `00`) nor in the ise sweep captures
+                // `M-007C_A-0001-10-2A85`, `A-0003-43`, `A-0006-20`,
+                // `A-0012-11` and `A-0013-20` (32768 octets, all `00`). A
+                // parameter-only download diffs against its baseline instead.
+                let prefill = prefills.get(target).copied().unwrap_or(last_prefill);
+                if plan.baseline(&image.segment_id).is_none()
+                    && let Some(fill) = prefill
+                {
+                    let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
+                    let start = image.offset.min(whole.len());
+                    let end = image.offset.saturating_add(image.len).min(whole.len());
+                    let fill_only = whole[start..end.max(start)].iter().all(|&b| b == fill);
+                    record["image"]["prefill"] = json!(fill);
+                    record["image"]["fill_only"] = json!(fill_only);
+                }
             }
             FlashStep::WriteMem { address, image } => {
                 let stem = format!("0x{address:06X}");
@@ -452,6 +486,8 @@ pub fn write_dump(
                 }
             }
             FlashStep::AllocateSegment { size, target, fill } => {
+                prefills.insert(*target, fill.prefill());
+                last_prefill = fill.prefill();
                 allocations.push(json!({
                     "step": n,
                     "kind": "rel-segment",
@@ -475,6 +511,11 @@ pub fn write_dump(
                     "length": 1,
                     "data": format!("{:02x}", bussard_mgmt::DEVICE_CONTROL_VERIFY_MODE),
                 });
+                // The step only arms the switch: the executor writes it right
+                // before the next memory write that goes out, after that
+                // step's load-control records (issues #705, #1076). The
+                // planner places it only where every write is plain.
+                record["sent"] = json!(VERIFY_MODE_SENT);
             }
             // A load procedure's property write (issue #390), as the wire
             // carries it: an index-addressed object with the plain service,
@@ -884,6 +925,102 @@ mod tests {
             dumped_requests(&plan, "typed-sysb")?,
             vec![(1, 15), (16, 10)]
         );
+        Ok(())
+    }
+
+    /// The `fill_only` of each code-image step `write_dump` gives a 16-octet
+    /// segment allocated with `Mode="1" Fill="{fill}"` (no `<Data>`, no
+    /// parameter: its image is the fill `00`, issue #1088).
+    fn dumped_fill_only(mode: u8, fill: u8) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        Ok(dumped_steps(mode, fill)?
+            .iter()
+            .filter(|s| s["image"]["image_kind"] == json!("code"))
+            .map(|s| s["image"]["fill_only"].clone())
+            .collect())
+    }
+
+    /// The `plan.json` steps `write_dump` gives the 16-octet `Verify="true"`
+    /// System B code image of [`dumped_fill_only`].
+    fn dumped_steps(mode: u8, fill: u8) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="M-2_A-8" ApplicationNumber="8" ApplicationVersion="1"
+                MaskVersion="MV-07B0" Name="Empty" LoadProcedureStyle="MergedProcedure">
+              <Static>
+               <Code>
+                <RelativeSegment Id="M-2_A-8_RS-04-00000" Size="16" LoadStateMachine="4" Offset="0">
+                 <Data>AAAAAAAAAAAAAAAAAAAAAA==</Data>
+                </RelativeSegment>
+               </Code>
+               <LoadProcedures>
+                <LoadProcedure MergeId="1">
+                 <LdCtrlConnect />
+                 <LdCtrlUnload LsmIdx="4" />
+                 <LdCtrlLoad LsmIdx="4" />
+                 <LdCtrlRelSegment LsmIdx="4" Size="16" Mode="{mode}" Fill="{fill}" />
+                 <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="16" Verify="true" />
+                 <LdCtrlLoadCompleted LsmIdx="4" />
+                 <LdCtrlRestart />
+                 <LdCtrlDisconnect />
+                </LoadProcedure>
+               </LoadProcedures>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        let app =
+            bussard_product::application::parse_application_program("M-2_A-8", xml.as_bytes())?;
+        let plan = bussard_download::plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
+        )?;
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-dump-fill-{mode}-{fill}-{}",
+            std::process::id()
+        ));
+        write_dump(&dir, "1.1.4", 0x07B0, &plan, &BTreeMap::new())?;
+        let text = std::fs::read_to_string(dir.join("plan.json"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let dump: Value = serde_json::from_str(&text)?;
+        Ok(dump["steps"].as_array().ok_or("steps")?.clone())
+    }
+
+    #[test]
+    fn test_write_dump_marks_the_verify_mode_write_as_sent_before_the_next_memory_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1076: the verify-mode step arms the switch; its PID 14 write
+        // goes out right before the next memory write. The oracle's operation
+        // order (`tools/knxtrace/sequence.py`) reads this marker, not the label.
+        let steps = dumped_steps(1, 255)?;
+        let switch = steps
+            .iter()
+            .position(|s| s["property"]["pid"] == json!(bussard_mgmt::PID_DEVICE_CONTROL))
+            .ok_or("a verify-mode step")?;
+        assert_eq!(steps[switch]["sent"], json!(VERIFY_MODE_SENT));
+        assert_eq!(VERIFY_MODE_SENT, "before-next-memory-write");
+        assert!(
+            steps[switch + 1..].iter().any(|s| s["image"].is_object()),
+            "a memory write follows the switch"
+        );
+        assert!(steps.iter().filter(|s| s.get("sent").is_some()).count() == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_dump_marks_an_image_of_only_the_prefill_as_no_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1088: `Mode="1" Fill="0"` pre-fills the 16 octets of `00`,
+        // so the executor streams none of them; `Fill="255"` leaves all 16 to
+        // write; `Mode="0"` pre-fills nothing, so the step carries no mark.
+        assert_eq!(dumped_fill_only(1, 0)?, vec![json!(true)]);
+        assert_eq!(dumped_fill_only(1, 255)?, vec![json!(false)]);
+        assert_eq!(dumped_fill_only(0, 0)?, vec![Value::Null]);
         Ok(())
     }
 

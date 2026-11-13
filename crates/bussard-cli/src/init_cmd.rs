@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn test_run_with_fresh_dir_ignores_env() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("fresh-env");
-        run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
+        let _ = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
         let ignore = std::fs::read_to_string(dir.join(".gitignore"))?;
         assert!(
             ignore.contains("# passwords for bussard, read automatically; never commit\n.env\n"),
@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn skeleton_is_complete_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("skeleton");
-        run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
+        let _ = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
 
         for f in ["bussard.toml", "groups.toml", "README.md", ".gitignore"] {
             assert!(dir.join(f).exists(), "missing {f}");

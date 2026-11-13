@@ -168,23 +168,36 @@ pub(super) const SYS7_PRELUDE_UNLOAD_LSMS: [u32; 4] = [1, 2, 3, 4];
 ///   ETS runs it before anything else; the vendor's read-only preconditions
 ///   (`CompareProp`, `CompareMem`) stay ahead of it here, so a device that
 ///   fails them is refused before its application is unloaded.
-/// - [`FlashStep::EnableVerifyMode`] right after the first `StartLoading`,
-///   when the mask declares the Hawk `VerifyMode` feature and streams blind.
-///   ETS writes `obj0/PID_DEVICE_CONTROL` after the first allocation record;
-///   the allocation and its stream are one step here, so the write goes out
-///   just before that record. Nothing depends on the order: the bit only makes
-///   the device echo memory writes.
+/// - [`FlashStep::EnableVerifyMode`] right before the first step that writes
+///   memory, when the mask declares the Hawk `VerifyMode` feature and streams
+///   blind. ETS reads and writes `obj0/PID_DEVICE_CONTROL` right before the
+///   first `A_Memory_Write` of the download, after the allocation record of
+///   that segment (issue #1076): after LSM 1's `StartLoading` and
+///   `LdCtrlAbsSegment` on a fresh, a reloaded and an other-application device
+///   (`captures/synthetic/syn-s7-0705/{defaults,reload,other-app,params}`, ops
+///   11 to 15, and every other 0705 synthetic row). The allocation and its
+///   stream are one step here, so the step only arms the switch and the
+///   executor sends it after that step's allocation record, before its first
+///   memory write, as on System B (issue #705). The parameter-only download
+///   (`FlashPlan::parameters_only`) moves the step before its first
+///   `WriteMem`, after LSM 3's `StartLoading`, where ETS writes it
+///   (`syn-s7-0705/partial`, ops 11 to 14). No write that verify mode protects goes out before it: the
+///   load controls and allocation records ahead of it are property writes,
+///   confirmed by their own responses. Mask 0701 declares no `VerifyMode`
+///   (read-compare-write) and gets no step; its captures
+///   (`syn-s7-0701/{defaults,reload,other-app}`) carry no
+///   `PID_DEVICE_CONTROL` access either.
 ///
 /// ETS's read-only prelude traffic (`PID_SERIAL_NUMBER`, `PID_MANUFACTURER_ID`,
 /// `PID_HARDWARE_TYPE`, the `0xB6EC` and `0x0060` memory reads) is not
 /// reproduced; `dev/system7-spec.md` §3 lists why.
 fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profile) {
     if !profile.read_compare_write()
-        && let Some(first_load) = steps
+        && let Some(first_write) = steps
             .iter()
-            .position(|s| matches!(s, FlashStep::Sys7StartLoading { .. }))
+            .position(|s| matches!(s, FlashStep::Sys7AbsSegment { image: Some(_), .. }))
     {
-        steps.insert(first_load + 1, FlashStep::EnableVerifyMode);
+        steps.insert(first_write, FlashStep::EnableVerifyMode);
     }
     // A procedure that loads nothing (a bare restart) gets no prelude.
     let loads = steps.iter().any(|s| {
@@ -3416,6 +3429,16 @@ mod tests {
 
     #[test]
     fn test_add_ets_prelude_orders_restart_and_verify_mode() {
+        let segment = |address: u32, image: Option<ImageRef>| FlashStep::Sys7AbsSegment {
+            lsm: 1,
+            address,
+            size: 16,
+            mem_type: 3,
+            access: 0x33,
+            seg_flags: 0x80,
+            seg_type: 0,
+            image,
+        };
         let procedure = || {
             vec![
                 FlashStep::CompareProp {
@@ -3427,19 +3450,30 @@ mod tests {
                 },
                 FlashStep::Sys7Unload { lsm: 1 },
                 FlashStep::Sys7StartLoading { lsm: 1 },
+                segment(0x0700, None),
+                segment(
+                    0x4000,
+                    Some(ImageRef {
+                        segment_id: "code".to_string(),
+                        kind: ImageKind::Code,
+                        len: 1,
+                        offset: 0,
+                    }),
+                ),
                 FlashStep::Sys7LoadCompleted { lsm: 1 },
                 FlashStep::Restart,
             ]
         };
         // 0705 declares VerifyMode: the restart pass goes after the read-only
-        // precondition, verify mode right after the first StartLoading.
+        // precondition, verify mode right before the first segment that
+        // writes memory (issue #1076), past the data-less RAM record.
         let mut steps = procedure();
         add_ets_prelude(
             &mut steps,
             &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
         );
         let mut expected = procedure();
-        expected.insert(3, FlashStep::EnableVerifyMode);
+        expected.insert(4, FlashStep::EnableVerifyMode);
         expected.insert(
             1,
             FlashStep::Sys7PreDownloadRestart {
@@ -3459,6 +3493,19 @@ mod tests {
             steps.get(1),
             Some(FlashStep::Sys7PreDownloadRestart { .. })
         ));
+
+        // A load that writes no memory gets no verify-mode step: ETS switches
+        // it on only ahead of a memory write.
+        let mut steps = vec![
+            FlashStep::Sys7StartLoading { lsm: 1 },
+            segment(0x0700, None),
+            FlashStep::Sys7LoadCompleted { lsm: 1 },
+        ];
+        add_ets_prelude(
+            &mut steps,
+            &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
+        );
+        assert!(!steps.contains(&FlashStep::EnableVerifyMode));
 
         // A procedure that loads nothing gets no prelude.
         let mut steps = vec![FlashStep::Restart];

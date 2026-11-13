@@ -28,9 +28,9 @@ load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4000 seg_size=513 access=0x33 mem_type=0x03 mem_attr=0x80
 prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
 prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
-alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4000 seg_size=513 access=0x33 mem_type=0x03 mem_attr=0x80
 mem-write 0x4000 addr_int=16384 len=1 sha=dbc1b4c9 extended=False
 mem-write 0x4003 addr_int=16387 len=2 sha=fb8da7eb extended=False
 alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4000 pei_type=0 app_id=00fa280010

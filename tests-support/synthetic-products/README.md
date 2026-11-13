@@ -48,6 +48,7 @@ next to it, and zips it on demand.
 | [`syn-property-nopar`](syn-property-nopar/product.toml) | `NEST-NAP` | 07B0 | property-only program, no `par` allocation | #1052, #944, #1054 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
 | [`syn-relseg-dataless`](syn-relseg-dataless/product.toml) | `NEST-MOSS` | 07B0 | data-less RelativeSegment, Mode 0 with Fill 165 (ETS writes only the octets a parameter occupies; bussard fills the rest, #1084) | #1061, #1054 |
+| [`syn-relseg-dataless-hidden`](syn-relseg-dataless-hidden/product.toml) | `NEST-LICHEN` | 07B0 | data-less RelativeSegment, Mode 0 with Fill 165, a hidden parameter at octets 3 and 4 (#1084) | #1084, #1054 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-rf-27b0`](syn-rf-27b0/product.toml) | `NEST-RADIO` | 27B0 | System B on KNX RF (mask 27B0, MT-2) | #604 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |

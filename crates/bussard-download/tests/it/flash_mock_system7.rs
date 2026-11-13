@@ -187,6 +187,12 @@ struct DeviceState {
     device_control: u8,
     /// Every value written to `obj0/PID_DEVICE_CONTROL`, in order.
     device_control_writes: Vec<u8>,
+    /// For each `obj0/PID_DEVICE_CONTROL` write, how many allocation records
+    /// and segment content writes had arrived before it (issue #1076).
+    device_control_at: Vec<(usize, usize)>,
+    /// For each `obj0/PID_DEVICE_CONTROL` write, how many LSM events had
+    /// arrived before it (issue #1076).
+    device_control_after_events: Vec<usize>,
     /// `obj3/PID_PROGRAM_VERSION`, the resident application's id (issue
     /// #481); `None` answers count 0, as a device without it.
     program_version: Option<Vec<u8>>,
@@ -239,6 +245,16 @@ struct DeviceState {
     /// Drop the L4 connection once (silent until a fresh `T_Connect`) right
     /// after this many verify echoes were sent (issue #524).
     drop_after_echoes: Option<usize>,
+    /// Drop the L4 connection once on the first `obj0/PID_DEVICE_CONTROL`
+    /// read that follows an allocation record (issue #1076): the verify-mode
+    /// switch dies between the record and the first memory write.
+    drop_on_device_control_read: bool,
+    /// The device has no readable `obj0/PID_DEVICE_CONTROL`: a read answers
+    /// count 0 (issue #1076).
+    device_control_absent: bool,
+    /// The device refuses a write of `obj0/PID_DEVICE_CONTROL`: it answers
+    /// count 0 and keeps its value (issue #1076).
+    refuse_device_control: bool,
     /// For each segment content write, whether verify mode was on when it
     /// arrived (issue #524).
     writes_in_verify_mode: Vec<bool>,
@@ -319,6 +335,8 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         absent_objects: Vec::new(),
         device_control: 0,
         device_control_writes: Vec::new(),
+        device_control_at: Vec::new(),
+        device_control_after_events: Vec::new(),
         program_version: None,
         restart_at_writes: Vec::new(),
         verify_echoes_sent: 0,
@@ -337,6 +355,9 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         frozen: Vec::new(),
         corrupt_echo: false,
         drop_after_echoes: None,
+        drop_on_device_control_read: false,
+        device_control_absent: false,
+        refuse_device_control: false,
         writes_in_verify_mode: Vec::new(),
         intermediate_lsm: None,
         intermediate: HashMap::new(),
@@ -680,6 +701,19 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         }
         // Device control (verify mode and friends).
         if obj == 0 && pid == PID_DEVICE_CONTROL {
+            if s.drop_on_device_control_read && !s.alloc_records.is_empty() {
+                // The link drops before the answer goes out; the device
+                // answers nothing more on this connection.
+                s.drop_on_device_control_read = false;
+                s.l4_dead_after_outage = true;
+                return Reaction::Silent;
+            }
+            if s.device_control_absent {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(obj, pid, 0, start, &[]),
+                );
+            }
             let val = s.device_control;
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
@@ -778,12 +812,22 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 prop_response(obj, pid, 1, start, &[st]),
             );
         }
+        if obj == 0 && pid == PID_DEVICE_CONTROL && s.refuse_device_control {
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(obj, pid, 0, start, &[]),
+            );
+        }
         if obj == 0
             && pid == PID_DEVICE_CONTROL
             && let Some(&v) = value.first()
         {
             s.device_control = v;
             s.device_control_writes.push(v);
+            let at = (s.alloc_records.len(), s.memory_writes_seen);
+            s.device_control_at.push(at);
+            let events = s.lsm_events.len();
+            s.device_control_after_events.push(events);
         }
         // Echo any other property write.
         return Reaction::Answer(
@@ -3933,6 +3977,28 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         partial.steps
     );
     assert!(matches!(partial.steps.last(), Some(FlashStep::Restart)));
+    // Verify mode goes on between LSM 3's StartLoading and the parameter
+    // write, where ETS writes it (`syn-s7-0705/partial`, ops 11 to 14;
+    // issue #1076).
+    let switch = partial
+        .steps
+        .iter()
+        .position(|st| *st == FlashStep::EnableVerifyMode)
+        .ok_or("a 0705 parameter download switches verify mode on")?;
+    assert!(
+        matches!(
+            (
+                switch.checked_sub(1).and_then(|i| partial.steps.get(i)),
+                partial.steps.get(switch + 1)
+            ),
+            (
+                Some(FlashStep::Sys7StartLoading { lsm: 3 }),
+                Some(FlashStep::WriteMem { .. })
+            )
+        ),
+        "{:?}",
+        partial.steps
+    );
     // No pre-download pass (issue #488): ETS's partial download into a
     // loaded device sends no unload and no restart before the procedure.
     assert!(
@@ -3989,6 +4055,11 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} stays Loaded");
     }
     assert_eq!(s.restarts_seen, 1, "the device is restarted");
+    // On the wire: StartLoading, the switch, then the one write, echoed.
+    assert_eq!(s.device_control_writes, vec![DEVICE_CONTROL_VERIFY_MODE]);
+    assert_eq!(s.device_control_after_events, vec![1]);
+    assert_eq!(s.device_control_at, vec![(0, 0)]);
+    assert_eq!(s.writes_in_verify_mode, vec![true]);
     Ok(())
 }
 
@@ -4351,6 +4422,122 @@ async fn test_flash_sys7_runs_the_ets_prelude() -> Result<(), Box<dyn std::error
     assert_eq!(s.verify_echoes_sent, s.memory_writes_seen);
     // The terminal restart cleared the RAM bit again.
     assert_eq!(s.device_control, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_enables_verify_mode_after_the_first_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #1076: ETS writes PID_DEVICE_CONTROL after LSM 1's first
+    // AbsSegment record and before the first memory write of the download
+    // (`captures/synthetic/syn-s7-0705/defaults`, ops 11 to 15). The flash
+    // still ends in the read-back after the terminal restart.
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    assert_eq!(outcome.object_states.len(), 3, "{outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.device_control_writes, vec![DEVICE_CONTROL_VERIFY_MODE]);
+    assert_eq!(
+        s.device_control_at,
+        vec![(1, 0)],
+        "one record, no write yet"
+    );
+    assert_eq!(s.alloc_records.first().map(|(lsm, _)| *lsm), Some(1));
+    assert!(!s.writes_in_verify_mode.is_empty());
+    assert!(
+        s.writes_in_verify_mode.iter().all(|on| *on),
+        "a write went out without verify mode: {:?}",
+        s.writes_in_verify_mode
+    );
+    assert_eq!(s.verify_echoes_sent, s.memory_writes_seen);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_switches_verify_mode_on_again_after_a_drop_during_the_switch()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #1076 review: the connection dies during the PID_DEVICE_CONTROL
+    // read that follows the first allocation record. The switch stays armed,
+    // the session reconnects and switches verify mode on over the new
+    // connection before the first memory write: no segment write goes out
+    // unechoed.
+    let (outcome, state) = run_parity_flash_with(LsmMode::Property, 0x00, |s| {
+        s.drop_on_device_control_read = true;
+    })
+    .await?;
+    assert!(
+        outcome.ok(),
+        "flash should resume and reach Loaded: {outcome:?}"
+    );
+    assert!(
+        !outcome.warnings.iter().any(|w| w.contains("verify mode")),
+        "{:?}",
+        outcome.warnings
+    );
+    let echoes = outcome.verify_echoes.ok_or("no verify echo counts")?;
+    let s = lock(&state);
+    assert!(!s.drop_on_device_control_read, "the drop fired");
+    assert_eq!(s.device_control_writes, vec![DEVICE_CONTROL_VERIFY_MODE]);
+    assert_eq!(s.device_control_at, vec![(1, 0)]);
+    assert!(!s.writes_in_verify_mode.is_empty());
+    assert!(
+        s.writes_in_verify_mode.iter().all(|on| *on),
+        "a write went out without verify mode: {:?}",
+        s.writes_in_verify_mode
+    );
+    assert_eq!(echoes.echoes_compared, echoes.chunks_written);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_refused_verify_mode_writes_unechoed_and_warns()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A 0705 device that refuses the PID_DEVICE_CONTROL write: the download
+    // goes on without echoes and the flash says verify mode was refused.
+    let (outcome, state) = run_parity_flash_with(LsmMode::Property, 0x00, |s| {
+        s.refuse_device_control = true;
+    })
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("refused verify mode")
+                && w.contains("PID_DEVICE_CONTROL stays 0x00")),
+        "{:?}",
+        outcome.warnings
+    );
+    assert!(outcome.verify_echoes.is_none(), "{outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.verify_echoes_sent, 0);
+    assert!(s.memory_writes_seen > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_without_device_control_writes_unechoed_and_warns()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A 0705 device with no readable PID_DEVICE_CONTROL: nothing is written
+    // to it, the download goes on without echoes and the flash says so.
+    let (outcome, state) = run_parity_flash_with(LsmMode::Property, 0x00, |s| {
+        s.device_control_absent = true;
+    })
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("no readable PID_DEVICE_CONTROL")),
+        "{:?}",
+        outcome.warnings
+    );
+    assert!(outcome.verify_echoes.is_none(), "{outcome:?}");
+    let s = lock(&state);
+    assert!(s.device_control_writes.is_empty());
+    assert_eq!(s.verify_echoes_sent, 0);
+    assert!(s.memory_writes_seen > 0);
     Ok(())
 }
 

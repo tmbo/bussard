@@ -36,6 +36,7 @@ Every code `bussard validate` and the `knx_validate` MCP tool report, with its s
 | E033 | warning | A `[[product]]` entry names an archive (`file`) the project folder does not hold. The message names the recovery command for its origin. |
 | I048 | info | A group address with a sending object but no listening one: its telegrams go nowhere. `bussard audit` and the viz problems panel list it as a finding. |
 | I049 | info | A group address with a listening object but no sending one: nothing triggers it. Listed as a finding like I048. |
+| W050 | warning | A parameter value the device file sets is replaced by a Dynamic `<Assign>` of the product under the device's current values. The message names the value, the value the `<Assign>` puts in its place, the parameter it copies and the condition under which it applies. The download writes the assigned value, as ETS does, so this is not an error: set the parameter to the assigned value, or change the condition. `plan`, `flash` and the device view name the same value. |
 
 ## `[knxnet]` rules
 

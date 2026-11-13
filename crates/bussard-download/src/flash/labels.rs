@@ -456,8 +456,9 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
              (checked)"
         ),
         FlashStep::EnableVerifyMode => {
-            "enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear; \
-             the device echoes every memory write from here)"
+            "switch verify mode on right before the next memory write, after its segment's \
+             load-control records (object 0 PID_DEVICE_CONTROL bit 2, written only when clear; \
+             the device echoes every memory write from then on)"
                 .to_string()
         }
     }

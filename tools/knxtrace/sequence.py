@@ -105,25 +105,35 @@ def _segments(allocs: List[Dict[str, object]], refs: Dict[int, int]) -> List[Tup
     return out
 
 
+def abs_segment(rec: Dict[str, object]) -> Optional[Tuple[Optional[int], int, int]]:
+    """(load-state object, start, length) of one `AbsSegment` load-control
+    record, in either form: the property record `[3][sub][start:2][len:2]...`,
+    the System 7 memory record at 0x0104 one octet later (`[lsm|3][sub][00]
+    [start:2][len:2]...`); None for any other record. The one parser of the
+    record (`abs_segments`, `statediff.segments`, issue #1080)."""
+    try:
+        data = bytes.fromhex(str(rec["data"]))
+    except ValueError:
+        return None
+    memory = rec.get("form") == "memory"
+    at = 3 if memory else 2
+    event = data[0] & 0x0F if memory else data[0] if data else None
+    if event != 3 or len(data) < at + 4 or data[1] != memimage.SUB_ABS_DATA:
+        return None
+    start = int.from_bytes(data[at:at + 2], "big")
+    length = int.from_bytes(data[at + 2:at + 4], "big")
+    return memimage._lc_object(rec), start, length
+
+
 def abs_segments(records: List[Dict[str, object]]) -> List[Tuple[int, int, str]]:
-    """(start, end, `lsmN`) of every `AbsSegment` load-control record, in
-    either form: the property record `[3][sub][start:2][len:2]...`, the
-    System 7 memory record at 0x0104 one octet later (`[lsm|3][sub][00]
-    [start:2][len:2]...`)."""
+    """(start, end, `lsmN`) of every `AbsSegment` load-control record
+    (`abs_segment`), in order."""
     out: List[Tuple[int, int, str]] = []
     for rec in records:
-        try:
-            data = bytes.fromhex(str(rec["data"]))
-        except ValueError:
-            continue
-        memory = rec.get("form") == "memory"
-        at = 3 if memory else 2
-        event = data[0] & 0x0F if memory else data[0] if data else None
-        if event != 3 or len(data) < at + 4 or data[1] != memimage.SUB_ABS_DATA:
-            continue
-        start = int.from_bytes(data[at:at + 2], "big")
-        length = int.from_bytes(data[at + 2:at + 4], "big")
-        out.append((start, start + length, "lsm%s" % memimage._lc_object(rec)))
+        seg = abs_segment(rec)
+        if seg is not None:
+            obj, start, length = seg
+            out.append((start, start + length, "lsm%s" % obj))
     return out
 
 
@@ -275,6 +285,11 @@ def _step_reads(label: str, step: dict, segs: List[Tuple[int, int, str]]) -> Lis
     return out
 
 
+# The plan.json marker of a step whose property write goes out right before
+# the next memory write (bussard-service `dump::VERIFY_MODE_SENT`, #1076).
+VERIFY_MODE_SENT = "before-next-memory-write"
+
+
 def plan_operations(plan: dict) -> List[Dict[str, object]]:
     """bussard's operations from a dry run's `plan.json`, in plan order, in
     the form of `operations` (with the plan `step` instead of a kind-local
@@ -287,6 +302,15 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
         props.setdefault(w.get("step"), []).append(w)
     calls = {c["step"]: c for c in memimage.plan_function_calls(plan)}
     out: List[Dict[str, object]] = []
+    # The verify-mode step only arms the switch (`"sent":
+    # "before-next-memory-write"` in plan.json): the executor writes
+    # obj0 PID_DEVICE_CONTROL right before the next memory write that goes
+    # out, after that step's load-control records (issues #705, #1076), so
+    # its write is held until then. An image of only its pre-fill octet
+    # writes nothing and does not release it; the planner places the switch
+    # only where every write is plain. An armed switch with no later memory
+    # write is never sent.
+    armed: List[Dict[str, object]] = []
     for step in plan.get("steps", []):
         n = step.get("index")
         label = re.sub(r"^\d+\.\s*", "", str(step.get("label") or ""))
@@ -297,7 +321,10 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
                                 "event": memimage.load_event_name(str(rec.get("form")),
                                                                   str(rec.get("data")))})
         img = step.get("image")
-        if isinstance(img, dict):
+        # An image of nothing but its segment's pre-fill octet is no memory
+        # write on the wire: the executor streams only octets that differ
+        # from the fill, as ETS does (issue #1088, `fill_only` in plan.json).
+        if isinstance(img, dict) and not img.get("fill_only"):
             if img.get("address") is not None:
                 target = memory_target(int(img["address"]), segs)
             else:
@@ -307,9 +334,17 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
                 # A read-compare stream (mask 0701) writes only the octets
                 # the device does not already hold.
                 entry["read_compare"] = True
+            entries.extend(armed)
+            armed = []
             entries.append(entry)
         for w in props.get(n, []):
-            entries.append({"op": "prop-write", "object": w["object"], "pid": w["pid"]})
+            write = {"op": "prop-write", "object": w["object"], "pid": w["pid"]}
+            if step.get("sent") == VERIFY_MODE_SENT:
+                # Keeps its own step: the state comparison counted it there.
+                write["step"] = n
+                armed.append(write)
+            else:
+                entries.append(write)
         if n in calls:
             entries.append({"op": "fcall", "object": calls[n]["object"], "pid": calls[n]["pid"]})
         restart = _step_restart(label)
@@ -317,7 +352,7 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
             entries.append(restart)
         entries.extend(_step_reads(label, step, segs))
         for e in entries:
-            e["step"] = n
+            e.setdefault("step", n)
             e["pos"] = len(out) + 1
             out.append(e)
     return out

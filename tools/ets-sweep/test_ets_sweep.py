@@ -309,20 +309,48 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual(params.summary_verdict(out, "1.1.1")["verdict"], "not-comparable")
         self.assertEqual(params.summary_verdict("1.1.1  (note)", "1.1.1")["verdict"], "oracle-error")
 
-    def test_pinned_verdict_follows_the_exit_code(self):
-        found = {"verdict": "not-comparable", "summary": "1.1.1 apply not-comparable ... props=ok(2935)"}
-        self.assertEqual(params.pinned_verdict(found, 0, True, "r")["verdict"], "identical")
-        failed = params.pinned_verdict(found, 1, True, "r")
-        self.assertEqual((failed["verdict"], failed["headline"]), ("differs", "not-comparable"))
-        self.assertEqual(params.pinned_verdict(found, 1, False, "r")["verdict"], "not-comparable")
-        self.assertEqual(params.pinned_verdict({"verdict": "identical"}, 1, False, "r")["verdict"], "differs")
+    def test_checked_verdict_follows_the_exit_code(self):
+        found = {"verdict": "identical", "summary": "1.1.1 apply identical ... props=ok(2935)"}
+        self.assertEqual(params.checked_verdict(found, 0, "r")["verdict"], "identical")
+        self.assertEqual(params.checked_verdict(found, 1, "r")["verdict"], "differs")
+        self.assertEqual(params.checked_verdict({"verdict": "not-comparable"}, 1, "r")["verdict"], "not-comparable")
 
-    def test_placement_property_only_counts_union_memory(self):
-        props = [{"property": {"object_index": 10}, "memory": None}]
-        self.assertTrue(params.placement_property_only({"parameters": props, "unions": []}))
-        self.assertFalse(params.placement_property_only(
-            {"parameters": props, "unions": [{"id": "U-1", "memory": {"offset": 0}}]}))
-        self.assertFalse(params.placement_property_only({"parameters": props + [{"memory": {"offset": 3}}]}))
+    def test_partial_oracle_on_an_empty_work_dir_writes_the_same_row_twice(self):
+        # Issue #1074: the first run on an empty --work wrote a property-only
+        # row without its pins, because the pins were decided from a product
+        # model only the run itself imports. The row no longer depends on it:
+        # the first and the second run write the same row, without pins.
+        app = "M-0009_A-E802-13-7620"
+        out = "1.1.1     apply  identical  0.0% (0)  -  props=ok(4118)  loadctl=ok(4)\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            work, captures = Path(tmp) / "work", Path(tmp) / "captures"
+            step = captures / app / "params-partial" / "b-partial-param"
+            step.mkdir(parents=True)
+            (step / "params.json").write_text(json.dumps({"changes": [{"label": "Delay", "shown": "2"}]}))
+
+            def model(job, work_, out_, recorded):
+                out_.mkdir(parents=True, exist_ok=True)
+                return out_, []
+
+            run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=out, stderr=""))
+            import sweep
+
+            with mock.patch.object(sweep, "CAPTURES", captures), \
+                    mock.patch.object(params, "change_model", side_effect=model), \
+                    mock.patch.object(params.subprocess, "run", run), \
+                    mock.patch.object(defaults, "product_path", return_value=Path("/p/E802.knxprod")):
+                job = {"id": app, "mask": "07B0", "file": "E802.knxprod"}
+                first = params.partial_oracle(job, work)
+                rows = Path(first["rows"])
+                first_row = rows.read_text()
+                second = params.partial_oracle(job, work)
+                second_row = rows.read_text()
+        self.assertEqual(first_row, second_row)
+        self.assertEqual((first["verdict"], second["verdict"]), ("identical", "identical"))
+        fields = first_row.strip().split("|")
+        self.assertEqual(fields[5], "")
+        self.assertFalse({"expect", "props", "loadctl"} & {o.split("=", 1)[0] for o in fields[6].split()})
+        self.assertTrue(fields[6].startswith("run=params base="))
 
     def test_best_pages_exact_over_close(self):
         places = [{"page": "FS: Ampel"}, {"page": "LS: Ampel"}]
@@ -1881,7 +1909,7 @@ class TestCaptureRecapture(unittest.TestCase):
                          "loadctl=identical seq=differs")
         self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical", "seq": "not-comparable"}),
                          "loadctl=identical")
-        # syn-property-nopar/partial (#1052): no memory on either side.
+        # A not-comparable headline with identical property writes (#1052).
         self.assertEqual(capture.row_options({"verdict": "not-comparable", "loadctl": "identical",
                                               "props": "identical", "seq": "identical"}),
                          "expect=not-comparable loadctl=identical props=identical seq=identical")
