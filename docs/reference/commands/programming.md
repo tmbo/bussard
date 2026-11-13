@@ -203,7 +203,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--force` | off | Flash a device that is **not** factory-fresh: it carries a different or unidentifiable application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. Also accepts a `--product` or `--application` that contradicts the lock. |
 | `--full` | off | Skip nothing: re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches and which reports `Loaded` is skipped, and the output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. On System 7 (mask 0701/0705) it also first unloads load-state machines 1 to 4 and restarts the device, as ETS does after its Unload command; a plain flash sends neither, like ETS's application download. |
 | `--parameters-only` | off | Rewrite only the parameter memory of a device that already runs this application (see [parameter-only download](#parameter-only-download)). Conflicts with `--full`, `--force` and `--no-factory-reset`. With `--dry-run` it prints the op sequence offline. |
-| `--no-factory-reset` | off | Leave out the factory reset (System B applications that support Secure). Use this only when you know the device holds no stale image, for example a device fresh from the box. |
+| `--no-factory-reset` | off | Leave out the factory reset (System B applications that support Secure, over another or an unknown application). Use this only when you know the device holds nothing the download must clear. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`). Unset presents the free-access key `FFFFFFFF`, correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
 | `--keyring <FILE>` | the key store | KNX Data Secure: the tool key and group keys. With it, `flash` also programs the device's security object. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`; unsuitable for a real key, because process arguments are visible. Carries no group keys, so it only suits a device without secured group addresses. |
@@ -251,10 +251,13 @@ Because there is no backup, `flash` checks in its read-only pre-flight that the 
 
 ### The factory reset (System B)
 
-Many System B applications allocate their segment with a fill byte, and bussard, like ETS, writes only the octets that differ from it. The fill does not erase anything, so a re-flash would keep the previous image's octets wherever the new one writes nothing. So `flash` starts such a download of an application that supports Secure (one whose product data declares `IsSecureEnabled`) the way ETS unloads one, with a factory reset that keeps the device's address. ETS never sends a master reset to an application that does not support Secure, so neither does `flash`: such a download starts with its load procedure's own unloads.
+Many System B applications allocate their segment with a fill byte, and bussard, like ETS, writes only the octets that differ from it. An allocation with the fill flag asks the device to fill the whole segment first (Management Procedures 03_05_02 §3.31.3.4), so in that segment no octet of the previous image survives. An allocation without it keeps the memory: the `par` procedure of a device that runs the same application then writes the whole image, and a segment without `<Data>` leaves the octets no parameter occupies as the device holds them, as ETS does. A download onto a fresh device, or one that runs the same application, therefore starts with its load procedure's own unloads and no reset, as ETS's does.
 
-- The device erases its application, its parameters and its group addresses and links, keeps its address, and reboots. `flash` waits the time the device reports (at most 60 s), reconnects and continues.
-- The reset is added, for an application that supports Secure, when the download writes filled segments sparsely, and when `--force` replaces an application `flash` did not recognise or could not read.
+- That the device filled is checked: the segment's MCB check after `LoadCompleted` covers every octet where the procedure has one; otherwise the read-back after the restart also reads the first octets the write skipped and expects the fill byte there.
+- A re-flash of such an application that supports Secure runs the whole procedure even when the device already holds the image, as ETS does; no object is skipped.
+
+- The reset is added only for an application that supports Secure (one whose product data declares `IsSecureEnabled`), when `--force` replaces an application `flash` did not recognise or could not read. No captured ETS download sends it, so this is not confirmed by a capture. ETS never sends a master reset to an application that does not support Secure, so neither does `flash`.
+- The device returns to its ex-factory state: application, parameters, group addresses and links, application data and access keys, and on a Data Secure device its group and point-to-point keys and its security individual address table, with its factory key active again. It keeps its address, reboots, and `flash` waits the time the device reports (at most 60 s), reconnects and continues.
 - The plan shows it as the first step, and every object is then streamed in full: nothing is skipped.
 - A device that refuses the reset, or does not answer it, fails the flash before anything is written.
 - `--no-factory-reset` leaves it out. System 7 downloads write every region in full and never reset.
@@ -271,7 +274,7 @@ With `--keyring` (or `--tool-key`), `flash` programs the device's security objec
 
 - The dry run lists each security step; key bytes are never printed.
 - The security individual address table (PID 54) gets one entry per device that sends on a secured group address this device listens to, plus `--secure-sender` or the `admit_tunnel_senders` addresses, plus the `secure_senders` the lock recorded from an earlier read, so a download does not drop a sender the project does not describe.
-- The factory reset stays in secured downloads; the device keeps its tool key across it.
+- The factory reset stays in secured downloads where the plan has one.
 
 ??? note "Details"
     The security object is unloaded right after the other objects. After the tables and parameters it is reloaded with the security individual address table (cleared, then one `[IA][sequence]` entry per sender, with the sender's keyring `SequenceNumber` when the project marks it `activated`, else 0), the group key table (one entry per keyed group address the device links) and the group-object security flags, then completed.

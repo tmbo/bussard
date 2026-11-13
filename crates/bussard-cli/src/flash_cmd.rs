@@ -82,13 +82,12 @@ pub(crate) struct FlashArgs {
     #[arg(long)]
     pub full: bool,
     /// Skip the factory reset before the download. By default a System B
-    /// flash of an application that supports Secure and writes filled segments
-    /// sparsely, or that replaces a device that is not factory-fresh, first
-    /// sends a confirmed master reset (erase code 7): the device erases its application, parameters and links and
-    /// keeps its address, so no octet of a previous image survives
-    /// where the new one writes nothing. Use this only when you
-    /// know the device holds no stale image.
-    // Issue #117.
+    /// flash of an application that supports Secure onto a device that holds
+    /// another application, or whose state could not be read, first sends a
+    /// confirmed master reset (erase code 7): the device returns to its
+    /// ex-factory state but keeps its address. Use this only when you know
+    /// the device holds nothing the download has to clear.
+    // Issues #117, #1081.
     #[arg(long)]
     pub no_factory_reset: bool,
     /// Rewrite only the parameter memory of a device that already runs this

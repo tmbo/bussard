@@ -15,8 +15,8 @@ use super::session::{
 };
 use super::steps::{Reboot, StepExecutor, run_shared_step, run_steps};
 use super::verify::{
-    WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
-    take_sample, verify_after_reboot, verify_outcome,
+    WrittenSample, advisory_mcb_warning, fill_sample, mcb_read_object, mcb_skip_target,
+    resident_match_objects, take_sample, verify_after_reboot, verify_outcome,
 };
 use super::{
     FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress, PropObject, SegmentFill,
@@ -617,6 +617,8 @@ impl StepExecutor for SystemB<'_> {
                 });
                 let caps = ChunkCaps::of(session.l4());
                 let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
+                // A sparse write over the device's fill (issue #1081).
+                let over_fill = if partial.is_none() { fill } else { None };
                 let regions: Vec<(usize, usize)> = match (partial, fill) {
                     // A parameter-only download (issue #543): the
                     // allocation in Mode 0 kept the memory contents at
@@ -729,7 +731,23 @@ impl StepExecutor for SystemB<'_> {
                             mask: None,
                         }),
                 };
+                let own = sample.clone();
                 self.written_samples.extend(sample);
+                // The octets a sparse write skipped hold the fill only if the
+                // device honoured the allocation's fill flag (issue #1081):
+                // sample them too, unless a passed MCB check covers the
+                // segment.
+                if let Some(fill) = over_fill {
+                    let segment = obj.map(|obj| (obj, image.segment_id.clone()));
+                    self.written_samples.extend(fill_sample(
+                        addr,
+                        bytes.len(),
+                        &regions,
+                        fill,
+                        segment,
+                        own.as_ref(),
+                    ));
+                }
             }
             FlashStep::WriteMem { address, image } => {
                 // The absolute address must fit the 24-bit extended-memory space;
@@ -1242,13 +1260,13 @@ impl StepExecutor for SystemB<'_> {
                 }
             }
             FlashStep::FactoryReset { erase_code } => {
-                // The confirmed master reset ETS opens an initial System B
-                // download with (issue #117): numbered A_Restart 0x381
+                // The confirmed master reset a flash over another or an
+                // unreadable application opens with (issues #117, #1081; no
+                // captured ETS download sends it): numbered A_Restart 0x381
                 // [erase_code, channel 0], answered by A_Restart_Response
                 // [error, process time]. A refusal (non-zero error) or silence
-                // fails the flash before anything is written: the device may
-                // still hold a stale image, and `--no-factory-reset` is the
-                // explicit way past that.
+                // fails the flash before anything is written, and
+                // `--no-factory-reset` is the explicit way past that.
                 // Refuse before erasing anything when the session could not
                 // reconnect to the rebooted device afterwards.
                 if !session.can_reconnect() {
@@ -1476,16 +1494,16 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // object streams in full. The same holds for a product `LdCtrlMasterReset`
     // whose erase code resets loaded objects (issue #623, the rule and its
     // evidence are on `FlashPlan::erases_resident_objects`): skipping an object
-    // the reset then erases leaves the device without it.
+    // the reset then erases leaves the device without it. A secure-capable
+    // plan that writes a filled segment sparsely keeps ETS's full procedure
+    // too (issue #1081, `FlashPlan::allows_resident_skip`).
     // A parameter-only download diffs against the resident memory instead.
-    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb
-        && !plan.erases_resident_objects()
-        && !plan.is_parameters_only()
-    {
-        resident_match_objects(session, plan, app_obj, &object_table).await?
-    } else {
-        BTreeSet::new()
-    };
+    let skip_objects: BTreeSet<u8> =
+        if options.skip_matching_mcb && plan.allows_resident_skip() && !plan.is_parameters_only() {
+            resident_match_objects(session, plan, app_obj, &object_table).await?
+        } else {
+            BTreeSet::new()
+        };
 
     // A parameter-only download by the mask's `par` procedure writes no
     // table but checks the tables' MCBs after LoadCompleted (MergeId 7):

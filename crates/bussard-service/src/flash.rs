@@ -391,9 +391,10 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 
 /// The factory reset of a full download (issues #79, #117): a device that
 /// carries another application, or whose state could not be read, is reset
-/// before the download, on top of the reset the planner adds for a sparse,
-/// filled-segment download. `freshness` is `None` offline (a dry run), where
-/// only the planner's own reset shows. `no_factory_reset` waives it.
+/// before the download. The planner adds none of its own (issue #1081), so a
+/// fresh device and one with the same application get no reset, as from ETS.
+/// `freshness` is `None` offline (a dry run), where no reset shows.
+/// `no_factory_reset` waives it.
 ///
 /// ETS's System 7 pre-download pass ([`FlashPlan::skip_sys7_prelude`], issue
 /// #488: unload LSMs 1 to 4, basic restart) stays only with `unload_first`
@@ -435,11 +436,12 @@ pub fn apply_freshness(
 /// matches (the ETS group-B differential download): only when the device
 /// carries no application or the same one, never with `full`, and never
 /// when the plan erases resident objects (a factory reset, or a product
-/// Master Reset with an erasing code, issue #623; see
-/// [`FlashPlan::erases_resident_objects`]).
+/// Master Reset with an erasing code, issue #623) or writes a filled segment
+/// sparsely with a confirmed restart (issue #1081); see
+/// [`FlashPlan::allows_resident_skip`].
 pub fn skip_unchanged(full: bool, plan: &FlashPlan, freshness: &Freshness) -> bool {
     !full
-        && !plan.erases_resident_objects()
+        && plan.allows_resident_skip()
         && matches!(
             freshness,
             Freshness::Fresh | Freshness::SameApplication { .. }

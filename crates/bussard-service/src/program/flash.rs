@@ -449,9 +449,12 @@ pub async fn execute(
     let plan = exec.plan;
     if plan.has_factory_reset() {
         observer.event(Event::Note(Note::Warn(
-            "factory reset: the device's application, parameters and links are erased before the \
-             download (its individual address is kept); every object is streamed in full. Pass \
-             --no-factory-reset only when the device is known to hold no stale image."
+            "factory reset (erase code 7) before the download: the device returns to its \
+             ex-factory state, erasing its application, parameters, links, application data and \
+             access keys, and on a Data Secure device its key tables and security address table \
+             (its factory key becomes active again); its individual address is kept. Every \
+             object is streamed in full. ETS sends no such reset in any captured download; pass \
+             --no-factory-reset to run the procedure's own unloads instead."
                 .to_string(),
         )));
     }

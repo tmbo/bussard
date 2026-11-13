@@ -809,8 +809,8 @@ VARIANTS: dict[str, dict] = {
                "doc": "a defaults download, then the same application again over the loaded device; "
                       "the capture is the second download (#488; on syn-secure the second download runs over "
                       "the device the first one activated, with ETS's tool key, #1054; on syn-minimal and "
-                      "syn-secure-fill over a programmed System B device, where bussard opens a sparse "
-                      "secure download with a factory reset, #1056, #1081)"},
+                      "syn-secure-fill over a programmed System B device, where ETS sends no factory reset, "
+                      "#1056, #1081)"},
     "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
                          "over it; the capture is the second download (#488)"},

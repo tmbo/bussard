@@ -66,7 +66,7 @@ next to it, and zips it on demand.
 | [`syn-s7-static-split`](syn-s7-static-split/product.toml) | `NEST-FORK` | 0705 | static split of the parameter AbsSegment, a parameter in the gap | #657, #411 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-secure`](syn-secure/product.toml) | `NEST-GUARD` | 07B0 | KNX Data Secure capable 07B0, factory state with a synthetic FDSK | #423, #537, #201 |
-| [`syn-secure-fill`](syn-secure-fill/product.toml) | `NEST-BOLT` | 07B0 | Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard plans a factory reset) | #1081, #1056, #423 |
+| [`syn-secure-fill`](syn-secure-fill/product.toml) | `NEST-BOLT` | 07B0 | Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard planned a factory reset ETS does not send, removed in #1081) | #1081, #1056, #423 |
 | [`syn-secure-property`](syn-secure-property/product.toml) | `NEST-WARDEN` | 07B0 | Data Secure capable, a parameter placed in a property | #1054, #1041, #669 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
@@ -285,7 +285,7 @@ manifest entry. The variants and their products are `VARIANTS` in
 | --- | --- | --- | --- |
 | `no-ga` | `syn-minimal` | the application, no group address linked (#542) | a flash row, as `defaults` |
 | `links` | `syn-minimal`, `syn-secure` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540); on `syn-secure` 1/0/2 is set plain (driver `ga_security`), the others stay secured (#1054) | `dir=` the model template with those links |
-| `reload` | `syn-s7-0705`, `syn-s7-0701`, `syn-secure`, `syn-minimal`, `syn-secure-fill` | the application, then the same application again (#488); on `syn-secure` and `syn-secure-fill` the second download meets the device the first one activated (#1054); on the 07B0 products it is ETS's download over a programmed System B device, where bussard opens a sparse secure download with a factory reset (#1056, #1081) | `state=loaded` (System 7) |
+| `reload` | `syn-s7-0705`, `syn-s7-0701`, `syn-secure`, `syn-minimal`, `syn-secure-fill` | the application, then the same application again (#488); on `syn-secure` and `syn-secure-fill` the second download meets the device the first one activated (#1054); on the 07B0 products it is ETS's download over a programmed System B device, where ETS sends no factory reset (#1056, #1081) | `state=loaded` (System 7) |
 | `other-app` | `syn-s7-0705`, `syn-s7-0701`, `syn-minimal` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`, `syn-hidden-default`), then this application (#488, #1056) | `state=loaded` (System 7) |
 | `partial` | `syn-minimal`, `syn-property-param`, `syn-property-nopar`, `syn-trailing-writeprop`, `syn-s7-0705`, `syn-secure` | the application, then one parameter changed in ETS's parameter editor and ETS's partial download (#543, #490; #944, #1052, #1038, #1054) | `run=params base=` the first download, `dir=` the model template |
 | `apply` | `syn-minimal`, `syn-secure`, `syn-s7-0705`, `syn-relseg-fill` | the application with 1/0/1 and 1/0/3 linked, then 1/0/2 linked and ETS's partial download (#829, #469) | `run=apply base=` the first download, `dir=` the model template |

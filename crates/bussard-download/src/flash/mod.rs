@@ -601,14 +601,20 @@ pub enum FlashStep {
     /// answers `A_Restart_Response` with a process time, and reboots. The engine
     /// waits out the process time and reconnects before the next step.
     ///
-    /// Not a load-procedure op: the planner inserts it before the first
-    /// `Unload` when the application's [`restart_form`] is confirmed (issue
-    /// #452) and the download allocates a filled segment and writes only the
-    /// octets that differ from the fill (a re-flash would otherwise inherit the
-    /// previous image's octets wherever the new one writes nothing), and the CLI
-    /// adds it when a device that is not factory-fresh is flashed. ETS opens an
-    /// initial System B download the same way (`4f 81 07 00`, answered
-    /// `4f a1 00 00 08`).
+    /// Not a load-procedure op, and never planned by [`plan_flash`]:
+    /// [`FlashPlan::require_factory_reset`] adds it when the pre-flight probe
+    /// finds another application on the device or cannot read its state, and
+    /// only where the application's [`restart_form`] is confirmed (issue
+    /// #452). A sparse write of a filled segment needs no reset (issue #1081):
+    /// the allocation with the fill flag has the device fill the segment, and
+    /// ETS sends no reset on a fresh or a programmed device
+    /// (`captures/synthetic/syn-secure-fill/defaults` and `/reload`). No
+    /// captured ETS download sends it; the house captures that contain one
+    /// (`4f 81 07 00`, answered `4f a1 00 00 08`, before any read of the
+    /// application) are consistent with an explicit reset. No capture covers a
+    /// secure-capable device with another application, after an unload or
+    /// after an address assignment, so the reset kept here is not confirmed
+    /// by a capture.
     FactoryReset {
         /// The master-reset erase code (7 = factory reset keeping the individual
         /// address).
@@ -1501,9 +1507,30 @@ impl FlashPlan {
         })
     }
 
-    /// Adds a [`FlashStep::FactoryReset`] (erase code 7) before the first
-    /// `Unload`, unless the plan already has one. The CLI calls this when the
-    /// device is not factory-fresh. A no-op on a System 7 plan, whose download
+    /// Whether the executor may skip an object whose resident image already
+    /// matches (the resident-MCB skip, issue #73 item 2): not when a step
+    /// erases resident objects ([`FlashPlan::erases_resident_objects`]), and
+    /// not on a secure-capable plan that writes a filled segment sparsely
+    /// (issue #1081). On the latter ETS re-runs the whole procedure over a
+    /// device that holds the same application (`captures/synthetic/
+    /// syn-secure-fill/reload`: unloads 5 to 1, the filled allocation, every
+    /// write), and the skip would leave a bare `PID_PROGRAM_VERSION` write to
+    /// a `Loaded` object and an unload of object 5 without its reload, which
+    /// no capture shows a device accepting; such plans kept the full
+    /// procedure before #1081 through their factory reset and keep it now.
+    pub fn allows_resident_skip(&self) -> bool {
+        let sparse = self.steps.iter().any(
+            |s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()),
+        );
+        !self.erases_resident_objects() && !(sparse && self.confirmed_restart)
+    }
+
+    /// Adds a [`FlashStep::FactoryReset`] (erase code 7) after the read-only
+    /// preconditions and before the first `Unload`, unless the plan already
+    /// has one. The service calls this for a device that holds another
+    /// application or whose state could not be read; no captured ETS download
+    /// sends such a reset (issue #1081), so it is not confirmed by a capture.
+    /// A no-op on a System 7 plan, whose download
     /// rewrites every region in full, and on a plan whose application gets the
     /// basic restart ([`restart_form`]).
     pub fn require_factory_reset(&mut self) {
@@ -1520,6 +1547,9 @@ impl FlashPlan {
             && !self.is_property_only()
         {
             insert_factory_reset(&mut self.steps);
+            // The reset ends the connection: a property the procedure
+            // touches after it is described again on the new one.
+            self.redescribe();
         }
     }
 
@@ -1581,8 +1611,9 @@ impl FlashPlan {
             .any(|s| matches!(s, FlashStep::Sys7PreDownloadRestart { .. }))
     }
 
-    /// Removes the [`FlashStep::FactoryReset`] step (`flash --no-factory-reset`).
-    /// Only safe when the device is known to hold no stale image.
+    /// Removes the [`FlashStep::FactoryReset`] step (`flash --no-factory-reset`):
+    /// the download then runs the procedure's own unloads over what the
+    /// device holds, as ETS's download does.
     pub fn skip_factory_reset(&mut self) {
         self.steps
             .retain(|s| !matches!(s, FlashStep::FactoryReset { .. }));

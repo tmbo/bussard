@@ -134,7 +134,7 @@ For most parameters this is enough. The write backs up the parameter memory to `
 ## Write it with a full flash
 
 !!! warning
-    A full flash rewrites the device's application, parameters and links. On a System B device that supports Secure it usually starts with a factory reset that erases everything but the device's address. Try it on a spare device or the simulator first.
+    A full flash rewrites the device's application, parameters and links. When a System B device that supports Secure runs another application, the flash starts with a factory reset that erases everything but the device's address. Try it on a spare device or the simulator first.
 
 === "In chat"
 
