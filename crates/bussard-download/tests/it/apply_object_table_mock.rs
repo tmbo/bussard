@@ -1,6 +1,8 @@
 //! Issue #540: a System B `apply` that links an object the last flash left
 //! unlinked reloads the group-object table, so the object's Communication
-//! flag is set and the device acts on the new link.
+//! flag is set and the device acts on the new link. With a link change the
+//! table is reloaded by the master data's partial download of the three
+//! tables, in ETS's order (issue #1095).
 //!
 //! The application is synthetic (bussard's own, no vendor data): three
 //! com-objects and a load procedure that writes the address, association and
@@ -26,7 +28,7 @@ use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::schema::{Link, Links};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_product::application::{ApplicationProgram, parse_application_program};
-use bussard_testkit::{BoxError, MockDevice, MockGateway, TestResult};
+use bussard_testkit::{BoxError, MockDevice, MockGateway, Reaction, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
 
 use crate::support::plan_flash_default;
@@ -39,6 +41,10 @@ const PID_LOAD_STATE_CONTROL: u8 = 5;
 /// The load events of `PID_LOAD_STATE_CONTROL` (KNX 3/5/1).
 const LE_START_LOADING: u8 = 1;
 const LE_LOAD_COMPLETED: u8 = 2;
+const LE_ADDITIONAL: u8 = 3;
+const LE_UNLOAD: u8 = 4;
+/// `A_Memory_Write` (KNX 3/3/7), the APCI with its length bits cleared.
+const A_MEMORY_WRITE: u16 = 0x280;
 
 /// The Communication flag of a group-object descriptor word (bit 10).
 const COMMUNICATION: u16 = 1 << 10;
@@ -225,7 +231,7 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
         "{change:?}"
     );
 
-    // The write: the group-object table first, then the link tables.
+    // The write: the master data's partial download of the three tables.
     let objects = discover_table_objects(&mut l4).await?;
     let desired = compute_tables(&links(&[(1, "1/0/1"), (2, "1/0/2")])?);
     let outcome = apply_tables(
@@ -239,12 +245,18 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
     )
     .await?;
     let _ = l4.disconnect().await;
+    // The read-back: both link tables and the group-object table as written.
     assert!(outcome.ok(), "{outcome:?}");
+    assert!(outcome.addresses_match && outcome.associations_match);
     let reload = outcome
         .object_table
         .as_ref()
         .ok_or("the outcome reports the reload")?;
     assert!(reload.ok(), "{reload:?}");
+    assert!(
+        outcome.restarted,
+        "the partial download ends with a restart"
+    );
 
     // The device holds the model's table, object 2 communicating.
     let devices = gw.devices()?;
@@ -255,23 +267,101 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
     assert_eq!(held, wanted_image);
     assert_ne!(word(&held, 2) & COMMUNICATION, 0);
     assert_eq!(device.load_state(3), 1, "the object table is Loaded");
+    assert_eq!(device.restarts, 1, "one basic restart");
 
-    // Object 3 is opened and completed before either link table is opened.
+    // ETS's order (issue #1095, `captures/synthetic/syn-minimal/apply`):
+    // unload 3, 2, 1; open 3, 1, 2 each with its allocation; complete 3, 2, 1.
     let loads = loads.lock().map_err(|_| "load log poisoned")?.clone();
     assert_eq!(
-        loads.first(),
-        Some(&(3, LE_START_LOADING)),
-        "the object table loads first: {loads:?}"
+        loads,
+        vec![
+            (3, LE_UNLOAD),
+            (2, LE_UNLOAD),
+            (1, LE_UNLOAD),
+            (3, LE_START_LOADING),
+            (3, LE_ADDITIONAL),
+            (1, LE_START_LOADING),
+            (1, LE_ADDITIONAL),
+            (2, LE_START_LOADING),
+            (2, LE_ADDITIONAL),
+            (3, LE_LOAD_COMPLETED),
+            (2, LE_LOAD_COMPLETED),
+            (1, LE_LOAD_COMPLETED),
+        ]
     );
-    let completed = loads
-        .iter()
-        .position(|&l| l == (3, LE_LOAD_COMPLETED))
-        .ok_or("the object table is completed")?;
-    let link_start = loads
-        .iter()
-        .position(|&(o, e)| o != 3 && e == LE_START_LOADING)
-        .ok_or("the link tables are loaded")?;
-    assert!(completed < link_start, "{loads:?}");
+    Ok(())
+}
+
+/// The partial download's read-back finds the group-object table the device
+/// acknowledged and did not store: the outcome is not ok, and the device is
+/// not restarted (issue #1095; a silent success is the P1 of CLAUDE.md).
+#[tokio::test]
+async fn test_apply_tables_with_a_dropped_object_table_write_does_not_verify() -> TestResult {
+    let app = app()?;
+    let before = model(&[(1, "1/0/1")])?;
+    let after = model(&[(1, "1/0/1"), (2, "1/0/2")])?;
+    let flashed_image = object_table_image(&flash_plan(&app, &before)?)
+        .ok_or("the flash plan writes the group-object table")?
+        .to_vec();
+    let wanted_image = object_table_image(&flash_plan(&app, &after)?)
+        .ok_or("the flash plan writes the group-object table")?
+        .to_vec();
+    let old = compute_tables(&links(&[(1, "1/0/1")])?);
+    let base = bussard_testkit::device::segment_base_for(3);
+    let device = MockDevice::system_b(target()?)
+        .with_table(1, &table(&old.address_elements(), 2))
+        .with_table(2, &table(&old.association_elements(), 4))
+        .with_table(3, &flashed_image)
+        .with_hook(move |_, apci, data| {
+            // A memory write into the group-object table's segment: the
+            // transport acknowledges it, the device keeps the old table.
+            let address = u32::from(u16::from_be_bytes([*data.first()?, *data.get(1)?]));
+            (apci & 0x3F0 == A_MEMORY_WRITE && (base..base + 0x800).contains(&address))
+                .then_some(Reaction::Ack)
+        });
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        .device(device)
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let objects = discover_table_objects(&mut l4).await?;
+    let desired = compute_tables(&links(&[(1, "1/0/1"), (2, "1/0/2")])?);
+    let outcome = apply_tables(
+        &mut l4,
+        objects,
+        &desired,
+        SystemBLoad {
+            object_table: Some(&wanted_image),
+            ..SystemBLoad::default()
+        },
+    )
+    .await?;
+    let _ = l4.disconnect().await;
+    // The link tables verified; the group-object table did not.
+    assert!(outcome.addresses_match && outcome.associations_match);
+    let reload = outcome
+        .object_table
+        .as_ref()
+        .ok_or("the outcome reports the reload")?;
+    assert!(!reload.matches, "{reload:?}");
+    assert!(!outcome.ok(), "{outcome:?}");
+    assert!(
+        !outcome.restarted,
+        "no restart after a write that did not verify"
+    );
+    let devices = gw.devices()?;
+    let device = devices.first().ok_or("the device")?;
+    assert_eq!(device.restarts, 0);
+    assert_ne!(device.table_image(3), Some(wanted_image));
     Ok(())
 }
 

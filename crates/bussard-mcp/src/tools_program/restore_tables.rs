@@ -188,6 +188,9 @@ fn tables_only_plan(
         ),
         octet_ranges: Vec::new(),
         object_table: None,
+        // A restore writes the backup's tables, not the model's: the
+        // group-object table stays as it is.
+        object_table_image: None,
     }
 }
 

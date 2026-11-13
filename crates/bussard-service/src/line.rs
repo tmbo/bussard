@@ -679,6 +679,7 @@ async fn visit(
         desired,
         tables_change,
         object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
+        group_object_image: object_table.as_ref().map(|check| check.model.as_slice()),
         images: images.as_ref(),
         security: security.as_ref(),
         parameters: None,
@@ -701,9 +702,10 @@ async fn visit(
             backed_up(&format!("did not verify: {}", one_line(&summary.detail))),
         ),
         crate::program::apply::TablesWritten::Ran(summary) if summary.restarted => {
-            // A System 7 write ends with a basic restart: wait for the device,
-            // then read its tables back on a fresh connection, which also shows
-            // the write survived the restart.
+            // A System 7 write ends with a basic restart, the System B partial
+            // download of the three tables with its restart (issue #1095):
+            // wait for the device, then read its tables back on a fresh
+            // connection, which also shows the write survived the restart.
             match verify_after_restart(
                 service,
                 source,
@@ -836,7 +838,8 @@ fn table_bases(product: Option<&ProductSource>) -> bussard_download::Sys7TableBa
         .unwrap_or_default()
 }
 
-/// After a System 7 write's closing restart: waits for the device to answer
+/// After a write's closing restart (System 7, or the System B partial
+/// download, issue #1095): waits for the device to answer
 /// again as `mask`, reads its tables back and checks they and the
 /// communication flags match `desired`.
 #[allow(clippy::too_many_arguments)] // the read phase's inputs plus what to compare

@@ -379,7 +379,8 @@ pub struct TableWriteSummary {
     pub association_state: LoadState,
     /// The full outcome, for a report when something did not verify.
     pub detail: String,
-    /// Whether the write ended with a restart (System 7, after it verified):
+    /// Whether the write ended with a restart (System 7, and the System B
+    /// partial download of the three tables, issue #1095; after it verified):
     /// the device drops off the bus while it starts, so the caller waits for
     /// it to answer again before the next connection.
     pub restarted: bool,
@@ -426,7 +427,7 @@ pub async fn write_tables<Ch: L4Channel>(
                 address_state: v.address_state,
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
-                restarted: false,
+                restarted: v.restarted,
                 object_table: v.object_table.clone(),
             })
             .map_err(|e| e.to_string()),

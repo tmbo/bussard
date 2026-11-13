@@ -906,6 +906,11 @@ pub struct BuiltPlan {
     /// `None` when it matches, was not compared, or a full download is
     /// needed anyway.
     pub object_table: Option<Vec<u8>>,
+    /// The System B group-object table image the full flash writes, whether
+    /// or not the device's differs: the partial download of a link change
+    /// writes it with the link tables (issue #1095). `None` on System 7,
+    /// without product data, and when a full download is needed anyway.
+    pub object_table_image: Option<Vec<u8>>,
 }
 
 /// A run of parameter octets a plan writes, in the model's words (issue
@@ -1643,6 +1648,21 @@ pub fn build_device_plan(
     let communication_flags = sys7_flag_plan(live, report, &mut notes);
     let (group_object_table, object_table, object_table_read) =
         object_table_plan(live, report, params, needs_flash.is_some(), &mut notes);
+    let object_table_image = params
+        .and_then(|p| p.detail.as_ref())
+        .and_then(|d| d.object_table.as_ref())
+        .filter(|_| live.sys7().is_none() && needs_flash.is_none())
+        .map(|check| check.model.clone());
+    // A link change reloads the group-object table with the link tables and
+    // ends with a restart, the master data's partial download (issue #1095).
+    let group_download = tables_change && object_table_image.is_some();
+    let group_object_table = match (&group_object_table, &object_table_image) {
+        (None, Some(image)) if group_download => Some(ObjectTableWrite {
+            entries: bussard_download::table_entry_count(image),
+            objects: Vec::new(),
+        }),
+        _ => group_object_table,
+    };
     let writes = PlanWrites {
         address_table: tables_change.then_some(report.resulting_address_count),
         association_table: tables_change.then_some(report.resulting_association_count),
@@ -1661,9 +1681,10 @@ pub fn build_device_plan(
         interface_properties: Vec::new(),
         // A System 7 table write ends with a basic restart, as ETS's does; a
         // full download names its own.
-        restart: live.sys7().is_some()
+        restart: (live.sys7().is_some()
             && needs_flash.is_none()
-            && (tables_change || !communication_flags.is_empty()),
+            && (tables_change || !communication_flags.is_empty()))
+            || group_download,
         communication_flags,
         group_object_table,
     };
@@ -1707,6 +1728,7 @@ pub fn build_device_plan(
         parameters_skipped,
         octet_ranges,
         object_table,
+        object_table_image,
     }
 }
 

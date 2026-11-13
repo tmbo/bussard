@@ -32,7 +32,20 @@
 //! (`table_image`) — the same layout [`read_tables`]'s memory path reads back,
 //! so the verification agrees whichever path the device serves.
 //!
-//! # Op-sequence ordering (decision + rationale)
+//! # The partial download of the three tables (issue #1095)
+//!
+//! With the group-object table image known (product data, a link change),
+//! `apply` runs the System B partial download "Group Communication" (KNX
+//! 03_05_03 §3.9.3.5, the master data's `ProcedureSubType="grp"`), the one
+//! ETS runs for a link change: unload the group-object,
+//! association and address tables, reload all three (the group-object table
+//! even when its image is unchanged), complete them and restart. The order is
+//! on [`write_group_tables`]; the evidence is `captures/synthetic/syn-minimal/apply`
+//! and `captures/synthetic/syn-secure/apply`. The sequence below remains for
+//! a device without product data, whose group-object table bussard cannot
+//! build.
+//!
+//! # Op-sequence ordering without product data (decision + rationale)
 //!
 //! The two tables are coupled: the **association table**'s TSAP column indexes
 //! the **group-address table**. A naive "shrink the address table, then fix up
@@ -123,6 +136,10 @@ pub struct VerifyOutcome {
     /// The group-object table reload, when the write carried one (issue
     /// #540): its load state and whether it read back as written.
     pub object_table: Option<ObjectTableOutcome>,
+    /// Whether the write ended with the restart of the master data's partial
+    /// download (issue #1095): sent only after everything verified, so the
+    /// caller waits for the device and reads it back again.
+    pub restarted: bool,
 }
 
 impl VerifyOutcome {
@@ -167,6 +184,11 @@ pub struct SystemBLoad<'a> {
     /// The application does not announce extended memory services: a table
     /// above `0xFFFF` is written and read with `A_UserMemory_*` (issue #472).
     pub user_memory_above_64k: bool,
+    /// The partial download ends with the confirmed restart (master reset,
+    /// erase code 1) instead of the basic one: a secure-capable System B
+    /// application, as for the full download
+    /// ([`crate::flash::restart_form`]).
+    pub confirmed_restart: bool,
 }
 
 /// Discovers the two table objects' indexes by probing `PID_OBJECT_TYPE`.
@@ -211,8 +233,14 @@ pub async fn discover_table_objects<Ch: L4Channel>(
 /// at the wrong entries. See
 /// [`program_security_object`](crate::security::program_security_object).
 ///
-/// When `load` carries the group-object table image (issue #540), that table
-/// goes first, in its own `StartLoading` / `LoadCompleted` bracket
+/// When `load` carries the group-object table image and the link tables
+/// change, the three tables are written by the master data's partial
+/// download ([`write_group_tables`], issue #1095), which ends with a restart
+/// ([`VerifyOutcome::restarted`]).
+///
+/// When `load` carries the group-object table image (issue #540) and the
+/// link tables stay, that table is reloaded in its own `StartLoading` /
+/// `LoadCompleted` bracket
 /// ([`crate::object_table::write_object_table`], the standard's partial
 /// download of the table, 03_05_03 §3.5.3), and is read back before the link
 /// tables are opened. A newly linked object thus has its Communication flag
@@ -232,17 +260,21 @@ pub async fn apply_tables<Ch: L4Channel>(
     negotiate_session_apdu(l4).await?;
     l4.set_user_memory_above_64k(load.user_memory_above_64k);
 
+    // The link tables change and the group-object table image is known: the
+    // master data's partial download of the three tables (issue #1095).
+    if let (Some(image), false) = (load.object_table, load.keep_tables) {
+        let index = object_table_index(l4).await?;
+        let group = GroupTables {
+            objects,
+            object_table: index,
+            object_image: image,
+        };
+        return write_group_tables(l4, group, desired, load).await;
+    }
+
     let object_table = match load.object_table {
         Some(image) => {
-            let index = crate::object_table::find_object_table(l4)
-                .await?
-                .ok_or_else(|| {
-                    WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
-                        address: l4.target(),
-                        reason: "device is missing the group-object table object (type 9)"
-                            .to_string(),
-                    })
-                })?;
+            let index = object_table_index(l4).await?;
             Some(crate::object_table::write_object_table(l4, index, image).await?)
         }
         None => None,
@@ -259,6 +291,7 @@ pub async fn apply_tables<Ch: L4Channel>(
             addresses_match: read_back.addresses == desired.addresses,
             associations_match: read_back.associations == desired.associations,
             object_table,
+            restarted: false,
         });
     }
     let mut outcome = write_link_tables(l4, objects, desired, load.security).await?;
@@ -335,7 +368,189 @@ async fn write_link_tables<Ch: L4Channel>(
         addresses_match,
         associations_match,
         object_table: None,
+        restarted: false,
     })
+}
+
+/// The group-object table (interface object type 9) of the device, refused
+/// when the device has none.
+async fn object_table_index<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<u8, WriteError> {
+    crate::object_table::find_object_table(l4)
+        .await?
+        .ok_or_else(|| {
+            WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "device is missing the group-object table object (type 9)".to_string(),
+            })
+        })
+}
+
+/// The three table objects of the partial download and the group-object
+/// table image it writes.
+#[derive(Debug, Clone, Copy)]
+struct GroupTables<'a> {
+    /// The address and association table objects.
+    objects: TableObjectIndexes,
+    /// The group-object table object.
+    object_table: u8,
+    /// The group-object table image (count word and descriptors).
+    object_image: &'a [u8],
+}
+
+/// The partial download of the address, association and group-object tables
+/// (issue #1095): KNX 03_05_03 §3.9.3.5, Partial Download "Group
+/// Communication", which every `knx_master.xml` declares for the System B
+/// masks as `ProcedureSubType="grp"` and ETS runs for a link change
+/// (`captures/synthetic/syn-minimal/apply`, ETS 6.4.1):
+///
+/// 1. `Unload` the group-object, association and address tables (LSM 3, 2,
+///    1); on a Data Secure device the security object's `Unload` follows.
+/// 2. `StartLoading` and `LdCtrlRelSegment` of the group-object table, the
+///    address table, then the association table.
+/// 3. The group-object table image, then the association table image
+///    (`LdCtrlWriteRelMem` 3, 2). A Data Secure device's security object is
+///    loaded next ([`crate::security::load_security_program`]), between the
+///    association and the address table, where
+///    `captures/synthetic/syn-secure/apply` has it.
+/// 4. The address table image (`LdCtrlWriteRelMem` 1).
+/// 5. `LoadCompleted` of the group-object, association and address tables.
+/// 6. The three tables read back and compared with what was written; only
+///    when all of it verified, the restart that ends the procedure
+///    (`LdCtrlRestart`), in the application's form
+///    ([`SystemBLoad::confirmed_restart`]).
+///
+/// Every refusal that needs no write (the security program's capacity, the
+/// association table format) comes before the first `Unload`.
+async fn write_group_tables<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    group: GroupTables<'_>,
+    desired: &DesiredTables,
+    load: SystemBLoad<'_>,
+) -> Result<VerifyOutcome, WriteError> {
+    let objects = group.objects;
+    let addr_elems = desired.address_elements();
+    let assoc_elems = desired.association_elements();
+    let security_program = match load.security {
+        Some(inputs) => {
+            Some(crate::security::prepare_security_program(l4, &desired.addresses, inputs).await?)
+        }
+        None => None,
+    };
+    let pdt = bussard_mgmt::tables::read_association_pdt(l4, objects.association).await;
+    bussard_mgmt::tables::check_association_pdt(l4.target(), pdt).map_err(|e| {
+        WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: e.to_string(),
+        })
+    })?;
+
+    // 1: unload the three tables, then the security object.
+    write_load_control(l4, group.object_table, LoadControl::Unload).await?;
+    write_load_control(l4, objects.association, LoadControl::Unload).await?;
+    write_load_control(l4, objects.address, LoadControl::Unload).await?;
+    if security_program.is_some() {
+        crate::security::security_transition(l4, LoadControl::Unload)
+            .await
+            .map_err(|err| crate::security::left_not_loaded(l4.target(), err))?;
+    }
+
+    // 2 + 3: open each table with its allocation, write the group-object and
+    // association images, then load the security object. Until it is loaded
+    // a failure leaves a Data Secure device deaf on its secured addresses,
+    // and the error says so (issue #534).
+    let opened: Result<load::SegmentAllocation, WriteError> = async {
+        write_load_control(l4, group.object_table, LoadControl::StartLoading).await?;
+        let object_seg = allocate_segment(
+            l4,
+            group.object_table,
+            group.object_image.len() as u32,
+            0,
+            0,
+        )
+        .await?;
+        write_load_control(l4, objects.address, LoadControl::StartLoading).await?;
+        let addr_seg = allocate_table_segment(l4, objects.address, &addr_elems).await?;
+        write_load_control(l4, objects.association, LoadControl::StartLoading).await?;
+        let assoc_seg = allocate_table_segment(l4, objects.association, &assoc_elems).await?;
+        write_memory_chunked(l4, object_seg.address, group.object_image, |_| {}).await?;
+        write_table_image(l4, assoc_seg, ASSOCIATION_ELEM_SIZE, &assoc_elems).await?;
+        if let Some(program) = &security_program {
+            crate::security::load_security_program(l4, program).await?;
+        }
+        Ok(addr_seg)
+    }
+    .await;
+    let addr_seg = match opened {
+        Ok(seg) => seg,
+        Err(err) if security_program.is_some() => {
+            return Err(crate::security::left_not_loaded(l4.target(), err));
+        }
+        Err(err) => return Err(err),
+    };
+
+    // 4: the address image.
+    write_table_image(l4, addr_seg, ADDRESS_ELEM_SIZE, &addr_elems).await?;
+
+    // 5: complete the three loads.
+    let object_state =
+        write_load_control(l4, group.object_table, LoadControl::LoadCompleted).await?;
+    let association_state =
+        write_load_control(l4, objects.association, LoadControl::LoadCompleted).await?;
+    let address_state = write_load_control(l4, objects.address, LoadControl::LoadCompleted).await?;
+
+    // 6: read all three back, then restart only what verified.
+    let read_back = read_tables(l4)
+        .await
+        .map_err(|e| WriteError::Mgmt(map_tables_err(e)))?;
+    let entries = crate::object_table::image_count(group.object_image);
+    let object_back =
+        crate::object_table::read_object_table_at(l4, group.object_table, entries).await?;
+    let mut outcome = VerifyOutcome {
+        address_state,
+        association_state,
+        addresses_match: read_back.addresses == desired.addresses,
+        associations_match: read_back.associations == desired.associations,
+        object_table: Some(ObjectTableOutcome {
+            state: object_state,
+            matches: object_back.matches(group.object_image),
+            entries,
+        }),
+        restarted: false,
+    };
+    if outcome.ok() {
+        restart(l4, load.confirmed_restart).await?;
+        outcome.restarted = true;
+    }
+    Ok(outcome)
+}
+
+/// The restart that ends the partial download (`LdCtrlRestart`): the bare
+/// `A_Restart`, which a device never answers, or the confirmed one (master
+/// reset, erase code 1), whose refusal fails the write as it fails ETS's
+/// (see [`crate::flash::restart_form`]). A confirmed restart left unanswered
+/// is judged by the caller's wait for the device and its read-back.
+async fn restart<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    confirmed: bool,
+) -> Result<(), WriteError> {
+    if !confirmed {
+        let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
+        return l4
+            .send_data_unacked(apci, &payload)
+            .await
+            .map_err(WriteError::Mgmt);
+    }
+    match bussard_mgmt::master_reset(l4, bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART, 0).await
+    {
+        Ok(_) => Ok(()),
+        Err(err @ WriteError::RestartRefused { .. }) => Err(err),
+        Err(err) => {
+            tracing::debug!(%err, "confirmed restart not answered; the read-back decides");
+            Ok(())
+        }
+    }
 }
 
 /// Reads `PID_MAX_APDU_LENGTH` (device object, PID 56) once for this session so
@@ -445,6 +660,7 @@ mod tests {
             addresses_match: true,
             associations_match: true,
             object_table: None,
+            restarted: false,
         };
         assert!(base.ok());
 

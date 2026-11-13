@@ -1872,6 +1872,7 @@ impl BussardMcp {
                 desired: &desired,
                 tables_change,
                 object_table: built.object_table.as_deref(),
+                group_object_image: built.object_table_image.as_deref(),
                 images: images.as_ref(),
                 security: security.as_ref(),
                 parameters: param_write,

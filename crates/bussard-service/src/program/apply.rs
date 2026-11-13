@@ -172,8 +172,14 @@ pub struct ApplyRequest<'a> {
     /// Whether the link tables are rewritten (otherwise only the group-object
     /// table is reloaded, when `object_table` is given).
     pub tables_change: bool,
-    /// The System B group-object table image to reload (issue #540).
+    /// The System B group-object table image to reload alone, because the
+    /// device's differs and the link tables stay (issue #540).
     pub object_table: Option<&'a [u8]>,
+    /// The System B group-object table image the full flash writes: a link
+    /// change writes it with the link tables, by the master data's partial
+    /// download, which ends with a restart (issue #1095). `None` without
+    /// product data, where only the link tables are written.
+    pub group_object_image: Option<&'a [u8]>,
     /// The System 7 table images.
     pub images: Option<&'a Sys7TableImages>,
     /// The security object a secured System B write reprograms.
@@ -269,7 +275,7 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
     Expected {
         tables: Some(req.desired.clone()),
         group_objects: None,
-        object_table: req.object_table.map(<[u8]>::to_vec),
+        object_table: written_object_table(req).map(<[u8]>::to_vec),
         parameters: written_params.and_then(|_| {
             let product = req.product?;
             product.app().map(|app| ExpectedParameters {
@@ -288,6 +294,16 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
             .map(|(_, detail)| ExpectedProperty::from_checked(&detail.plan))
             .unwrap_or_default(),
         table_bases: super::read::table_bases(req.product),
+    }
+}
+
+/// The group-object table image a write of `req` sends: with a link change
+/// the image the partial download reloads with the link tables (issue #1095),
+/// else the reload of a table that differs (issue #540).
+fn written_object_table<'a>(req: &ApplyRequest<'a>) -> Option<&'a [u8]> {
+    match req.group_object_image {
+        Some(image) if req.tables_change && req.images.is_none() => Some(image),
+        _ => req.object_table,
     }
 }
 
@@ -426,11 +442,15 @@ async fn lease_and_write(req: &ApplyRequest<'_>) -> TablesWritten {
             crate::secure::layer(&req.tool_key, &req.high_water),
             bussard_download::SystemBLoad {
                 security: req.security,
-                object_table: req.object_table,
+                object_table: written_object_table(req),
                 keep_tables: !req.tables_change,
                 user_memory_above_64k: bussard_download::uses_user_memory(
                     req.product.and_then(ProductSource::app),
                 ),
+                confirmed_restart: req
+                    .product
+                    .and_then(ProductSource::app)
+                    .is_some_and(|app| bussard_download::restart_form(app).is_confirmed()),
             },
             req.seed.clone(),
         )

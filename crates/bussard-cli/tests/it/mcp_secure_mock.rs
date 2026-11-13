@@ -1756,3 +1756,90 @@ fn test_mcp_write_reads_pid54_on_an_unknown_admission_then_refuses() -> TestResu
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// [`APP_XML`] with group object 0 and a load procedure that writes the
+/// address, association and group-object tables, so `apply` of a link
+/// change runs the partial download of the three tables (issue #1095).
+fn object_zero_xml() -> String {
+    let tables: String = (1..=3)
+        .map(|i| {
+            format!(
+                "<LdCtrlLoad LsmIdx=\"{i}\" /><LdCtrlRelSegment LsmIdx=\"{i}\" Size=\"2\" \
+                 Mode=\"0\" Fill=\"0\" /><LdCtrlWriteRelMem ObjIdx=\"{i}\" Offset=\"0\" \
+                 Size=\"2\" /><LdCtrlLoadCompleted LsmIdx=\"{i}\" />"
+            )
+        })
+        .collect();
+    APP_XML
+        .replace(
+            r#"<ComObject Id="M-00FA_A-0002_O-1""#,
+            r#"<ComObject Id="M-00FA_A-0002_O-0" Number="0" ObjectSize="1 Byte" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+              <ComObject Id="M-00FA_A-0002_O-1""#,
+        )
+        .replace(
+            r#"<ComObjectRef Id="M-00FA_A-0002_O-1_R-1""#,
+            r#"<ComObjectRef Id="M-00FA_A-0002_O-0_R-0" RefId="M-00FA_A-0002_O-0" />
+              <ComObjectRef Id="M-00FA_A-0002_O-1_R-1""#,
+        )
+        .replace(
+            r#"<ComObjectRefRef RefId="M-00FA_A-0002_O-1_R-1" />"#,
+            r#"<ComObjectRefRef RefId="M-00FA_A-0002_O-0_R-0" /><ComObjectRefRef RefId="M-00FA_A-0002_O-1_R-1" />"#,
+        )
+        .replace(
+            r#"<LdCtrlUnload LsmIdx="4" />"#,
+            &format!(
+                "<LdCtrlUnload LsmIdx=\"1\" /><LdCtrlUnload LsmIdx=\"2\" /><LdCtrlUnload \
+                 LsmIdx=\"3\" /><LdCtrlUnload LsmIdx=\"4\" />{tables}"
+            ),
+        )
+}
+
+/// Issue #1094: a link of group object 0 to the secured, keyed 1/2/3 is
+/// written, not refused. Object 0 has no group-object table entry and so no
+/// PID 61 element (Resources 03_05_01 §6.3.15.2): the group key goes into
+/// PID 53, no flag is set, and the independent read-back verifies.
+#[test]
+fn test_cli_apply_writes_a_secured_link_on_group_object_0() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog::default()));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x59)
+            .tunnel_address(0x11C8)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0"],
+                &[(1, 1)],
+                &[7, 0],
+                &[],
+            )?)
+            .start(),
+    )?;
+    let dir = model_dir_with("object-zero", &object_zero_xml())?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [links]\n0.listen = [\"1/2/3\"]\n1.listen = [\"1/2/0\"]\n",
+    )?;
+    let run = run_cli_apply(&gw, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = run?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(stdout.contains("1 group key (PID 53)"), "{stdout}");
+    let log = log.lock().map_err(|_| "log poisoned")?;
+    // The security object: unloaded with the tables, loaded once.
+    assert_eq!(log.controls, vec![0x04, 0x01, 0x02], "{:?}", log.controls);
+    assert_eq!(log.pid53, 1, "the key of 1/2/3");
+    assert!(
+        log.pid61.iter().all(|&f| f == 0),
+        "no element is flagged for object 0: {:?}",
+        log.pid61
+    );
+    // The partial download ended with the device's restart.
+    let devices = gw.devices()?;
+    let device = devices.first().ok_or("the device")?;
+    assert_eq!(device.restarts, 1, "{stdout}");
+    Ok(())
+}

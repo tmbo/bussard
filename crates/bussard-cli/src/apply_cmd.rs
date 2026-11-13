@@ -680,6 +680,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
             desired,
             tables_change,
             object_table,
+            group_object_image: built.and_then(|b| b.object_table_image.as_deref()),
             images: images.as_ref(),
             security: security.as_ref(),
             parameters: partial.zip(param_detail),

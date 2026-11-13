@@ -538,6 +538,18 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
     Ok(out)
 }
 
+/// Whether group object `object` has an element in the group-object security
+/// flags (PID 61). Each element belongs to the group-object table entry with
+/// the same index (Resources 03_05_01 §6.3.15.2), and that table holds its
+/// length at index 0 and the descriptor of object n at index n (§4.18.6.2.4.1.1,
+/// Table 86). Group object 0 has no entry and so no flag: ETS downloads a
+/// secured link on it without one (`captures/synthetic/syn-secure/apply`,
+/// issue #1094: object 0 on the secured 1/0/1 and 1/0/2, PID 61 written for
+/// element 1 alone).
+pub fn has_go_flag_element(object: u16) -> bool {
+    object >= 1
+}
+
 /// Builds the security program for `device` from its final address table
 /// (`addresses`, table order: element 1 first), its group-object count, the
 /// group objects to secure, the group addresses the project marks secure and
@@ -545,7 +557,8 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
 ///
 /// A group address gets a key-table entry when the keyring has a key for it.
 /// A group address the model marks secure without a key is refused. A group
-/// object is flagged when it is in `secure_objects`.
+/// object is flagged when it is in `secure_objects` and has a flag element
+/// ([`has_go_flag_element`]: group object 0 has none).
 pub fn build_security_program(
     device: IndividualAddress,
     addresses: &[GroupAddress],
@@ -569,7 +582,7 @@ pub fn build_security_program(
         }
     }
     let mut flags = vec![0u8; usize::from(go_count)];
-    for &object in secure_objects {
+    for &object in secure_objects.iter().filter(|&&o| has_go_flag_element(o)) {
         let slot = usize::from(object)
             .checked_sub(1)
             .and_then(|i| flags.get_mut(i))
@@ -1165,6 +1178,28 @@ pub async fn write_security_program<Ch: L4Channel>(
     // the error says so.
     let written: Result<(), WriteError> = async {
         security_transition(l4, LoadControl::Unload).await?;
+        load_security_program(l4, program).await
+    }
+    .await;
+    written.map_err(|err| left_not_loaded(l4.target(), err))
+}
+
+/// The load half of [`write_security_program`], for a security object already
+/// `Unloaded`: `StartLoading`, the IA-table clear and entries, the group key
+/// table, the group-object flags, `LoadCompleted`. The partial download of
+/// the tables (`apply`, see [`crate::apply`]) unloads the object with the
+/// table objects and loads it between the association and the address table
+/// images, where ETS does.
+///
+/// # Errors
+///
+/// [`WriteError::SecurityObjectNotLoaded`] for any failure: the object is not
+/// `Loaded` until the last step.
+pub async fn load_security_program<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    program: &SecurityProgram,
+) -> Result<(), WriteError> {
+    let written: Result<(), WriteError> = async {
         security_transition(l4, LoadControl::StartLoading).await?;
         clear_security_address_table(l4).await?;
         write_security_address_table(l4, &program.senders).await?;

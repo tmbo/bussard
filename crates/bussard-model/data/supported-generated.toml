@@ -22,7 +22,7 @@ synthetic = 8
 [[family]]
 mask = "07B0"
 blocked = 0
-synthetic = 34
+synthetic = 35
 
 [[rule]]
 id = "sweep-1"
