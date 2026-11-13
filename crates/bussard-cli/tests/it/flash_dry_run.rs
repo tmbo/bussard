@@ -563,42 +563,15 @@ fn test_flash_dry_run_dump_images_names_the_kept_gap() -> Result<(), String> {
 /// `Assign` puts the delay (300) in its place. The download writes 300, as ETS
 /// did (`captures/synthetic/syn-assign-rewrite/params`, ETS 6.4.1, 2026-11-12:
 /// the editor showed 300 after the mode switch and downloaded `01 2c` at +3).
-/// The device view still reports the model's 1000 as set, with no note, and
-/// `validate` finds nothing: the silent case #1070 asks to make visible. When
-/// #1070 is fixed the view assertion flips; the image assertion stays.
+/// The image is unchanged by #1070; what changed is that nobody is left
+/// unaware: the flash prints one note, the device view marks the row, and
+/// `validate` warns with W050, each naming the value, the replacement, what
+/// the `<Assign>` copies and its condition.
 #[test]
-fn test_flash_dry_run_assign_rewrite_writes_the_assigned_value_silently() -> Result<(), String> {
+fn test_flash_dry_run_assign_rewrite_names_the_assign() -> Result<(), String> {
     let tmp = TmpDir::new("assign-rewrite").map_err(|e| e.to_string())?;
-    let knxprod = synthetic_knxprod("syn-assign-rewrite", tmp.path())?;
-    let template = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../captures/synthetic/syn-assign-rewrite/params/model");
-    let model = tmp.path().join("knx");
-    std::fs::create_dir_all(model.join("devices")).map_err(|e| e.to_string())?;
-    for file in ["bussard.toml", "groups.toml", "devices/1.1.1.toml"] {
-        std::fs::copy(template.join(file), model.join(file)).map_err(|e| e.to_string())?;
-    }
+    let model = assign_rewrite_project(tmp.path())?;
     let dir = model.to_str().ok_or("non-UTF-8 temp path")?;
-    let prod = knxprod.to_str().ok_or("non-UTF-8 temp path")?;
-    let (ok, stdout, stderr) = bussard(&["import-product", "--dir", dir, prod]);
-    if !ok {
-        return Err(format!(
-            "import failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
-        ));
-    }
-    // Pin the device to the product's application, as the oracle's row model
-    // does (`95-offline-oracle.sh`, row_model).
-    let sha = sha256_hex(&std::fs::read(&knxprod).map_err(|e| e.to_string())?);
-    let lock = model.join("bussard.lock");
-    let text = std::fs::read_to_string(&lock).map_err(|e| e.to_string())?;
-    std::fs::write(
-        &lock,
-        format!(
-            "{}\n\n[[device]]\naddress = \"1.1.1\"\napplication = \"M-00FA_A-27B3-10-0000\"\n\
-             product_sha256 = \"{sha}\"\n",
-            text.trim_end()
-        ),
-    )
-    .map_err(|e| e.to_string())?;
 
     let dump = tmp.path().join("dump");
     let dump_dir = dump.to_str().ok_or("non-UTF-8 temp path")?;
@@ -632,6 +605,13 @@ fn test_flash_dry_run_assign_rewrite_writes_the_assigned_value_silently() -> Res
             bytes.get(..8)
         ));
     }
+    const REASON: &str = ASSIGN_REASON;
+    let note = format!("note: `chore-interval` = 1000 {REASON}\n");
+    if stderr.matches(&note).count() != 1 || stdout.contains(REASON) {
+        return Err(format!(
+            "the flash does not name the Assign once:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        ));
+    }
 
     let (ok, view, stderr) = bussard(&["device", "1.1.1", "device", "--dir", dir]);
     if !ok {
@@ -641,17 +621,128 @@ fn test_flash_dry_run_assign_rewrite_writes_the_assigned_value_silently() -> Res
         .lines()
         .find(|l| l.trim_start().starts_with("chore-interval"))
         .ok_or_else(|| format!("no chore-interval row: {view}"))?;
-    let fields: Vec<&str> = chore.split_whitespace().collect();
-    if fields.get(1..3) != Some(&["1000", "set"][..]) {
+    if !chore.contains(&format!("ignored: {REASON}")) {
+        return Err(format!("the view row does not name the Assign: {chore}"));
+    }
+    let (_, out, err) = bussard(&["validate", "--dir", dir]);
+    let w050 = format!("value 1000 {REASON}; the download writes 300, as ETS does");
+    if !out.contains("W050") || !out.contains(&w050) {
+        return Err(format!("validate does not warn W050:\n{out}{err}"));
+    }
+    Ok(())
+}
+
+/// The project of the `params` row of `syn-assign-rewrite` in `tmp/knx`: the
+/// captured model (chore interval 1000, nap length 7, mode automatic) with
+/// the product imported and pinned for 1.1.1. Returns the project folder.
+fn assign_rewrite_project(tmp: &Path) -> Result<PathBuf, String> {
+    let knxprod = synthetic_knxprod("syn-assign-rewrite", tmp)?;
+    let template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../captures/synthetic/syn-assign-rewrite/params/model");
+    let model = tmp.join("knx");
+    std::fs::create_dir_all(model.join("devices")).map_err(|e| e.to_string())?;
+    for file in ["bussard.toml", "groups.toml", "devices/1.1.1.toml"] {
+        std::fs::copy(template.join(file), model.join(file)).map_err(|e| e.to_string())?;
+    }
+    let dir = model.to_str().ok_or("non-UTF-8 temp path")?;
+    let prod = knxprod.to_str().ok_or("non-UTF-8 temp path")?;
+    let (ok, stdout, stderr) = bussard(&["import-product", "--dir", dir, prod]);
+    if !ok {
         return Err(format!(
-            "the view no longer shows the model's 1000 as set (#1070 fixed? update this test): {chore}"
+            "import failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         ));
     }
-    let (ok, out, err) = bussard(&["validate", "--dir", dir]);
-    if !ok || !out.contains("No problems found") {
-        return Err(format!(
-            "validate now reports the Assign (#1070 fixed? update this test):\n{out}{err}"
-        ));
+    // Pin the device to the product's application, as the oracle's row model
+    // does (`95-offline-oracle.sh`, row_model).
+    let sha = sha256_hex(&std::fs::read(&knxprod).map_err(|e| e.to_string())?);
+    let lock = model.join("bussard.lock");
+    let text = std::fs::read_to_string(&lock).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &lock,
+        format!(
+            "{}\n\n[[device]]\naddress = \"1.1.1\"\napplication = \"M-00FA_A-27B3-10-0000\"\n\
+             product_sha256 = \"{sha}\"\n",
+            text.trim_end()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(model)
+}
+
+/// The reason every surface gives for "Chore interval" (issue #1070).
+const ASSIGN_REASON: &str =
+    "replaced by 300: an `<Assign>` copies Delay (s) while Operating mode = automatic";
+
+/// Issue #1070 through MCP on `syn-assign-rewrite`: `knx_show_device` marks
+/// the "Chore interval" row with the same words as the CLI. No bus: the
+/// server runs passive on a closed loopback port. (`knx_validate` runs the
+/// project rules without product data, so neither E016/E017 nor W050.)
+#[test]
+fn test_mcp_show_device_assign_rewrite_names_the_assign() -> Result<(), String> {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let tmp = TmpDir::new("assign-rewrite-mcp").map_err(|e| e.to_string())?;
+    let model = assign_rewrite_project(tmp.path())?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["mcp", "--dir"])
+        .arg(&model)
+        .args(["--gateway", "127.0.0.1:9", "--passive", "--no-model-edits"])
+        .env_remove("BUSSARD_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdin = child.stdin.take().ok_or("no stdin pipe")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no stdout pipe")?);
+    let mut send = |id: u64, method: &str, params: serde_json::Value| -> Result<String, String> {
+        let msg =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(stdin, "{msg}").map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                return Err(format!("the server closed before answering {method}"));
+            }
+            let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+            if v["id"] == id {
+                return Ok(v["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string());
+            }
+        }
+    };
+    send(
+        1,
+        "initialize",
+        serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "assign-note", "version": "0"}}),
+    )?;
+    let call =
+        |name: &str, args: serde_json::Value| serde_json::json!({"name": name, "arguments": args});
+    let shown = send(
+        2,
+        "tools/call",
+        call(
+            "knx_show_device",
+            serde_json::json!({"address": "1.1.1", "channel": "device"}),
+        ),
+    )?;
+    let _ = child.kill();
+    let _ = child.wait();
+    let view: serde_json::Value = serde_json::from_str(&shown).map_err(|e| e.to_string())?;
+    let row = view
+        .pointer("/view/scope/parameters")
+        .or_else(|| view.pointer("/scope/parameters"))
+        .and_then(|p| p.as_array())
+        .and_then(|rows| rows.iter().find(|r| r["key"] == "chore-interval"))
+        .ok_or_else(|| format!("no chore-interval row: {shown}"))?;
+    if row["ignored"] != ASSIGN_REASON {
+        return Err(format!("the MCP row does not name the Assign: {row}"));
     }
     Ok(())
 }

@@ -231,6 +231,8 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 ///   range, or is not a declared enumeration member.
 /// * **I017** — a value equals the vendor default and is therefore redundant
 ///   (the importer omits these, but a hand edit can reintroduce one).
+/// * **W050** — a reached `<Assign>` replaces a stored value with another
+///   (issue #1070): the download writes the assigned value, as ETS does.
 fn check_parameters(
     model: &Model,
     models: &ProductModels,
@@ -327,6 +329,36 @@ fn check_parameters(
                     format!("value {value:?} equals the vendor default (redundant)"),
                 ));
             }
+        }
+
+        // W050 (issue #1070): a stored value a reached `<Assign>` replaces.
+        // The download writes the assigned value, as ETS does, so this is a
+        // warning, not an error: the project says one value, the device gets
+        // another.
+        for a in crate::device_view::assigned_overrides_of(dev, product_model) {
+            let key = dev
+                .parameters
+                .keys()
+                .find(|k| {
+                    !crate::files::is_hidden_mem_key(k)
+                        && k.split_once('@').is_some_and(|(_, r)| r == a.reference)
+                })
+                .cloned()
+                .unwrap_or_else(|| a.key.clone());
+            diags.push(
+                Diagnostic::new(
+                    "W050",
+                    Severity::Warning,
+                    format!("{file} parameters.{key:?}"),
+                    format!(
+                        "value {} {}; the download writes {}, as ETS does",
+                        a.value,
+                        a.reason(),
+                        a.assigned
+                    ),
+                )
+                .with_device(*ia, None),
+            );
         }
     }
 }
