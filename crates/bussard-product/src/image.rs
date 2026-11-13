@@ -1072,10 +1072,10 @@ pub fn module_argument(
 /// whether the configuration shows the parameter or not: every parameter
 /// with a location, every member of every `<Union>`, and a module parameter
 /// once per module instance (the instances `config` reaches on the Dynamic
-/// path, the declared `<Module>`s otherwise). A field's width is that of its
-/// type (a float's encoding, a text's size); a parameter whose default does
-/// not encode is sized from its type's empty value, and left out when that
-/// fails too.
+/// path, the declared `<Module>`s otherwise). A field is as wide as its
+/// type declares ([`declared_width_bits`]: `SizeInBit`, a raw-data type's
+/// `MaxSize`, a float's encoding, a colour's components), whatever value it
+/// holds; a type that declares no width is sized by encoding the default.
 ///
 /// This is the write set of a relative segment without `<Data>` (issue
 /// #1084): ETS writes exactly these octets there, less those the allocation
@@ -1093,11 +1093,13 @@ pub fn declared_parameter_octets(
     let prefix = format!("{}_", app.id);
     let dynamic = uses_dynamic_image(app);
     let mut occupied = PlacedOctets::new();
-    let mut scratch: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut params: Vec<&Parameter> = app.parameters.values().collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
     for param in params {
         let Some(at) = location(app, &union_of, param) else {
+            continue;
+        };
+        let Some(bits) = declared_width_bits(app, param) else {
             continue;
         };
         let rel = param.id.strip_prefix(&prefix).unwrap_or(&param.id);
@@ -1123,38 +1125,66 @@ pub fn declared_parameter_octets(
                 }
             }
         };
-        let pname = param.name.as_deref().unwrap_or(&param.id);
-        let ptype = parameter_type_of(app, param);
-        let Ok(placement) = encode_value(
-            app,
-            pname,
-            ptype,
-            param.starting_value(),
-            ValueSource::VendorDefault,
-        )
-        .or_else(|_| encode_value(app, pname, ptype, None, ValueSource::VendorDefault)) else {
-            continue;
-        };
-        let seg_size = app.code_segments.get(at.segment).and_then(|s| s.size);
-        let image = scratch.entry(at.segment.to_string()).or_default();
+        let octets = (u64::from(at.bit_offset) + u64::from(bits)).div_ceil(8);
+        let limit = app
+            .code_segments
+            .get(at.segment)
+            .and_then(|s| s.size)
+            .map_or(MAX_SEGMENT_IMAGE, u64::from);
         for base in bases {
-            let Ok(offset) = usize::try_from(at.offset + base) else {
+            let Ok(start) = u64::try_from(at.offset + base) else {
                 continue;
             };
-            if let Ok(range) = place_checked(
-                app,
-                pname,
-                image,
-                offset,
-                at.bit_offset,
-                &placement,
-                seg_size,
-            ) {
-                mark(&mut occupied, at.segment, range);
+            let end = start.saturating_add(octets).min(limit);
+            if let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) {
+                mark(&mut occupied, at.segment, start..end.max(start));
             }
         }
     }
     occupied
+}
+
+/// The width in bits a parameter's field occupies, from its type: the
+/// declared `SizeInBit` (a `<TypeRawData>`'s `MaxSize` in octets), a
+/// colour's components, an IP address's 4 octets, else the width its
+/// default (or its type's empty value) encodes to: a float by its encoding.
+/// `None` for a type with no memory value.
+fn declared_width_bits(app: &ApplicationProgram, param: &Parameter) -> Option<u32> {
+    let ptype = parameter_type_of(app, param);
+    let declared = match ptype {
+        Some(
+            ParameterType::Int { size_bits, .. }
+            | ParameterType::Enum { size_bits, .. }
+            | ParameterType::Text { size_bits }
+            | ParameterType::Other { size_bits, .. },
+        ) => size_bits.filter(|b| *b > 0),
+        Some(ParameterType::Color { space }) => u32::try_from(space.octets() * 8).ok(),
+        Some(ParameterType::None) | None => return None,
+        Some(ParameterType::Float { .. }) => None,
+    }
+    .or_else(|| match ptype {
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => Some(32),
+        _ => None,
+    });
+    if declared.is_some() {
+        return declared;
+    }
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(
+        app,
+        pname,
+        ptype,
+        param.starting_value(),
+        ValueSource::VendorDefault,
+    )
+    .or_else(|_| encode_value(app, pname, ptype, None, ValueSource::VendorDefault))
+    .ok()?;
+    match placement {
+        Placement::Bytes(bytes) | Placement::Float(bytes) => u32::try_from(bytes.len() * 8).ok(),
+        Placement::Field { bits, .. } => Some(bits),
+        Placement::Empty => None,
+    }
+    .filter(|b| *b > 0)
 }
 
 /// Refuses a configuration that reaches a module com-object whose
@@ -5608,6 +5638,37 @@ mod tests {
     fn fixture_app(xml: &str) -> Result<ApplicationProgram> {
         parse_application_program("M-1_A-1", xml.as_bytes())
             .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))
+    }
+
+    /// Review of PR #1121 finding 3: a declared parameter occupies the width
+    /// its type declares, whatever its default: a raw-data field its
+    /// `MaxSize` (empty default), a time field its `SizeInBit` (no default), a
+    /// text its size (short default), a float its encoding.
+    #[test]
+    fn test_declared_parameter_octets_sizes_fields_by_type() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="24" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeRawData MaxSize="8" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeFloat Encoding="DPT 9" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-3"><TypeTime SizeInBit="24" Unit="Seconds" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-4"><TypeText SizeInBit="32" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="curve" ParameterType="M-1_A-1_PT-1" Value=""><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-2" Name="temp" ParameterType="M-1_A-1_PT-2" Value="21"><Memory CodeSegment="M-1_A-1_RS-1" Offset="10" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-3" Name="time" ParameterType="M-1_A-1_PT-3"><Memory CodeSegment="M-1_A-1_RS-1" Offset="14" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-4" Name="name" ParameterType="M-1_A-1_PT-4" Value="a"><Memory CodeSegment="M-1_A-1_RS-1" Offset="18" BitOffset="0" /></Parameter>
+    </Parameters>
+  </Static></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let occupied = declared_parameter_octets(&app, &config);
+        let want: BTreeSet<usize> = (0..8).chain(10..12).chain(14..17).chain(18..22).collect();
+        assert_eq!(occupied.get("M-1_A-1_RS-1"), Some(&want));
+        Ok(())
     }
 
     /// Issue #126, ABB BE/S16 (A-A0ED-10): a `<TypeRestriction

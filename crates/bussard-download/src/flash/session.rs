@@ -1650,6 +1650,20 @@ pub(super) async fn read_load_state_ext_resumable<C: Connector>(
 
 /// Reads `len` octets at `addr`, resuming at read granularity over the session
 /// across an unexpected connection death (like [`read_load_state_resumable`]).
+/// [`load::read_memory`]'s span counterpart: `len` octets from `addr` in as
+/// many reads as the connection's chunk takes, resumed after a connection
+/// death like [`read_memory_resumable`].
+pub(super) async fn read_memory_range_resumable<C: Connector>(
+    session: &mut Session<C>,
+    addr: u32,
+    len: usize,
+) -> Result<Vec<u8>, WriteError> {
+    resume!(
+        session,
+        bussard_mgmt::memory::read_memory_range(session.l4(), addr, len).await
+    )
+}
+
 pub(super) async fn read_memory_resumable<C: Connector>(
     session: &mut Session<C>,
     addr: u32,

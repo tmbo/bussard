@@ -17,11 +17,11 @@ use bussard_download::{
     build_table_images, flash, read_parameter_regions, regions_memory, template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
-use bussard_mgmt::load::WriteError;
+use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_product::application::ApplicationProgram;
 use bussard_testkit::consts::{
-    A_MEMORY_WRITE, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
-    OT_GROUP_OBJECT_TABLE,
+    A_MEMORY_WRITE, A_PROPERTY_VALUE_READ, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM,
+    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
 };
 use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -301,5 +301,129 @@ async fn test_parameters_only_and_restore_leave_the_unoccupied_octets_alone() ->
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
     assert_eq!(writes_into(&dev, BASE, BASE + 16), vec![(BASE + 1, 2)]);
     assert_eq!(dev.read_mem(BASE + 5, 11), vec![0x77; 11]);
+    Ok(())
+}
+
+/// The faulty device of [`test_flash_dataless_segment_fails_when_a_written_octet_reads_back_wrong`],
+/// storing octet `wrong` of the parameter write flipped.
+fn faulty_device(wrong: usize) -> TestResult<MockDevice> {
+    Ok(
+        device()?.with_hook(move |dev: &mut MockDevice, apci: u16, data: &[u8]| {
+            let at = data
+                .get(..2)
+                .map(|a| u32::from(u16::from_be_bytes([a[0], a[1]])));
+            if apci & !0x3F != A_MEMORY_WRITE || at != Some(BASE) {
+                return None;
+            }
+            for (i, b) in data[2..].iter().enumerate() {
+                let b = if i == wrong { !b } else { *b };
+                dev.memory.insert(BASE + i as u32, b);
+            }
+            Some(Reaction::Ack)
+        }),
+    )
+}
+
+/// Review of PR #1121 finding 1: the MCB is not compared, the write is not
+/// in verify mode (`Verify="false"`), so the read-back covers every octet
+/// written, the hidden parameter's (octets 3 and 4) included.
+#[tokio::test]
+async fn test_flash_dataless_segment_fails_when_a_hidden_parameter_octet_reads_back_wrong()
+-> TestResult {
+    let (product, _tmp) = product("syn-relseg-dataless-hidden")?;
+    let app = product.applications.first().ok_or("one application")?;
+    let plan = plan_of(&product, app, &BTreeMap::new())?;
+    let gw = MockGateway::builder()
+        .device(faulty_device(4)?)
+        .start()
+        .await?;
+    let failed = match run(&gw, &plan).await? {
+        Ok(outcome) => !outcome.ok(),
+        Err(_) => true,
+    };
+    assert!(
+        failed,
+        "a hidden parameter's octet that reads back wrong fails the flash"
+    );
+    // On a sound device the same read-back is one read of the 5 octets
+    // written, where the spot check read 4.
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    assert!(run(&gw, &plan).await??.ok());
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    let reads: Vec<&Vec<u8>> = dev
+        .requests
+        .iter()
+        .filter(|(apci, data)| apci & !0x0F == 0x200 && data.get(..2) == Some(&[0x60, 0x00]))
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    Ok(())
+}
+
+/// Review of PR #1121 finding 5: the MCB check of a segment the device
+/// keeps octets of reads the object the check names (a companion segment
+/// on object 5), not the application object.
+#[tokio::test]
+async fn test_flash_dataless_segment_reads_the_mcb_of_the_object_it_names() -> TestResult {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-1_A-C" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Companion" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code><RelativeSegment Id="M-1_A-C_RS-05" Size="8" LoadStateMachine="5" Offset="0" /></Code>
+       <ParameterTypes><ParameterType Id="M-1_A-C_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters><Parameter Id="M-1_A-C_P-0" Name="a" ParameterType="M-1_A-C_PT-0" Value="7"><Memory CodeSegment="M-1_A-C_RS-05" Offset="1" BitOffset="0" /></Parameter></Parameters>
+       <LoadProcedures><LoadProcedure>
+         <LdCtrlUnload LsmIdx="5" /><LdCtrlLoad LsmIdx="5" />
+         <LdCtrlRelSegment LsmIdx="5" Size="8" Mode="0" Fill="0" />
+         <LdCtrlWriteRelMem ObjIdx="5" Offset="0" Size="8" />
+         <LdCtrlLoadCompleted LsmIdx="5" />
+         <LdCtrlLoadImageProp ObjIdx="5" PropId="27" />
+         <LdCtrlRestart />
+       </LoadProcedure></LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let app = bussard_product::application::parse_application_program("M-1_A-C", xml.as_bytes())?;
+    let plan = plan_flash_default(
+        &app,
+        "1.1.1",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert_eq!(plan.kept().len(), 1, "{:?}", plan.kept());
+    // An MCB whose CRC matches nothing bussard wrote: read, not compared.
+    let mcb = [0, 0, 0, 8, 0, 0xFF, 0x12, 0x34];
+    let dev = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+            OT_APPLICATION_PROGRAM,
+        ])
+        .with_segment_base(5, BASE)
+        .with_property(4, 27, 8, &mcb)
+        .with_property(5, 27, 8, &mcb);
+    let gw = MockGateway::builder().device(dev).start().await?;
+    // Object 4, the application object the mock reports, is not this
+    // program's: only object 5 is loaded.
+    let outcome = run(&gw, &plan).await??;
+    assert!(
+        outcome.object_states.contains(&(5, LoadState::Loaded)),
+        "{outcome:?}"
+    );
+    assert!(outcome.spot_checks_match, "{outcome:?}");
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    let mcb_reads: Vec<u8> = dev
+        .requests
+        .iter()
+        .filter(|(apci, data)| *apci == A_PROPERTY_VALUE_READ && data.get(1) == Some(&27))
+        .filter_map(|(_, data)| data.first().copied())
+        .collect();
+    assert_eq!(mcb_reads, vec![5], "the MCB of object 5, as ETS reads it");
+    assert_eq!(writes_into(&dev, BASE, BASE + 8), vec![(BASE + 1, 1)]);
     Ok(())
 }

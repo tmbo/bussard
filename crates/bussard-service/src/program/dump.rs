@@ -121,7 +121,7 @@ fn image_record(
     object: Option<u32>,
     offset: Option<u32>,
     part: Option<(usize, usize)>,
-) -> Result<Value, ServiceError> {
+) -> Result<(Value, Option<Vec<u8>>), ServiceError> {
     let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
     // A System 7 allocation that holds a part of its segment's image (issue
     // #413) streams only that part, at its own address: dump the part, its
@@ -151,18 +151,21 @@ fn image_record(
         let ranges = placed_ranges(&set);
         json!({ "octets": set.len(), "ranges": ranges })
     });
-    Ok(json!({
-        "segment_id": image.segment_id,
-        "image_kind": image.kind.to_string(),
-        "address": address,
-        "object": object,
-        "offset": offset,
-        "length": bytes.len(),
-        "sha256": sha256_hex(bytes),
-        "file": file,
-        "mask_file": mask_file,
-        "placed": placed,
-    }))
+    Ok((
+        json!({
+            "segment_id": image.segment_id,
+            "image_kind": image.kind.to_string(),
+            "address": address,
+            "object": object,
+            "offset": offset,
+            "length": bytes.len(),
+            "sha256": sha256_hex(bytes),
+            "file": file,
+            "mask_file": mask_file,
+            "placed": placed,
+        }),
+        mask,
+    ))
 }
 
 /// The half-open `[start, end)` offset runs of a set of placed octets.
@@ -385,7 +388,7 @@ pub fn write_dump(
                 let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
                 let part =
                     (image.offset != 0 || image.len != whole).then_some((image.offset, image.len));
-                let rec = image_record(
+                let (rec, mask) = image_record(
                     dir,
                     &mut used,
                     plan,
@@ -397,6 +400,7 @@ pub fn write_dump(
                     Some(*offset),
                     part,
                 )?;
+                let rec_all_kept = mask.is_some_and(|m| m.iter().all(|&b| b == 0));
                 if image.kind == bussard_download::ImageKind::Table
                     && let Some(t) = target
                 {
@@ -426,13 +430,7 @@ pub fn write_dump(
                 }
                 // A write whose every octet the plan keeps (issue #1084)
                 // streams nothing either.
-                let len = record["image"]["length"].as_u64().unwrap_or(0);
-                if plan.baseline(&image.segment_id).is_none()
-                    && let Ok(len) = usize::try_from(len)
-                    && plan
-                        .kept_mask(image, len)
-                        .is_some_and(|m| m.iter().all(|&b| b == 0))
-                {
+                if plan.baseline(&image.segment_id).is_none() && rec_all_kept {
                     record["image"]["fill_only"] = json!(true);
                 }
             }
@@ -449,7 +447,8 @@ pub fn write_dump(
                     None,
                     None,
                     None,
-                )?;
+                )?
+                .0;
             }
             FlashStep::Sys7AbsSegment {
                 lsm,
@@ -487,7 +486,8 @@ pub fn write_dump(
                         None,
                         None,
                         part,
-                    )?;
+                    )?
+                    .0;
                     // How the executor streams it: `read-compare` reads each
                     // chunk and writes only differing ones (a mask without a
                     // Hawk VerifyMode, issue #133), `blind` writes it whole.

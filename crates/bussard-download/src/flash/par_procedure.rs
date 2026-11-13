@@ -67,6 +67,11 @@ impl FlashPlan {
                 changed = true;
             }
         }
+        // The fill decides which octets of a segment without `<Data>` the
+        // device keeps (issue #1084).
+        if changed {
+            self.refresh_unoccupied();
+        }
         // The objects the plan loads: an allocation or a StartLoading names them.
         let loaded: Vec<Option<u32>> =
             self.steps

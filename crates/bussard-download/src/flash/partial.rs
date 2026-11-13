@@ -313,19 +313,29 @@ impl FlashPlan {
             from_par_procedure: by_par,
             parameters_only: true,
             kept: self.kept.clone(),
+            unoccupied: self.unoccupied.clone(),
         })
     }
 
     /// Whether an octet of `segment` is one no declared parameter occupies in
     /// a segment without `<Data>` (issue #1084, [`super::KeptOctets::unoccupied`]):
-    /// no download writes it and the model holds no value there.
-    fn unoccupied_octets(&self, segment: &str) -> impl Fn(usize) -> bool + '_ {
-        let kept: Vec<&super::KeptOctets> = self
+    /// no download writes it and the model holds no value there. Indexed
+    /// once per segment, so a lookup is constant time.
+    fn unoccupied_octets(&self, segment: &str) -> impl Fn(usize) -> bool + use<> {
+        let mut index: Vec<bool> = Vec::new();
+        for kept in self
             .kept
             .iter()
             .filter(|k| k.unoccupied && k.segment == segment)
-            .collect();
-        move |i| kept.iter().any(|k| k.contains(i))
+        {
+            for &(start, end) in &kept.ranges {
+                if index.len() < end {
+                    index.resize(end, false);
+                }
+                index[start..end].fill(true);
+            }
+        }
+        move |i| index.get(i).copied().unwrap_or(false)
     }
 
     /// The octets of `segment` a parameter placement writes under the

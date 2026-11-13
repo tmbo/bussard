@@ -70,7 +70,7 @@ connect T_Connect
 authorize Authorize_Request key=FFFFFFFF(free-access)
 prop-read obj4/PID_1 count=1 index=1
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
-mem-read 0x6000 addr_int=24576 count=4
+mem-read 0x6000 addr_int=24576 count=5
 mem-read 0x8000 addr_int=32768 count=4
 mem-read 0xc000 addr_int=49152 count=4
 mem-read 0xa000 addr_int=40960 count=4

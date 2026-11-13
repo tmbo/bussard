@@ -615,7 +615,9 @@ impl StepExecutor for SystemB<'_> {
                             .map(|a| a + image.offset as u32),
                     )
                 });
-                match (partial, fill) {
+                let caps = ChunkCaps::of(session.l4());
+                let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
+                let regions: Vec<(usize, usize)> = match (partial, fill) {
                     // A parameter-only download (issue #543): the
                     // allocation in Mode 0 kept the memory contents at
                     // the base it reported (Configuration Procedures
@@ -635,24 +637,7 @@ impl StepExecutor for SystemB<'_> {
                     // Where the base read before the download holds,
                     // write only the octets that differ from it.
                     (Some((current, expected)), _) if expected == Some(addr) => {
-                        let caps = ChunkCaps::of(session.l4());
-                        let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
-                        let regions = diff_regions(
-                            &bytes,
-                            current,
-                            kept.as_deref(),
-                            sparse_merge_gap(),
-                            &chunk,
-                        );
-                        for (start, end) in regions {
-                            write_image(
-                                session,
-                                addr + start as u32,
-                                &bytes[start..end],
-                                &mut *progress,
-                            )
-                            .await?;
-                        }
+                        diff_regions(&bytes, current, kept.as_deref(), sparse_merge_gap(), &chunk)
                     }
                     // The device placed the segment elsewhere: what it
                     // holds there is unknown, so the whole image goes.
@@ -663,53 +648,88 @@ impl StepExecutor for SystemB<'_> {
                             image.segment_id,
                             expected.map_or("an unknown base".to_string(), |a| format!("{a:#X}")),
                         ));
-                        for &(start, end) in &runs {
-                            write_image(
-                                session,
-                                addr + start as u32,
-                                &bytes[start..end],
-                                &mut *progress,
-                            )
-                            .await?;
-                        }
+                        runs.clone()
                     }
                     // A pre-filled segment already holds the fill byte
                     // everywhere: write only the runs that differ, as ETS
-                    // does (the F50 obj4 image is 276 of 6152 octets).
-                    (None, Some(fill)) => {
-                        let caps = ChunkCaps::of(session.l4());
-                        let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
-                        let regions = fill_regions(&bytes, fill, sparse_merge_gap(), &chunk);
-                        for (start, run) in regions {
-                            write_image(session, addr + start as u32, run, &mut *progress).await?;
-                        }
-                    }
+                    // does (the F50 obj4 image is 276 of 6152 octets). A
+                    // kept octet is never written, a merge gap included.
+                    (None, Some(fill)) => match kept.as_deref() {
+                        Some(mask) => diff_regions(
+                            &bytes,
+                            &vec![fill; bytes.len()],
+                            Some(mask),
+                            sparse_merge_gap(),
+                            &chunk,
+                        ),
+                        None => fill_regions(&bytes, fill, sparse_merge_gap(), &chunk)
+                            .into_iter()
+                            .map(|(start, run)| (start, start + run.len()))
+                            .collect(),
+                    },
                     // Each run of the octets the plan writes on its own, as
                     // ETS does: one run per occupied extent, a hole between
                     // two never bridged (`M-00EF_A-AC11-11-A782`, ops 28 to
                     // 320: 0x6002+11, then 0x600F; issue #1084). Without
                     // kept octets that is the whole part.
-                    (None, None) => {
-                        for &(start, end) in &runs {
-                            write_image(
-                                session,
-                                addr + start as u32,
-                                &bytes[start..end],
-                                &mut *progress,
-                            )
-                            .await?;
+                    (None, None) => runs.clone(),
+                };
+                // One byte count over the step's regions, so the progress
+                // reaches the octets the step writes (issue #1084).
+                let total: usize = regions.iter().map(|(start, end)| end - start).sum();
+                let echoes_before = session.verify_echoes().unwrap_or_default();
+                let mut done = 0usize;
+                for &(start, end) in &regions {
+                    let mut step_progress = |p: Progress| match p {
+                        Progress::Bytes { written, .. } => progress(Progress::Bytes {
+                            written: done + written,
+                            total,
+                        }),
+                        other => progress(other),
+                    };
+                    write_image(
+                        session,
+                        addr + start as u32,
+                        &bytes[start..end],
+                        &mut step_progress,
+                    )
+                    .await?;
+                    done += end - start;
+                }
+                let echoes = session.verify_echoes().unwrap_or_default();
+                let chunks = echoes.chunks_written - echoes_before.chunks_written;
+                let echoed = echoes.echoes_compared - echoes_before.echoes_compared;
+                let echo_checked = chunks > 0 && echoed == chunks;
+                // What checks the octets written. A segment the device keeps
+                // octets of has no MCB compare (issue #1084): unless every
+                // write was compared with its verify-mode echo, the read-back
+                // covers every octet written, the octets of hidden
+                // parameters included; otherwise the sample is the first
+                // octets written.
+                let sample = match (&kept, regions.first(), regions.last()) {
+                    (Some(_), Some(&(first, _)), Some(&(_, last))) if !echo_checked => {
+                        let mut mask = vec![0u8; last - first];
+                        for &(start, end) in &regions {
+                            mask[start - first..end - first].fill(0xFF);
                         }
+                        Some(WrittenSample {
+                            address: addr + first as u32,
+                            bytes: bytes[first..last].to_vec(),
+                            segment: obj.map(|obj| (obj, image.segment_id.clone())),
+                            mask: Some(mask),
+                        })
                     }
-                }
-                // The sample comes from the first run written: a kept octet
-                // holds what the device held.
-                if let Some(&(start, end)) = runs.first().filter(|(start, end)| start < end) {
-                    self.written_samples.push(WrittenSample {
-                        address: addr + start as u32,
-                        bytes: take_sample(&bytes[start..end]),
-                        segment: obj.map(|obj| (obj, image.segment_id.clone())),
-                    });
-                }
+                    _ => runs
+                        .first()
+                        .filter(|(start, end)| start < end)
+                        .map(|&(start, end)| WrittenSample {
+                            address: addr + start as u32,
+                            bytes: take_sample(&bytes[start..end]),
+                            segment: obj.map(|obj| (obj, image.segment_id.clone())),
+                            mask: None,
+                        }),
+                };
+                self.written_samples.extend(sample);
             }
             FlashStep::WriteMem { address, image } => {
                 // The absolute address must fit the 24-bit extended-memory space;
@@ -752,6 +772,7 @@ impl StepExecutor for SystemB<'_> {
                         address: addr,
                         bytes: take_sample(&bytes),
                         segment: None,
+                        mask: None,
                     });
                 }
             }
@@ -1020,8 +1041,12 @@ impl StepExecutor for SystemB<'_> {
                 // `read_mcb_table` compares the device's CRC16-CCITT to the CRC
                 // over `expected`; a mismatch surfaces `ImagePropMismatch`.
                 if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
+                    // A segment the device keeps octets of where no parameter
+                    // lives (issue #1084): its CRC covers them, so the MCB is
+                    // read on the object the check names, not compared.
                     let expected = image
                         .as_ref()
+                        .filter(|img| plan.compares_mcb(img))
                         .and_then(|img| plan.images.get(&img.segment_id))
                         .map(Vec::as_slice);
                     // Read the MCB on the object that holds the checked

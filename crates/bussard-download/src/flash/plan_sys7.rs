@@ -871,6 +871,7 @@ pub(super) fn plan_flash_sys7(
         from_par_procedure: false,
         parameters_only: false,
         kept,
+        unoccupied: Vec::new(),
     })
 }
 

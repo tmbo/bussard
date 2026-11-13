@@ -922,6 +922,7 @@ pub(super) fn plan_flash_properties(
         from_par_procedure: false,
         parameters_only: false,
         kept: Vec::new(),
+        unoccupied: Vec::new(),
     })
 }
 
