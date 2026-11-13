@@ -1521,6 +1521,10 @@ fn plan_flash_as(
     // not secure-capable gets neither (issue #452: 1.1.45 and 1.1.51 allocate
     // a filled segment too, and ETS unloads them with load controls and ends
     // with a bare A_Restart).
+    // The octets no declared parameter occupies in a parameter image of a
+    // segment without `<Data>` (issue #1084): kept when the allocation keeps
+    // the memory ([`FlashPlan::refresh_unoccupied`], below).
+    let unoccupied = unoccupied_candidates(app, &config, &segments, &steps, &images, &placed);
     // A kept octet is written by no step, so it is not placed: the dump's
     // coverage, the parameter-only download and the restore leave it alone.
     for k in &kept {
@@ -1540,7 +1544,7 @@ fn plan_flash_as(
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);
 
-    Ok(FlashPlan {
+    let mut plan = FlashPlan {
         identity: AppIdentity {
             id: app.id.clone(),
             name: app.name.clone(),
@@ -1569,7 +1573,10 @@ fn plan_flash_as(
         from_par_procedure: false,
         parameters_only: false,
         kept,
-    })
+        unoccupied,
+    };
+    plan.refresh_unoccupied();
+    Ok(plan)
 }
 
 /// Whether a System B download of `app` on `device_mask` switches the
@@ -2188,13 +2195,161 @@ fn kept_from(
                 allocated,
                 ranges,
                 address: None,
+                unoccupied: false,
             })
         })
         .collect()
 }
 
+/// The octets of each parameter image of a relative segment without
+/// `<Data>` that `steps` write which no declared parameter occupies
+/// ([`bussard_product::declared_parameter_octets`]) and no placement wrote
+/// (`placed`), as runs, one entry per segment, whatever the allocation.
+/// [`unoccupied_kept`] decides which of them the download keeps.
+///
+/// The rule (issue #1084, owner decision 2026-11-13): ETS writes exactly
+/// the occupied octets of such a segment, shown or hidden parameters alike,
+/// on all 14 such `Mode` 0 segments in the ETS sweep and
+/// `syn-relseg-dataless` (`captures/synthetic/syn-relseg-dataless/defaults/
+/// ops.txt` op 25: octets 0 to 2 of 16; `M-00EF_A-AC11-11-A782`: 6440
+/// occupied, 6440 written, none outside).
+fn unoccupied_candidates(
+    app: &ApplicationProgram,
+    config: &bussard_product::dynamic::DynamicConfig,
+    segments: &HashMap<String, CodeSegment>,
+    steps: &[FlashStep],
+    images: &BTreeMap<String, Vec<u8>>,
+    placed: &bussard_product::PlacedOctets,
+) -> Vec<super::Unoccupied> {
+    let mut occupied: Option<bussard_product::PlacedOctets> = None;
+    let mut out: Vec<super::Unoccupied> = Vec::new();
+    for step in steps {
+        let FlashStep::WriteRelMem { image, .. } = step else {
+            continue;
+        };
+        let dataless = segments
+            .get(&image.segment_id)
+            .is_some_and(|s| s.kind == SegmentKind::Relative && s.data.is_none());
+        if image.kind != ImageKind::Parameters
+            || !dataless
+            || out.iter().any(|u| u.segment == image.segment_id)
+        {
+            continue;
+        }
+        let len = images.get(&image.segment_id).map_or(0, Vec::len);
+        let occupied =
+            occupied.get_or_insert_with(|| bussard_product::declared_parameter_octets(app, config));
+        let (by_param, by_placement) = (
+            occupied.get(&image.segment_id),
+            placed.get(&image.segment_id),
+        );
+        let defined = |i: usize| {
+            by_param.is_some_and(|o| o.contains(&i)) || by_placement.is_some_and(|p| p.contains(&i))
+        };
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for i in (0..len).filter(|&i| !defined(i)) {
+            match ranges.last_mut() {
+                Some(last) if last.1 == i => last.1 = i + 1,
+                _ => ranges.push((i, i + 1)),
+            }
+        }
+        if !ranges.is_empty() {
+            out.push(super::Unoccupied {
+                segment: image.segment_id.clone(),
+                len,
+                ranges,
+            });
+        }
+    }
+    out
+}
+
+/// The allocation a write naming `target` lands in, of the allocations
+/// `allocs` made before it (target, fill, size), as the executor takes a
+/// write's fill: the allocation of the write's own object, else, as the
+/// executor falls back to the most recent allocation's fill, the most
+/// recent one. A write naming no object goes to the application object the
+/// device reports, which the plan does not know: it is bound only when
+/// every allocation before it agrees on the fill flag, so the executor's
+/// choice cannot differ from the planner's. `None` when it is not bound.
+pub(super) fn write_allocation(
+    allocs: &[(Option<u32>, SegmentFill, u32)],
+    target: Option<u32>,
+) -> Option<(Option<u32>, SegmentFill, u32)> {
+    let own = target.and_then(|t| allocs.iter().rev().find(|(a, _, _)| *a == Some(t)));
+    if let Some(&found) = own {
+        return Some(found);
+    }
+    let last = allocs.last().copied()?;
+    let agree = allocs
+        .iter()
+        .all(|(_, fill, _)| fill.prefill().is_some() == last.1.prefill().is_some());
+    (target.is_some() || agree).then_some(last)
+}
+
+/// The [`KeptOctets`] of the `unoccupied` octets of the parameter writes of
+/// `steps` whose allocation ([`write_allocation`]) keeps the memory (no
+/// `Mode` bit 0): the device keeps them (Configuration Procedures 03_05_03
+/// §3.5.1.2). A pre-filling allocation, or a write the plan cannot bind to
+/// one, keeps writing the whole image.
+pub(super) fn unoccupied_kept(
+    steps: &[FlashStep],
+    unoccupied: &[super::Unoccupied],
+) -> Vec<KeptOctets> {
+    let mut allocs: Vec<(Option<u32>, SegmentFill, u32)> = Vec::new();
+    let mut out: Vec<KeptOctets> = Vec::new();
+    for step in steps {
+        match step {
+            FlashStep::AllocateSegment { target, fill, size } => {
+                allocs.push((*target, *fill, *size));
+            }
+            FlashStep::WriteRelMem { image, target, .. } => {
+                let Some(candidate) = unoccupied.iter().find(|u| u.segment == image.segment_id)
+                else {
+                    continue;
+                };
+                if out.iter().any(|k| k.segment == candidate.segment) {
+                    continue;
+                }
+                let Some((object, fill, size)) = write_allocation(&allocs, *target) else {
+                    continue;
+                };
+                if fill.prefill().is_some() {
+                    continue;
+                }
+                // The allocation past the image is no parameter's either.
+                let allocated = usize::try_from(size)
+                    .unwrap_or(candidate.len)
+                    .max(candidate.len);
+                let mut ranges = candidate.ranges.clone();
+                if allocated > candidate.len {
+                    match ranges.last_mut() {
+                        Some(last) if last.1 == candidate.len => last.1 = allocated,
+                        _ => ranges.push((candidate.len, allocated)),
+                    }
+                }
+                out.push(KeptOctets {
+                    object: target.or(object).unwrap_or(0),
+                    segment: candidate.segment.clone(),
+                    allocated,
+                    ranges,
+                    address: None,
+                    unoccupied: true,
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The octets a download of `app` under `overrides` leaves as the device
-/// holds them (issue #411, [`KeptOctets`]): what the planner keeps, for the
+/// holds them although a parameter may live there (issue #411,
+/// [`KeptOctets`]). It leaves out the octets no declared parameter occupies
+/// in a segment without `<Data>` (issue #1084, [`KeptOctets::unoccupied`]):
+/// they hold no parameter, and whether the device keeps them depends on the
+/// allocation's fill the executed plan takes ([`FlashPlan::kept`] has them).
+/// What the planner keeps of the rest, for the
 /// read-back and the plan, which decode a device's parameters without a
 /// [`FlashPlan`] at hand. System B: the octets of a segment the taken
 /// `<choose>` branch writes in part; System 7: the octets of a segment the
@@ -2999,6 +3154,213 @@ mod tests {
                <LdCtrlWriteRelMem ObjIdx="5" Offset="0" Size="256" />
                <LdCtrlLoadCompleted LsmIdx="4" />"#,
         )?));
+        Ok(())
+    }
+
+    /// A 12-octet segment without `<Data>` on object 4, parameters at octets
+    /// 2 and 5, allocated with `mode`, its MCB checked after the load.
+    fn plan_dataless_params(mode: u8) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        plan_dataless_procedure(&format!(
+            r#"<LdCtrlUnload LsmIdx="4" /><LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="12" Mode="{mode}" Fill="165" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="12" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />"#
+        ))
+    }
+
+    /// The 12-octet segment of [`plan_dataless_params`] under the load
+    /// procedure `body` (a restart is appended).
+    fn plan_dataless_procedure(body: &str) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-D" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Dataless" LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-D_RS-04" Size="12" LoadStateMachine="4" Offset="0" /></Code>
+           <ParameterTypes><ParameterType Id="M-1_A-D_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-1_A-D_P-0" Name="a" ParameterType="M-1_A-D_PT-0" Value="5"><Memory CodeSegment="M-1_A-D_RS-04" Offset="2" BitOffset="0" /></Parameter>
+            <Parameter Id="M-1_A-D_P-1" Name="b" ParameterType="M-1_A-D_PT-0" Value="0"><Memory CodeSegment="M-1_A-D_RS-04" Offset="5" BitOffset="0" /></Parameter>
+           </Parameters>
+           <LoadProcedures><LoadProcedure>{body}<LdCtrlRestart /></LoadProcedure></LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        let app = parse_application_program("M-1_A-D", xml.as_bytes())?;
+        Ok(plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?)
+    }
+
+    /// Issue #1084: a segment without `<Data>` allocated with `Mode` 0 is
+    /// written where a declared parameter occupies it and nowhere else; the
+    /// device keeps the other octets, so the MCB is read without a compare.
+    #[test]
+    fn test_plan_flash_dataless_segment_keeps_the_unoccupied_octets() -> TestResult {
+        let plan = plan_dataless_params(0)?;
+        let kept = plan.kept();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].unoccupied);
+        assert_eq!(kept[0].object, 4);
+        assert_eq!(kept[0].allocated, 12);
+        // The static image ends with the last parameter; the write sends
+        // octets 2 and 5 of it, the allocation's tail is no parameter's.
+        assert_eq!(kept[0].ranges, vec![(0, 2), (3, 5), (6, 12)]);
+        assert_eq!(
+            kept[0].label(),
+            "object 4 octets no parameter occupies kept (10 in 3 runs)"
+        );
+        let image = plan.image_bytes(&kept[0].segment).ok_or("the image")?;
+        assert_eq!(image[2], 5);
+        assert_eq!(image[5], 0);
+        let write = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => Some(image),
+                _ => None,
+            })
+            .ok_or("the write")?;
+        assert_eq!(write.len, 6);
+        assert_eq!(
+            plan.kept_mask(write, write.len),
+            Some(vec![0, 0, 0xFF, 0, 0, 0xFF])
+        );
+        // The check keeps its image, so it reads the object the image went
+        // to, and does not compare (the CRC covers the kept octets).
+        let check = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::LoadImageProp {
+                    image: Some(img), ..
+                } => Some(img),
+                _ => None,
+            })
+            .ok_or("the MCB check keeps its image")?;
+        assert!(!plan.compares_mcb(check));
+        assert!(
+            super::super::trace(&plan)
+                .iter()
+                .any(|l| l.contains("not compared: the device keeps octets")),
+            "{:?}",
+            super::super::trace(&plan)
+        );
+        Ok(())
+    }
+
+    /// Review of PR #1121 finding 2: the `par` procedure's allocation swaps
+    /// the fill after planning, and the kept octets follow it both ways.
+    #[test]
+    fn test_use_par_procedure_moves_the_unoccupied_octets_with_the_fill() -> TestResult {
+        let procedure = |full: u8, par: u8| {
+            plan_dataless_procedure(&format!(
+                r#"<LdCtrlUnload LsmIdx="4" /><LdCtrlLoad LsmIdx="4" />
+                 <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="12" Mode="{full}" Fill="0" />
+                 <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="12" Mode="{par}" Fill="0" />
+                 <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="12" AppliesTo="full,par" />
+                 <LdCtrlLoadCompleted LsmIdx="4" />
+                 <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />"#
+            ))
+        };
+        let check = |plan: &FlashPlan| {
+            plan.steps.iter().find_map(|s| match s {
+                FlashStep::LoadImageProp {
+                    image: Some(img), ..
+                } => Some(plan.compares_mcb(img)),
+                _ => None,
+            })
+        };
+        // Full record pre-fills, par record keeps the memory.
+        let mut plan = procedure(1, 0)?;
+        assert!(plan.kept().is_empty(), "{:?}", plan.kept());
+        assert_eq!(check(&plan), Some(true));
+        assert!(plan.use_par_procedure(None));
+        assert_eq!(plan.kept().len(), 1, "{:?}", plan.kept());
+        assert!(plan.kept()[0].unoccupied);
+        assert_eq!(check(&plan), Some(false));
+        // The reverse.
+        let mut plan = procedure(0, 1)?;
+        assert_eq!(plan.kept().len(), 1, "{:?}", plan.kept());
+        assert!(plan.use_par_procedure(None));
+        assert!(plan.kept().is_empty(), "{:?}", plan.kept());
+        assert_eq!(check(&plan), Some(true));
+        Ok(())
+    }
+
+    /// Review of PR #1121 finding 4: a write without an object index goes to
+    /// the application object the device reports; the plan binds it only
+    /// when every allocation before it agrees on the fill flag.
+    #[test]
+    fn test_plan_flash_binds_an_unindexed_write_only_when_the_fills_agree() -> TestResult {
+        // Object 4 pre-filled, object 5 kept: the executor may resolve the
+        // write to either, so nothing is kept and the MCB compare stays.
+        let mixed = plan_dataless_procedure(
+            r#"<LdCtrlLoad LsmIdx="4" /><LdCtrlLoad LsmIdx="5" />
+               <LdCtrlRelSegment LsmIdx="4" Size="12" Mode="1" Fill="0" />
+               <LdCtrlRelSegment LsmIdx="5" Size="12" Mode="0" Fill="0" />
+               <LdCtrlWriteRelMem Offset="0" Size="12" />
+               <LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?;
+        assert!(mixed.kept().is_empty(), "{:?}", mixed.kept());
+        // Allocation and write both without an index, the memory kept.
+        let bare = plan_dataless_procedure(
+            r#"<LdCtrlLoad LsmIdx="4" />
+               <LdCtrlRelSegment Size="12" Mode="0" Fill="0" />
+               <LdCtrlWriteRelMem Offset="0" Size="12" />
+               <LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?;
+        assert_eq!(bare.kept().len(), 1, "{:?}", bare.kept());
+        assert!(bare.kept()[0].unoccupied);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_allocation_follows_the_executor() {
+        let keep = SegmentFill::NONE;
+        let fill = SegmentFill { mode: 1, fill: 0 };
+        let allocs = [(Some(4), fill, 12), (Some(5), keep, 12)];
+        assert_eq!(
+            write_allocation(&allocs, Some(4)),
+            Some((Some(4), fill, 12))
+        );
+        assert_eq!(
+            write_allocation(&allocs, Some(5)),
+            Some((Some(5), keep, 12))
+        );
+        // An object with no allocation of its own: the most recent one.
+        assert_eq!(
+            write_allocation(&allocs, Some(6)),
+            Some((Some(5), keep, 12))
+        );
+        assert_eq!(write_allocation(&allocs, None), None);
+        assert_eq!(
+            write_allocation(&allocs[..1], None),
+            Some((Some(4), fill, 12))
+        );
+        assert_eq!(write_allocation(&[], Some(4)), None);
+    }
+
+    /// A segment without `<Data>` whose allocation pre-fills it (`Mode` 1)
+    /// keeps the sparse write against the fill (issue #123) and the MCB
+    /// compare: the device holds the fill in every octet the write skips.
+    #[test]
+    fn test_plan_flash_prefilled_dataless_segment_keeps_nothing() -> TestResult {
+        let plan = plan_dataless_params(1)?;
+        assert!(plan.kept().is_empty(), "{:?}", plan.kept());
+        assert!(
+            plan.steps.iter().any(|s| matches!(s,
+                FlashStep::LoadImageProp { image: Some(img), .. } if plan.compares_mcb(img))),
+            "{:?}",
+            plan.steps
+        );
         Ok(())
     }
 

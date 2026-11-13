@@ -121,7 +121,7 @@ fn image_record(
     object: Option<u32>,
     offset: Option<u32>,
     part: Option<(usize, usize)>,
-) -> Result<Value, ServiceError> {
+) -> Result<(Value, Option<Vec<u8>>), ServiceError> {
     let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
     // A System 7 allocation that holds a part of its segment's image (issue
     // #413) streams only that part, at its own address: dump the part, its
@@ -132,11 +132,16 @@ fn image_record(
     });
     let bytes = &whole[start..end];
     let file = write_file(dir, used, stem, step, ".bin", bytes)?;
-    let mask_file = match plan.segment_mask(&image.segment_id) {
-        Some(mask) => {
-            let mask = &mask[start.min(mask.len())..end.min(mask.len())];
-            Some(write_file(dir, used, stem, step, ".mask.bin", mask)?)
-        }
+    // A System B write that keeps octets of its part (issue #1084: no
+    // declared parameter occupies them) masks them like a System 7 segment
+    // masks device-owned octets: they go out in no request.
+    let mask = match plan.segment_mask(&image.segment_id) {
+        Some(mask) => Some(mask[start.min(mask.len())..end.min(mask.len())].to_vec()),
+        None if address.is_none() => plan.kept_mask(image, bytes.len()),
+        None => None,
+    };
+    let mask_file = match &mask {
+        Some(mask) => Some(write_file(dir, used, stem, step, ".mask.bin", mask)?),
         None => None,
     };
     // The octets a parameter placement wrote (issue #347): the denominator of
@@ -146,18 +151,21 @@ fn image_record(
         let ranges = placed_ranges(&set);
         json!({ "octets": set.len(), "ranges": ranges })
     });
-    Ok(json!({
-        "segment_id": image.segment_id,
-        "image_kind": image.kind.to_string(),
-        "address": address,
-        "object": object,
-        "offset": offset,
-        "length": bytes.len(),
-        "sha256": sha256_hex(bytes),
-        "file": file,
-        "mask_file": mask_file,
-        "placed": placed,
-    }))
+    Ok((
+        json!({
+            "segment_id": image.segment_id,
+            "image_kind": image.kind.to_string(),
+            "address": address,
+            "object": object,
+            "offset": offset,
+            "length": bytes.len(),
+            "sha256": sha256_hex(bytes),
+            "file": file,
+            "mask_file": mask_file,
+            "placed": placed,
+        }),
+        mask,
+    ))
 }
 
 /// The half-open `[start, end)` offset runs of a set of placed octets.
@@ -380,7 +388,7 @@ pub fn write_dump(
                 let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
                 let part =
                     (image.offset != 0 || image.len != whole).then_some((image.offset, image.len));
-                let rec = image_record(
+                let (rec, mask) = image_record(
                     dir,
                     &mut used,
                     plan,
@@ -392,6 +400,7 @@ pub fn write_dump(
                     Some(*offset),
                     part,
                 )?;
+                let rec_all_kept = mask.is_some_and(|m| m.iter().all(|&b| b == 0));
                 if image.kind == bussard_download::ImageKind::Table
                     && let Some(t) = target
                 {
@@ -419,6 +428,11 @@ pub fn write_dump(
                     record["image"]["prefill"] = json!(fill);
                     record["image"]["fill_only"] = json!(fill_only);
                 }
+                // A write whose every octet the plan keeps (issue #1084)
+                // streams nothing either.
+                if plan.baseline(&image.segment_id).is_none() && rec_all_kept {
+                    record["image"]["fill_only"] = json!(true);
+                }
             }
             FlashStep::WriteMem { address, image } => {
                 let stem = format!("0x{address:06X}");
@@ -433,7 +447,8 @@ pub fn write_dump(
                     None,
                     None,
                     None,
-                )?;
+                )?
+                .0;
             }
             FlashStep::Sys7AbsSegment {
                 lsm,
@@ -471,7 +486,8 @@ pub fn write_dump(
                         None,
                         None,
                         part,
-                    )?;
+                    )?
+                    .0;
                     // How the executor streams it: `read-compare` reads each
                     // chunk and writes only differing ones (a mask without a
                     // Hawk VerifyMode, issue #133), `blind` writes it whole.

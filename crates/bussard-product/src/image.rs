@@ -46,7 +46,11 @@
 //! path). In a relative segment without `<Data>`, every octet no parameter
 //! writes is then set to the fill octet the segment's full-download
 //! `LdCtrlRelSegment` declares, whatever its `Mode` (issues #834, #1061), else
-//! to the values before #1061 (see `unplaced_fill`).
+//! to the values before #1061 (see `unplaced_fill`). A download writes only
+//! the octets of such a segment that a declared parameter occupies
+//! ([`declared_parameter_octets`], issue #1084), so the fill reaches the
+//! device in the octets of a parameter the download does not place, and
+//! nowhere else.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
@@ -115,17 +119,21 @@ const ERASED_FILL: u8 = 0xFF;
 ///   `M-00A6_A-0031-30-EE6B`, 9096 octets; MDT `A-0153/0154/0155`; ekinex
 ///   `A-DA22`), `Mode="1" Fill="255"` leaves `ff` (Enertex `A-0035-31`, Jung
 ///   `A-0024-22` of #377).
-/// - `Mode="0" Fill="0"` writes `00` into every unplaced octet (issue #1061:
-///   11 M-00EF programs, e.g. `M-00EF_A-AC11-11-A782`, 6391 of 6440 octets of
-///   `RS-04-00000` that bussard wrote as `ff`). ETS writes those octets
-///   itself, as the allocation does not pre-fill.
+/// - `Mode="0" Fill="0"` writes `00` into the unplaced octets a hidden
+///   parameter occupies (issue #1061: 11 M-00EF programs, e.g.
+///   `M-00EF_A-AC11-11-A782`, 6391 of 6440 octets of `RS-04-00000` that
+///   bussard wrote as `ff`).
 ///
-/// No corpus program has a full `Mode="0"` record with a `Fill` other than
-/// `0` (every `Mode="0" Fill="255"` record is `AppliesTo="par"`, #480), so
-/// "the declared `Fill`" and "`00` under `Mode` 0" agree on every known
-/// program; the capture of the synthetic `syn-relseg-dataless` (#1054)
-/// decides between them. Known limits of this per-LSM lookup, which no corpus
-/// program hits, are listed in #1084.
+/// Under `Mode` 0 a download writes only the octets a declared parameter
+/// occupies ([`declared_parameter_octets`], issue #1084): the capture of
+/// `syn-relseg-dataless` (`Mode="0" Fill="165"`, #1054) shows ETS writing
+/// octets 0 to 2 and never 3 to 15, neither `a5` nor `00`. So this fill is
+/// what the image holds in the octets no parameter occupies, which no
+/// download sends, and what a parameter the download does not place goes
+/// out with. Whether ETS sends a hidden parameter's octets under a `Fill`
+/// other than `0` as that fill waits for the capture of
+/// `syn-relseg-dataless-hidden` (#1054). Known limits of this per-LSM
+/// lookup, which no corpus program hits, are listed in #1084.
 fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
     let Some(lsm) = seg.load_state_machine else {
         return ERASED_FILL;
@@ -1058,6 +1066,125 @@ pub fn module_argument(
 ) -> Option<i64> {
     let rel = arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg);
     config.module_args(module)?.get(rel).copied()
+}
+
+/// Every octet a declared parameter of `app` occupies, per code segment,
+/// whether the configuration shows the parameter or not: every parameter
+/// with a location, every member of every `<Union>`, and a module parameter
+/// once per module instance (the instances `config` reaches on the Dynamic
+/// path, the declared `<Module>`s otherwise). A field is as wide as its
+/// type declares ([`declared_width_bits`]: `SizeInBit`, a raw-data type's
+/// `MaxSize`, a float's encoding, a colour's components), whatever value it
+/// holds; a type that declares no width is sized by encoding the default.
+///
+/// This is the write set of a relative segment without `<Data>` (issue
+/// #1084): ETS writes exactly these octets there, less those the allocation
+/// pre-fills with the same value, and nothing else. A survey of 828 ETS
+/// sweep downloads found it on all 55 such segments (14 allocated with
+/// `Mode` 0, among them the 11 `M-00EF` programs of #1061 and
+/// `syn-relseg-dataless`; 41 with `Mode` 1). On `syn-relseg-dataless`
+/// (`captures/synthetic/syn-relseg-dataless/defaults/ops.txt`, op 25) ETS
+/// writes octets 0 to 2 of the 16-octet segment, the one parameter's.
+pub fn declared_parameter_octets(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+) -> PlacedOctets {
+    let union_of = union_index(app);
+    let prefix = format!("{}_", app.id);
+    let dynamic = uses_dynamic_image(app);
+    let mut occupied = PlacedOctets::new();
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    for param in params {
+        let Some(at) = location(app, &union_of, param) else {
+            continue;
+        };
+        let Some(bits) = declared_width_bits(app, param) else {
+            continue;
+        };
+        let rel = param.id.strip_prefix(&prefix).unwrap_or(&param.id);
+        let bases: Vec<i64> = match at.base {
+            None => vec![0],
+            Some(arg) => {
+                let rel_arg = arg.strip_prefix(&prefix).unwrap_or(arg);
+                let def = module_def_of(rel);
+                if dynamic {
+                    config
+                        .modules
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| def.is_none_or(|d| m.module_def == d))
+                        .filter_map(|(i, _)| module_argument(app, config, Some(i), arg))
+                        .collect()
+                } else {
+                    app.module_instances
+                        .iter()
+                        .filter(|m| def.is_none_or(|d| m.module_def == d))
+                        .filter_map(|m| m.arg_values.get(rel_arg).copied())
+                        .collect()
+                }
+            }
+        };
+        let octets = (u64::from(at.bit_offset) + u64::from(bits)).div_ceil(8);
+        let limit = app
+            .code_segments
+            .get(at.segment)
+            .and_then(|s| s.size)
+            .map_or(MAX_SEGMENT_IMAGE, u64::from);
+        for base in bases {
+            let Ok(start) = u64::try_from(at.offset + base) else {
+                continue;
+            };
+            let end = start.saturating_add(octets).min(limit);
+            if let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) {
+                mark(&mut occupied, at.segment, start..end.max(start));
+            }
+        }
+    }
+    occupied
+}
+
+/// The width in bits a parameter's field occupies, from its type: the
+/// declared `SizeInBit` (a `<TypeRawData>`'s `MaxSize` in octets), a
+/// colour's components, an IP address's 4 octets, else the width its
+/// default (or its type's empty value) encodes to: a float by its encoding.
+/// `None` for a type with no memory value.
+fn declared_width_bits(app: &ApplicationProgram, param: &Parameter) -> Option<u32> {
+    let ptype = parameter_type_of(app, param);
+    let declared = match ptype {
+        Some(
+            ParameterType::Int { size_bits, .. }
+            | ParameterType::Enum { size_bits, .. }
+            | ParameterType::Text { size_bits }
+            | ParameterType::Other { size_bits, .. },
+        ) => size_bits.filter(|b| *b > 0),
+        Some(ParameterType::Color { space }) => u32::try_from(space.octets() * 8).ok(),
+        Some(ParameterType::None) | None => return None,
+        Some(ParameterType::Float { .. }) => None,
+    }
+    .or_else(|| match ptype {
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => Some(32),
+        _ => None,
+    });
+    if declared.is_some() {
+        return declared;
+    }
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(
+        app,
+        pname,
+        ptype,
+        param.starting_value(),
+        ValueSource::VendorDefault,
+    )
+    .or_else(|_| encode_value(app, pname, ptype, None, ValueSource::VendorDefault))
+    .ok()?;
+    match placement {
+        Placement::Bytes(bytes) | Placement::Float(bytes) => u32::try_from(bytes.len() * 8).ok(),
+        Placement::Field { bits, .. } => Some(bits),
+        Placement::Empty => None,
+    }
+    .filter(|b| *b > 0)
 }
 
 /// Refuses a configuration that reaches a module com-object whose
@@ -5511,6 +5638,37 @@ mod tests {
     fn fixture_app(xml: &str) -> Result<ApplicationProgram> {
         parse_application_program("M-1_A-1", xml.as_bytes())
             .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))
+    }
+
+    /// Review of PR #1121 finding 3: a declared parameter occupies the width
+    /// its type declares, whatever its default: a raw-data field its
+    /// `MaxSize` (empty default), a time field its `SizeInBit` (no default), a
+    /// text its size (short default), a float its encoding.
+    #[test]
+    fn test_declared_parameter_octets_sizes_fields_by_type() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="24" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeRawData MaxSize="8" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeFloat Encoding="DPT 9" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-3"><TypeTime SizeInBit="24" Unit="Seconds" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-4"><TypeText SizeInBit="32" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="curve" ParameterType="M-1_A-1_PT-1" Value=""><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-2" Name="temp" ParameterType="M-1_A-1_PT-2" Value="21"><Memory CodeSegment="M-1_A-1_RS-1" Offset="10" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-3" Name="time" ParameterType="M-1_A-1_PT-3"><Memory CodeSegment="M-1_A-1_RS-1" Offset="14" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-4" Name="name" ParameterType="M-1_A-1_PT-4" Value="a"><Memory CodeSegment="M-1_A-1_RS-1" Offset="18" BitOffset="0" /></Parameter>
+    </Parameters>
+  </Static></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let occupied = declared_parameter_octets(&app, &config);
+        let want: BTreeSet<usize> = (0..8).chain(10..12).chain(14..17).chain(18..22).collect();
+        assert_eq!(occupied.get("M-1_A-1_RS-1"), Some(&want));
+        Ok(())
     }
 
     /// Issue #126, ABB BE/S16 (A-A0ED-10): a `<TypeRestriction

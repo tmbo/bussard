@@ -79,6 +79,15 @@ fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
                 k.segment,
                 k.allocated
             ),
+            // A segment without `<Data>` keeps what the device held where no
+            // parameter lives (issue #1084).
+            None if k.unoccupied => format!(
+                "{} (segment {} of {} octets: not written, as in ETS's download; no MCB CRC \
+                 compared)",
+                k.label(),
+                k.segment,
+                k.allocated
+            ),
             None => format!(
                 "{} (segment {} of {} octets: not written, not read back, no MCB CRC compared)",
                 k.label(),
@@ -158,8 +167,19 @@ pub struct KeptMemory {
     pub allocated: usize,
     /// The segment's base address on System 7.
     pub address: Option<u32>,
-    /// The `[start, end)` runs kept.
+    /// The `[start, end)` runs kept; empty for [`Self::unoccupied`] octets,
+    /// which [`Self::octets`] and [`Self::runs`] count instead (the dump's
+    /// mask file holds them octet by octet).
     pub ranges: Vec<[usize; 2]>,
+    /// Whether these are the octets no declared parameter occupies in a
+    /// segment without `<Data>` (issue #1084): kept because the allocation
+    /// keeps the memory, not read back as parameters, no MCB CRC compared.
+    /// `false`: a `<choose>` branch's gap (issue #411).
+    pub unoccupied: bool,
+    /// The octets kept.
+    pub octets: usize,
+    /// The runs they form.
+    pub runs: usize,
     /// `object 4 octets 128..256`.
     pub label: String,
 }
@@ -253,7 +273,14 @@ impl FlashPlanReport {
                     segment: k.segment.clone(),
                     allocated: k.allocated,
                     address: k.address,
-                    ranges: k.ranges.iter().map(|&(s, e)| [s, e]).collect(),
+                    ranges: if k.unoccupied {
+                        Vec::new()
+                    } else {
+                        k.ranges.iter().map(|&(s, e)| [s, e]).collect()
+                    },
+                    unoccupied: k.unoccupied,
+                    octets: k.octets(),
+                    runs: k.ranges.len(),
                     label: k.label(),
                 })
                 .collect(),

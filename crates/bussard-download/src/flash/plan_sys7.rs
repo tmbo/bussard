@@ -871,6 +871,7 @@ pub(super) fn plan_flash_sys7(
         from_par_procedure: false,
         parameters_only: false,
         kept,
+        unoccupied: Vec::new(),
     })
 }
 
@@ -1001,6 +1002,7 @@ impl SegmentSplit<'_> {
             allocated: self.len,
             ranges: self.parts.gaps.clone(),
             address: Some(self.base),
+            unoccupied: false,
         })
     }
 }

@@ -8,7 +8,7 @@
 use super::execute::resolve_object_target_opt;
 use super::session::{
     Connector, Session, read_load_state_ext_resumable, read_load_state_resumable,
-    read_memory_resumable,
+    read_memory_range_resumable, read_memory_resumable,
 };
 use super::{FlashOutcome, FlashPlan, FlashStep, ImageRef};
 use bussard_mgmt::load::{LoadState, WriteError, read_load_state, read_mcb_table};
@@ -314,6 +314,10 @@ pub(super) struct WrittenSample {
     /// sample (issue #215). `None` for an absolute `WriteMem`, which no MCB
     /// covers.
     pub(super) segment: Option<(u8, String)>,
+    /// Which of [`Self::bytes`] were written (`0xFF`) when the sample spans
+    /// a whole write with octets the device keeps between its runs (issue
+    /// #1084): only those are compared. `None`: every octet.
+    pub(super) mask: Option<Vec<u8>>,
 }
 
 /// Reads every sample back; `false` as soon as one differs from what was
@@ -324,8 +328,23 @@ async fn spot_check<'a, C: Connector>(
 ) -> Result<bool, WriteError> {
     let mut all_match = true;
     for sample in samples {
-        let got = read_memory_resumable(session, sample.address, sample.bytes.len() as u8).await?;
-        if got != sample.bytes {
+        let matches = match &sample.mask {
+            None => {
+                read_memory_resumable(session, sample.address, sample.bytes.len() as u8).await?
+                    == sample.bytes
+            }
+            Some(mask) => {
+                let got = read_memory_range_resumable(session, sample.address, sample.bytes.len())
+                    .await?;
+                sample
+                    .bytes
+                    .iter()
+                    .zip(mask)
+                    .enumerate()
+                    .all(|(i, (want, m))| *m != 0xFF || got.get(i) == Some(want))
+            }
+        };
+        if !matches {
             all_match = false;
         }
     }

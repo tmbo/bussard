@@ -16,6 +16,9 @@ pub(super) struct LabelCtx<'a> {
     pub parameters_only: bool,
     /// The address each segment's baseline was read at before the download.
     pub baseline_address: Option<&'a BTreeMap<String, u32>>,
+    /// The segments whose MCB a check reads without comparing: the device
+    /// keeps octets of them no parameter occupies (issue #1084).
+    pub uncompared: &'a [String],
 }
 
 /// A `" (LsmIdx/ObjIdx N)"` suffix for a step label, naming the object index the
@@ -280,6 +283,10 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             advisory,
             ..
         } => match image {
+            Some(img) if ctx.uncompared.contains(&img.segment_id) => format!(
+                "read image MCB (object {obj_idx}, PID {prop_id}; not compared: the device \
+                 keeps octets no parameter occupies)"
+            ),
             Some(img) => format!(
                 "verify image (object {obj_idx}, PID {prop_id} MCB CRC over {} bytes{})",
                 img.len,

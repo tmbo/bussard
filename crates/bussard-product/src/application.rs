@@ -2774,9 +2774,19 @@ fn handle_empty(
             }
             // Other type shapes (TypeColor, TypeTime, TypePicture, TypeIPAddress…).
             let kind = String::from_utf8_lossy(name).into_owned();
+            // A `<TypeRawData>` declares its width as `MaxSize` octets: the
+            // field a parameter of it occupies (issue #1084).
+            let size_bits = get(m, b"SizeInBit")
+                .and_then(|s| s.parse().ok())
+                .or_else(|| {
+                    (name == b"TypeRawData")
+                        .then(|| get(m, b"MaxSize").and_then(|s| s.parse::<u32>().ok()))
+                        .flatten()
+                        .and_then(|octets| octets.checked_mul(8))
+                });
             state.pt_kind = Some(ParameterType::Other {
                 kind,
-                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                size_bits,
                 unit: get(m, b"Unit").map(str::to_string),
             });
         }
