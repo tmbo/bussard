@@ -199,14 +199,16 @@ fn compare(
         .cloned()
         .collect();
 
-    // The view side.
-    let visibility = bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
-        .map(|a| a.visibility())
+    // The view side: one analysis (one evaluation) answers all three
+    // questions, as the view itself asks them (issue #1087).
+    let analysis = bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
         .map_err(|e| e.to_string())?;
-    let shown: BTreeSet<String> = visibility
-        .iter()
-        .filter(|(r, v)| v.shown && located.contains(*r) && !internal(r))
-        .map(|(r, _)| r.clone())
+    // The shown refs alone: [`DeviceAnalysis::visibility`] would word what
+    // every other ref needs, most of a set's time on a large program.
+    let shown: BTreeSet<String> = analysis
+        .shown_refs()
+        .into_iter()
+        .filter(|r| located.contains(r) && !internal(r))
         .collect();
     // The pages hold the refs of the application's own containers; the
     // image writes the ones outside every container too.
@@ -233,17 +235,15 @@ fn compare(
         .iter()
         .map(|d| d.asap)
         .collect();
-    let view_objects: BTreeSet<u16> =
-        bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
-            .map(|a| a.shown_objects())
-            .map_err(|e| e.to_string())?
-            .iter()
-            // Every shown object gets a descriptor, one with every flag disabled
-            // too (issue #686).
-            .filter_map(|r| app.resolve(r))
-            .map(|(base, _)| base.number)
-            .filter(|n| *n != 0)
-            .collect();
+    let view_objects: BTreeSet<u16> = analysis
+        .shown_objects()
+        .iter()
+        // Every shown object gets a descriptor, one with every flag disabled
+        // too (issue #686).
+        .filter_map(|r| app.resolve(r))
+        .map(|(base, _)| base.number)
+        .filter(|n| *n != 0)
+        .collect();
     tally.objects += view_objects.len();
     if let Some(d) = difference("shown objects", &view_objects, &table) {
         return Ok(Some(d));
@@ -259,16 +259,14 @@ fn compare(
         .filter(|p| p.module.is_none())
         .map(|p| p.param_ref_id.as_str())
         .collect();
-    let ignored: BTreeSet<String> =
-        bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
-            .map(|a| a.ignored_overrides())
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|o| o.reference)
-            // A default the XML alone does not tell is left out of the
-            // comparison (see [`default_in`]).
-            .filter(|r| default_in(app, &config, r).is_some())
-            .collect();
+    let ignored: BTreeSet<String> = analysis
+        .ignored_overrides()
+        .into_iter()
+        .map(|o| o.reference)
+        // A default the XML alone does not tell is left out of the
+        // comparison (see [`default_in`]).
+        .filter(|r| default_in(app, &config, r).is_some())
+        .collect();
     // A module instance's ref (issue #1050), by its selector key: in effect
     // when the image carries it in its instance (a slot of that instance),
     // or, for a ref without memory, when the evaluation reaches it, unless
@@ -406,75 +404,158 @@ fn test_view_shows_what_the_download_writes_on_every_fixture() -> TestResult {
     Ok(())
 }
 
-/// Corpus-gated (`BUSSARD_PRODUCT_CORPUS`, dev/testing.md): the same over
-/// every application program of every archive in the corpus.
+/// Issue #1087: [`DeviceAnalysis::shown_refs`], which the comparison reads
+/// instead of the whole visibility map, names exactly the refs
+/// [`DeviceAnalysis::visibility`] marks shown, on every fixture under the
+/// vendor defaults and the random value sets.
 #[test]
-fn test_view_shows_what_the_download_writes_on_the_corpus() -> TestResult {
+fn test_shown_refs_is_what_visibility_shows_on_every_fixture() -> TestResult {
+    let address: IndividualAddress = ADDRESS.parse()?;
+    let mut compared = 0;
+    for (id, xml) in FIXTURES {
+        let app = parse_application_program(id, xml)?;
+        let product = ProductData {
+            applications: vec![app.clone()],
+            ..ProductData::default()
+        };
+        let model = bussard_product::product_model::product_model(&app, &product);
+        let mut products = ProductModels::default();
+        products.insert(app.id.clone(), model);
+        let candidates = candidates(&app);
+        let mut rng = Rng(seed(&app));
+        let mut sets = vec![BTreeMap::new()];
+        sets.extend((0..RANDOM_SETS).map(|_| random_values(&candidates, &mut rng)));
+        for values in &sets {
+            let mut device_model = one_device(&app.id)?;
+            let device = &mut device_model
+                .devices
+                .get_mut(&address)
+                .ok_or("no device")?
+                .device;
+            for (key, value) in values {
+                device.parameters.insert(format!("v@{key}"), value.clone());
+            }
+            let analysis =
+                bussard_model::device_view::DeviceAnalysis::new(&device_model, &products, address)?;
+            let from_map: BTreeSet<String> = analysis
+                .visibility()
+                .into_iter()
+                .filter(|(_, v)| v.shown)
+                .map(|(r, _)| r)
+                .collect();
+            assert_eq!(analysis.shown_refs(), from_map, "{id} {values:?}");
+            compared += from_map.len();
+        }
+    }
+    assert!(compared > 0);
+    Ok(())
+}
+
+/// How many test functions split the corpus sweep (issue #1087): nextest runs
+/// them side by side, and each prints a line per program, so a slow program
+/// shows by name instead of stalling one test for hours.
+const CORPUS_SHARDS: usize = 16;
+
+/// Whether archive `name` falls in shard `slot` of [`CORPUS_SHARDS`]: by the
+/// first octet of the SHA-256 of its file name, stable across hosts.
+fn in_shard(name: &str, slot: usize) -> bool {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(name.as_bytes());
+    usize::from(digest[0]) % CORPUS_SHARDS == slot
+}
+
+macro_rules! corpus_shards {
+    ($($name:ident = $slot:expr),* $(,)?) => {
+        $(
+            /// Corpus-gated (`BUSSARD_PRODUCT_CORPUS`, dev/testing.md): the
+            /// fixture comparison over every application program of the
+            /// archives that hash to this shard.
+            #[test]
+            fn $name() -> TestResult {
+                corpus_shard($slot)
+            }
+        )*
+    };
+}
+
+corpus_shards!(
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_0 = 0,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_1 = 1,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_2 = 2,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_3 = 3,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_4 = 4,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_5 = 5,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_6 = 6,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_7 = 7,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_8 = 8,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_9 = 9,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_10 = 10,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_11 = 11,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_12 = 12,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_13 = 13,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_14 = 14,
+    test_view_shows_what_the_download_writes_on_the_corpus_shard_15 = 15,
+);
+
+/// Compares the view and the download on every program of the corpus
+/// archives in shard `slot`, printing one line per program (its tally and
+/// time) as it goes.
+fn corpus_shard(slot: usize) -> TestResult {
     let Some(vendor) = corpus_vendor() else {
         return Ok(());
     };
-    let files = knxprod_files(&vendor);
+    let files: Vec<_> = knxprod_files(&vendor)
+        .into_iter()
+        .filter(|f| {
+            f.file_name()
+                .is_some_and(|n| in_shard(&n.to_string_lossy(), slot))
+        })
+        .collect();
     let started = std::time::Instant::now();
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let results = std::sync::Mutex::new(Vec::new());
-    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 10));
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(file) = files.get(i) else { break };
-                    let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
-                    let name = name.unwrap_or_default();
-                    let outcome: Vec<(String, Option<String>, Result<Tally, String>)> =
-                        match bussard_product::read_knxprod(file) {
-                            Err(_) => vec![(name, None, Ok(Tally::default()))],
-                            Ok(product) => product
-                                .applications
-                                .iter()
-                                .map(|app| {
-                                    let mut tally = Tally::default();
-                                    let result = check(app, &product, &mut tally).map(|()| tally);
-                                    (name.clone(), Some(app.id.clone()), result)
-                                })
-                                .collect(),
-                        };
-                    if let Ok(mut all) = results.lock() {
-                        all.extend(outcome);
-                    }
-                }
-            });
-        }
-    });
-    let results = results
-        .into_inner()
-        .map_err(|_| "a sweep thread panicked")?;
     let (mut programs, mut with_pages, mut unreadable) = (0, 0, 0);
     let mut total = Tally::default();
     let mut failures = Vec::new();
-    for (archive, app, outcome) in results {
-        match (app, outcome) {
-            (None, _) => unreadable += 1,
-            (Some(_), Ok(t)) => {
-                programs += 1;
-                with_pages += usize::from(t.sets > 0);
-                total.sets += t.sets;
-                total.shown += t.shown;
-                total.objects += t.objects;
-                total.ignored += t.ignored;
+    for file in &files {
+        let archive = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Ok(product) = bussard_product::read_knxprod(file) else {
+            unreadable += 1;
+            eprintln!("view acceptance: {archive} unreadable");
+            continue;
+        };
+        for app in &product.applications {
+            let at = std::time::Instant::now();
+            let mut t = Tally::default();
+            let outcome = check(app, &product, &mut t);
+            eprintln!(
+                "view acceptance: {archive} {} {t:?} {} {:.1?}",
+                app.id,
+                if outcome.is_ok() { "ok" } else { "FAILED" },
+                at.elapsed()
+            );
+            match outcome {
+                Ok(()) => {
+                    programs += 1;
+                    with_pages += usize::from(t.sets > 0);
+                    total.sets += t.sets;
+                    total.shown += t.shown;
+                    total.objects += t.objects;
+                    total.ignored += t.ignored;
+                }
+                Err(e) => failures.push(format!("{archive} {}: {e}", app.id)),
             }
-            (Some(app), Err(e)) => failures.push(format!("{archive} {app}: {e}")),
         }
     }
     eprintln!(
-        "view acceptance: {} archives ({unreadable} unreadable), {programs} programs \
-         ({with_pages} with pages), {total:?}, {} failed, {:.0?}",
+        "view acceptance shard {slot}/{CORPUS_SHARDS}: {} archives ({unreadable} unreadable), \
+         {programs} programs ({with_pages} with pages), {total:?}, {} failed, {:.0?}",
         files.len(),
         failures.len(),
         started.elapsed()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert!(programs > 0, "no program compared");
     Ok(())
 }
 

@@ -186,7 +186,7 @@ directory itself. Every gated test resolves all three to the vendor directory.
 $ export BUSSARD_PRODUCT_CORPUS="$PWD/tests-support/product-corpus"
 $ cargo nextest run --profile corpus \
     -p bussard-download -p bussard-product -p bussard-cli \
-    -E 'binary(it) & test(/^(builtin_templates|flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|evaluator_conformance|flash_dry_run|offline_oracle)::/)'
+    -E 'binary(it) & test(/^(builtin_templates|flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|evaluator_conformance|view_acceptance|flash_dry_run|offline_oracle)::/)'
 ```
 
 The `corpus` nextest profile (`.config/nextest.toml`) allows a test 20 minutes:
@@ -204,6 +204,7 @@ The gated tests:
 | bussard-download | `sys7_jung_m2_plan.rs` | the Jung 3361-1M (0705) full plan against the M2 capture, and its parameter-only plan against `bad-eg-pm-1-1-18.pcapng` (1.1.32) |
 | bussard-download | `ets_golden.rs` | group-object tables, parameter image and allocation of the F50 (`A-D142-21`), Jung `A-3030`, ABB `A-A0ED`, Helios `A-0003`, Jung `A-20DE` byte for byte against ETS |
 | bussard-download | `param_readback_roundtrip.rs` | parameter read-back decodes what the image builder wrote, for a set of real products |
+| bussard-download | `view_acceptance.rs` | the device view shows the refs and objects the download writes and names the stored values it ignores, for every program under the vendor defaults and 50 seeded random value sets (#345); 16 shards by archive name (`..._on_the_corpus_shard_<k>`), one line per program |
 | bussard-product | `parameter_image.rs` | the Zennio FIX2 union default byte, the ABB IEEE-754 single width |
 | bussard-product | `sys7_visible_parameters.rs` | Jung System 7 parameter images (3361, 2116, 3181) against ETS |
 | bussard-product | `selected.rs` | a selective archive read equals the full read, on the first archives of the corpus (`BUSSARD_SELECTED_CORPUS_LIMIT`, default 6) |

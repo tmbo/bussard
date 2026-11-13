@@ -1380,6 +1380,16 @@ impl<'a> Pages<'a> {
     }
 
     /// Whether the configuration shows parameter ref `reference` of block
+    /// `i`: [`RefVisibility::shown`] of [`Self::ref_visibility`].
+    fn ref_shown(&self, i: usize, reference: &str) -> bool {
+        self.reached.contains(reference)
+            && self
+                .reached_at
+                .get(reference)
+                .is_some_and(|j| self.blocks[*j].id == self.blocks[i].id)
+    }
+
+    /// Whether the configuration shows parameter ref `reference` of block
     /// `i`, and what it needs when it does not (issue #321).
     fn ref_visibility(&self, i: usize, reference: &str) -> RefVisibility {
         let occurrences = self.occurrences_in(i, reference);
@@ -1394,11 +1404,7 @@ impl<'a> Pages<'a> {
             }
             [] => None,
         };
-        let shown = self.reached.contains(reference)
-            && self
-                .reached_at
-                .get(reference)
-                .is_some_and(|j| self.blocks[*j].id == self.blocks[i].id);
+        let shown = self.ref_shown(i, reference);
         let on_branch = shown
             || occurrences.is_empty()
             || occurrences.iter().any(|o| {
@@ -2819,6 +2825,18 @@ impl DeviceAnalysis<'_> {
             .unwrap_or_default()
     }
 
+    /// The refs [`Self::visibility`] marks shown, without working out the
+    /// conditions and values of the others (issue #1087: the words cost
+    /// most of a visibility map, and a caller that asks only whether a ref
+    /// is shown paid for them on every ref of every page). Empty without a
+    /// product model with pages.
+    pub fn shown_refs(&self) -> BTreeSet<String> {
+        self.pages
+            .as_ref()
+            .map(Pages::shown_refs)
+            .unwrap_or_default()
+    }
+
     /// [`Self::visibility`] of the module refs the evaluation reaches or
     /// the device stores, keyed by selector (`MD-2_M-3_MI-1_P-23_R-1`): shown
     /// when the evaluation places the ref as shown, else what it needs, from
@@ -2936,13 +2954,12 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
     if candidates.is_empty() || !has_pages(product) {
         return 0;
     }
-    let visibility = DeviceAnalysis::of_device(device, Some(product)).visibility();
+    let shown_refs = DeviceAnalysis::of_device(device, Some(product)).shown_refs();
     let mut moved = 0;
     for (hidden, visible) in candidates {
         let shown = hidden
             .split_once('@')
-            .and_then(|(_, r)| visibility.get(r))
-            .is_some_and(|v| v.shown);
+            .is_some_and(|(_, r)| shown_refs.contains(r));
         if !shown {
             continue;
         }
@@ -2971,6 +2988,31 @@ impl Pages<'_> {
     /// every module ref the evaluation reaches or the device stores, by its
     /// selector key ([`Self::module_visibility`], issue #1050).
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
+        self.visibility_where(|_| true)
+    }
+
+    /// The application refs [`Self::visibility`] marks shown: shown on one
+    /// of the pages that hold them.
+    fn shown_refs(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for (i, b) in self.blocks.iter().enumerate() {
+            if b.module.is_some() {
+                continue;
+            }
+            for reference in &b.parameters {
+                if !out.contains(reference) && self.ref_shown(i, reference) {
+                    out.insert(reference.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// [`Self::visibility`] of the application refs `wanted` accepts: each
+    /// one's entry is the same as in the whole map, without working out the
+    /// words of every other ref on every page (issue #1087: a caller that
+    /// looks up a few stored refs paid for all of them on every call).
+    fn visibility_where(&self, wanted: impl Fn(&str) -> bool) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
         // The application's own pages: a module channel's refs are keyed by
         // instance, see [`Self::module_visibilities`].
@@ -2978,7 +3020,7 @@ impl Pages<'_> {
             if b.module.is_some() {
                 continue;
             }
-            for reference in &b.parameters {
+            for reference in b.parameters.iter().filter(|r| wanted(r)) {
                 let seen = self.ref_visibility(i, reference);
                 match out.get_mut(reference) {
                     Some(v) if (seen.shown, seen.on_branch) > (v.shown, v.on_branch) => *v = seen,
@@ -3027,8 +3069,6 @@ impl IgnoredOverride {
 
 /// [`DeviceAnalysis::ignored_overrides`] on the pages `pg` of `device`.
 fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
-    let mut visibility = pg.visibility();
-    visibility.extend(pg.module_visibilities(pg.entries.keys().map(String::as_str)));
     let config = &pg.evaluated.config;
     // The refs whose stored value the evaluation uses without showing them:
     // the source of a reached `<Assign>`, which the image writes and which
@@ -3056,7 +3096,10 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         .map(String::as_str)
         .filter(|r| r.starts_with("MD-"))
         .collect();
-    let mut out = Vec::new();
+    // The stored values that can be ignored: not hidden, not a label, not
+    // at the default, not in effect. Only their refs' visibility is worked
+    // out (issue #1087: the whole map cost most of a call).
+    let mut candidates: Vec<(&String, &String, &str)> = Vec::new();
     for (mem_key, value) in &device.parameters {
         if crate::files::is_hidden_mem_key(mem_key) {
             continue;
@@ -3073,17 +3116,31 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         if default.is_some_and(|d| same_value(def, value, &d)) {
             continue;
         }
-        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
-            continue;
-        };
         if in_effect.contains(reference) {
             continue;
         }
+        candidates.push((mem_key, value, reference));
+    }
+    let wanted: HashSet<&str> = candidates.iter().map(|(_, _, r)| *r).collect();
+    let mut visibility = pg.visibility_where(|r| wanted.contains(r));
+    visibility.extend(
+        pg.module_visibilities(
+            pg.entries
+                .keys()
+                .map(String::as_str)
+                .filter(|k| wanted.contains(k)),
+        ),
+    );
+    let mut out = Vec::new();
+    for (mem_key, value, reference) in candidates {
+        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
+            continue;
+        };
         let locked = device.lock.parameters.get(reference);
         out.push(IgnoredOverride {
             key: locked.map_or_else(|| mem_key.clone(), |p| p.key.clone()),
             reference: reference.to_string(),
-            value: display_value(def, value),
+            value: display_value(pg.def_of(reference), value),
             needs,
         });
     }

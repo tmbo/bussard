@@ -73,7 +73,8 @@ filter = 'test(/round_trips_the_dynamic_tree_on_the_corpus/)'
 slow-timeout = { period = "300s", terminate-after = 12 }
 
 # The view acceptance sweep (issue #345) builds the device view and the image
-# of every program of the corpus under the defaults and 50 random value sets.
+# of every program of the corpus under the defaults and 50 random value sets,
+# split over 16 shards by archive name (issue #1087).
 [[profile.corpus.overrides]]
 filter = 'test(/view_shows_what_the_download_writes_on_the_corpus/)'
 slow-timeout = { period = "300s", terminate-after = 12 }
