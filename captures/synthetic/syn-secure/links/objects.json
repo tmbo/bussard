@@ -1,0 +1,23 @@
+[
+ {
+  "number": 0,
+  "y": 287,
+  "name": "Switch",
+  "gas": [
+   "1/0/1",
+   "1/0/2"
+  ],
+  "size": null,
+  "flags": "KLSÜ"
+ },
+ {
+  "number": 1,
+  "y": 327,
+  "name": "Status",
+  "gas": [
+   "1/0/3"
+  ],
+  "size": null,
+  "flags": "LSÜA"
+ }
+]

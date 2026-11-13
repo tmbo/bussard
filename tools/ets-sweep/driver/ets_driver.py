@@ -3085,7 +3085,11 @@ def link_row(row: dict, number: int, ga: str) -> dict:
             return refuse(refused)
         closed = close_link_dialog()
         raise RuntimeError(f"the link dialog did not close; {'closed with Abbrechen' if closed else 'left open'}")
-    return {"linked": True}
+    # In a secure project, linking a plain address to an object that has a
+    # secured one makes ETS ask first ("Sicherheitshinweis": 1/0/2 forced
+    # off, linked to the switch object next to 1/0/1, 2026-11-13).
+    notice = confirm_security_notice(2.5)
+    return {"linked": True, **({"notice": notice} if notice else {})}
 
 
 # How long `link_row` looks for the menu entry by UI Automation before OCR;
@@ -3387,6 +3391,9 @@ def flow_download(req: dict) -> dict:
             click(*LAYOUT["medium_keep"])
             kept = True
             break
+        if cancel_connection_choice():
+            # Never pick another interface: the owner's real one is listed.
+            raise RuntimeError("download: ETS asked to choose a connection (the sim's did not answer); cancelled")
         if dismiss_password_dialog(req.get("project_password")):
             password = True
         if req.get("certificate") and enter_certificate(req["certificate"]):
@@ -3397,6 +3404,284 @@ def flow_download(req: dict) -> dict:
         time.sleep(1)
     return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept, "password_dialog": password,
             "certificate_dialog": certificate}
+
+
+# The device context menu's "Entladen" submenu (ETS 6.4.1, mapped 2026-11-13
+# on syn-minimal, #1056): two entries, opened by hovering "Entladen". The
+# context menu has no UI Automation tree; its submenu lists the entries both
+# by UIA (twice, once per menu instance) and on screen, so the entry is
+# clicked where OCR reads it. There is no confirmation: ETS connects at once.
+UNLOAD_ENTRIES = {
+    "application": "Applikationsprogramm",
+    "full": "Physikalische Adresse und Applikationsprogramm",
+}
+
+
+def unload_entry(lines: list[dict], what: str) -> dict | None:
+    """The OCR line of the "Entladen" submenu entry for `what` (see
+    UNLOAD_ENTRIES). The full entry carries its shortcut on the same line
+    ("... Applikationsprogramm Strg + U"); the application entry is the line
+    that names no address."""
+    want = _norm(UNLOAD_ENTRIES[what])
+    for line in lines:
+        have = _norm(line["text"])
+        if what == "full" and have.startswith(want):
+            return line
+        if what == "application" and have.startswith(want) and "adresse" not in have:
+            return line
+    return None
+
+
+def connection_choice_open() -> bool:
+    """Whether ETS shows "Verbindung auswählen": the connection it was told to
+    use is not answering and it offers the interfaces it found, the owner's
+    real KNX IP interface among them (2026-11-13, an unload with no sim
+    running). Never pick one there."""
+    return bool(find_text("Verbindung auswählen", (1250, 820, 2860, 960)))
+
+
+def cancel_connection_choice() -> bool:
+    """Answer "Verbindung auswählen" with Abbrechen; True when it was open."""
+    if not connection_choice_open():
+        return False
+    hits = [l for l in ocr((1250, 1200, 2900, 1800)) if l["text"].strip() == "Abbrechen"]
+    if not hits:
+        keys("{ESC}")
+    else:
+        h = hits[0]
+        click(h["x"] + h["w"] // 2, h["y"] + h["h"] // 2)
+    time.sleep(1.5)
+    return True
+
+
+@flow("unload")
+def flow_unload(req: dict) -> dict:
+    """ETS's "Entladen" of device `ia`: `what` is "application" (the
+    application program) or "full" (individual address and application),
+    from the device row's context menu. Like `download`, it does not wait
+    for the result; the sim's log and ETS's history tell it. A "Verbindung
+    auswählen" dialog (the selected connection does not answer) is cancelled
+    and raises: the flow never picks another interface."""
+    from pywinauto import mouse
+
+    require_project(req["project"])
+    what = req.get("what", "application")
+    if what not in UNLOAD_ENTRIES:
+        raise RuntimeError(f"unload: unknown what={what!r}, one of {sorted(UNLOAD_ENTRIES)}")
+    devs = flow_devices(req)["devices"]
+    hit = [d for d in devs if d["ia"] == req["ia"]]
+    if not hit:
+        raise RuntimeError(f"device {req['ia']} not in list: {devs}")
+    y = hit[0]["y"]
+    s_ = scale()
+    click(700, y)
+    time.sleep(1)
+    mouse.move(coords=(int(1000 * s_), int(600 * s_)))
+    time.sleep(0.4)
+    lines: list[dict] = []
+    for _ in range(3):
+        mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
+        time.sleep(1.5)
+        lines = ocr((1000, y, 1900, y + 1300))
+        if any(_norm(l["text"]).endswith("entladen") for l in lines):
+            break
+        keys("{ESC}")
+        time.sleep(1)
+    texts = [l["text"] for l in lines]
+    entry = next((l for l in lines if _norm(l["text"]).endswith("entladen") and l["x"] < 1300), None)
+    if entry is None or not any("Gerät neu starten" in t for t in texts):
+        keys("{ESC}")
+        raise RuntimeError(f"unload: no device menu with 'Entladen' for {req['ia']}: {texts[:12]}")
+    ey = entry["y"] + entry["h"] // 2
+    mouse.move(coords=(int(1150 * s_), int(ey * s_)))
+    time.sleep(1.5)
+    sub = ocr((1500, ey - 60, 2900, ey + 200))
+    pick = unload_entry(sub, what)
+    if pick is None:
+        keys("{ESC}")
+        keys("{ESC}")
+        raise RuntimeError(f"unload: no {UNLOAD_ENTRIES[what]!r} in the Entladen submenu: {[l['text'] for l in sub]}")
+    click(pick["x"] + 80, pick["y"] + pick["h"] // 2)
+    t0 = time.time()
+    password = certificate = False
+    while time.time() - t0 < float(req.get("dialog_wait", 12)):
+        if cancel_connection_choice():
+            raise RuntimeError("unload: ETS asked to choose a connection (the sim's did not answer); cancelled")
+        if dismiss_password_dialog(req.get("project_password")):
+            password = True
+        if req.get("certificate") and enter_certificate(req["certificate"]):
+            certificate = True
+        time.sleep(1)
+    return {"ia": req["ia"], "what": what, "entry": pick["text"], "password_dialog": password,
+            "certificate_dialog": certificate}
+
+
+# A group address's "Sicherheit" in the Eigenschaften panel (ETS 6.4.1, mapped
+# 2026-11-13 in ets-sweep-secure, #1054): a dropdown under the label, its
+# list a popup with UI Automation ListItems.
+GA_SECURITY_TEXT = {"auto": "Automatisch", "on": "Erzwungen an", "off": "Erzwungen aus"}
+# The left column below the Katalog panel, where the Panels menu opens the
+# group-address panel ("Gruppenadressen" header at x 67, its close button at
+# x 648 on the header's line; the tree's own "Gruppenadressen" node at x 57
+# sits below it).
+LEFT_LOWER = (0, 1300, 680, 2500)
+
+
+def ga_panel_header(lines: list[dict]) -> dict | None:
+    """The group-address panel's header among OCR lines of LEFT_LOWER: the
+    topmost "Gruppenadressen" at the column's left edge."""
+    heads = [l for l in lines if l["text"].strip() == "Gruppenadressen" and l["x"] < 120]
+    return min(heads, key=lambda l: l["y"]) if heads else None
+
+
+def ga_tree_entry(lines: list[dict], prefix: str, below: int) -> dict | None:
+    """The tree entry of a main ("1") or middle ("1/0") group below the
+    panel header at y `below`: the line whose text, apart from an icon OCR
+    reads as a few symbols ("88 1/0 Neue Mittelgruppe"), starts with
+    `prefix` and a space."""
+    for line in sorted(lines, key=lambda l: l["y"]):
+        if line["y"] <= below:
+            continue
+        text = re.sub(r"^[^0-9]*", "", line["text"].strip())
+        if "/" in prefix:
+            m = re.search(r"(?:^|\s)(\d+/\d+)\s", text)
+            if m and m.group(1) == prefix:
+                return line
+        elif text.startswith(prefix + " ") and not re.match(r"\d+\s+\d+/", text):
+            return line
+    return None
+
+
+def ga_security_value(lines: list[dict]) -> str | None:
+    """What the Sicherheit dropdown shows: the line below the "Sicherheit"
+    label among OCR lines of the Eigenschaften panel."""
+    label = next((l for l in lines if l["text"].strip() == "Sicherheit"), None)
+    if label is None:
+        return None
+    below = sorted((l for l in lines if label["y"] + 10 < l["y"] < label["y"] + 90), key=lambda l: l["y"])
+    return below[0]["text"].strip() if below else None
+
+
+def close_ga_panel() -> bool:
+    """Close the group-address panel below the Katalog panel; it squeezes the
+    Katalog panel so `catalog_add` no longer finds the add bar (session 3
+    left one open in ets-sweep-secure, which failed two adds on 2026-11-13)."""
+    head = ga_panel_header(ocr(LEFT_LOWER))
+    if not head:
+        return False
+    click(648, head["y"] + 12)
+    time.sleep(2)
+    return True
+
+
+def restore_ops_pane() -> bool:
+    """Open "Laufende Operationen" again when the Eigenschaften panel took the
+    right-hand column (its header then sits at the column's foot, y 2357;
+    OCR missed it under the "Windows aktivieren" watermark, 2026-11-13)."""
+    if any("Historie" in l["text"] or "Aktiv" in l["text"] for l in ocr((3320, 600, 4112, 700))):
+        return False
+    click(3600, 2357)
+    time.sleep(2)
+    return True
+
+
+def confirm_security_notice(wait: float = 6.0) -> list[str]:
+    """Answer ETS's "Sicherheitshinweis" with Weiter and return its text.
+    ETS shows it when a security change affects other addresses: setting
+    1/0/2 to "Erzwungen aus" listed 1/0/1 and 1/0/2 as unencrypted, since
+    one object (the switch) is linked to both (2026-11-13). An empty list
+    when no notice came."""
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if find_text("Sicherheitshinweis", (1550, 900, 2560, 1040)):
+            text = [l["text"] for l in ocr((1550, 900, 2560, 1450))]
+            hits = [l for l in ocr((1550, 1100, 2600, 1800)) if l["text"].strip().endswith("Weiter")]
+            if not hits:
+                raise RuntimeError(f"ga_security: no Weiter on the security notice: {text}")
+            h = hits[0]
+            click(h["x"] + h["w"] // 2, h["y"] + h["h"] // 2)
+            time.sleep(2)
+            return text
+        time.sleep(0.5)
+    return []
+
+
+@flow("ga_security")
+def flow_ga_security(req: dict) -> dict:
+    """Set the security of group address `ga` ("1/0/2") to `security`
+    ("off", "on" or "auto", GA_SECURITY_TEXT) in the project's
+    Eigenschaften panel, read it back, and put the layout back: the
+    group-address panel closed, the operations pane open (#1054, a plain
+    address next to secured ones)."""
+    require_project(req["project"])
+    want = GA_SECURITY_TEXT[req.get("security", "off")]
+    notice: list[str] = []
+    main, middle, _ = req["ga"].split("/")
+    head = ga_panel_header(ocr(LEFT_LOWER))
+    if head is None:
+        click(*LAYOUT["toolbar_panels"])
+        time.sleep(1.2)
+        choose("Gruppenadressen", (3400, 140, 3900, 620))
+        time.sleep(3)
+        head = ga_panel_header(ocr(LEFT_LOWER))
+        if head is None:
+            raise RuntimeError("ga_security: the Gruppenadressen panel did not open")
+    try:
+        tree = ocr((0, head["y"], 680, 2440))
+        mid = ga_tree_entry(tree, f"{main}/{middle}", head["y"])
+        if mid is None:
+            top = ga_tree_entry(tree, main, head["y"])
+            if top is None:
+                raise RuntimeError(f"ga_security: no main group {main} in {[l['text'] for l in tree]}")
+            click(13, top["y"] + top["h"] // 2)
+            time.sleep(1.5)
+            mid = ga_tree_entry(ocr((0, head["y"], 680, 2440)), f"{main}/{middle}", head["y"])
+            if mid is None:
+                raise RuntimeError(f"ga_security: no middle group {main}/{middle}")
+        click(mid["x"] + 40, mid["y"] + mid["h"] // 2)
+        time.sleep(2)
+        rows = [l for l in ocr((700, head["y"] + 60, 1300, 2440)) if l["text"].replace(" ", "") == req["ga"]]
+        if not rows:
+            raise RuntimeError(f"ga_security: no row {req['ga']} in the group-address list")
+        click(1000, rows[0]["y"] + rows[0]["h"] // 2)
+        time.sleep(1)
+        props = ocr((3420, 160, 4112, 1400))
+        if ga_security_value(props) is None:
+            click(3563, 193)  # the Eigenschaften header of the right-hand column
+            time.sleep(2.5)
+            props = ocr((3420, 160, 4112, 1400))
+        before = ga_security_value(props)
+        label = next((l for l in props if l["text"].strip() == "Sicherheit"), None)
+        if label is None or before is None:
+            raise RuntimeError(f"ga_security: no Sicherheit field: {[l['text'] for l in props][:20]}")
+        value = next(l for l in props if l["text"].strip() == before and l["y"] > label["y"])
+        if before != want:
+            click(3757, value["y"] + value["h"] // 2)
+            time.sleep(1.5)
+            item = None
+            for pop in ets_popups():
+                for it in pop.descendants(control_type="ListItem"):
+                    try:
+                        if it.window_text() == want:
+                            item = it
+                    except Exception:  # noqa: BLE001 - a stale element of a closing popup
+                        pass
+            if item is None:
+                keys("{ESC}")
+                raise RuntimeError(f"ga_security: no option {want!r} in the Sicherheit list")
+            item.click_input()
+            COUNTS["clicks"] += 1
+            time.sleep(1.5)
+            notice = confirm_security_notice()
+        shown = ga_security_value(ocr((3420, 160, 4112, 1400)))
+    finally:
+        # The operations pane back on top (the history flow reads it there),
+        # then the group-address panel closed.
+        restore_ops_pane()
+        close_ga_panel()
+    if shown != want:
+        raise RuntimeError(f"ga_security: {req['ga']} shows {shown!r} after setting {want!r}")
+    return {"ga": req["ga"], "before": before, "security": shown, "notice": notice}
 
 
 @flow("history")
@@ -3484,6 +3769,10 @@ def ensure_layout() -> dict:
         click(648, 185)
         time.sleep(2)
         did.append("closed " + top["text"])
+    if close_ga_panel():
+        # A group-address panel below the Katalog panel (ga_security, or one
+        # left open by hand) squeezes the Katalog panel (2026-11-13).
+        did.append("closed Gruppenadressen below Katalog")
     if not find_text("Topologie", (0, 160, 660, 210)):
         click(*LAYOUT["toolbar_panels"])
         time.sleep(1.2)

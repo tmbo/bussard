@@ -1,0 +1,7 @@
+project = "syn-secure links"
+
+groups = [
+  { address = "1/0/1", name = "links 1/0/1" },
+  { address = "1/0/2", name = "links 1/0/2" },
+  { address = "1/0/3", name = "links 1/0/3" },
+]

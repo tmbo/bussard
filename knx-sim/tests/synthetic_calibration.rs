@@ -19,7 +19,9 @@
 //! `other-app`, `partial`: `tools/ets-sweep/synthetic/capture.py --variant`)
 //! commits those earlier downloads as `base-requests.txt`. They are replayed
 //! first, into the same device, so the captured download meets the device ETS
-//! met; the checks then apply to the captured download as above.
+//! met; the checks then apply to the captured download as above. An unload
+//! capture (`unload`, `unload-full`, bussard #1056) is checked the same way,
+//! except that every load-state object must end `Unloaded`.
 //!
 //! A device whose `sim.yaml` has a `knxnet` block (an IP-enabled TP product,
 //! `syn-ip-enabled-tp`, bussard issue #455) gets that KNXnet/IP parameter
@@ -76,6 +78,18 @@ const KNOWN_REFUSALS: &[(&str, &str, usize)] = &[
     // The same two reads on the second secure product (bussard #859, #1054).
     (
         "syn-secure-property/defaults",
+        "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
+        2,
+    ),
+    // The same two reads before the links variant's commissioning (#1054).
+    (
+        "syn-secure/links",
+        "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
+        2,
+    ),
+    // And on the pre-filled secure product (bussard #1081, #1056).
+    (
+        "syn-secure-fill/defaults",
         "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
         2,
     ),
@@ -392,9 +406,19 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let dev = bus
         .device(IndividualAddress(ia))
         .ok_or_else(|| format!("{label}: device {ia:04x} missing"))?;
+    // An unload capture (the `unload` and `unload-full` run variants, bussard
+    // #1056) leaves every load-state object Unloaded; any other is Loaded.
+    let unload = capture
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with("unload"));
+    let expected = if unload {
+        LoadState::Unloaded
+    } else {
+        LoadState::Loaded
+    };
     for o in &pd.objects {
         let state = dev.load_state(o.lsm_index);
-        if state != Some(LoadState::Loaded) {
+        if state != Some(expected) {
             failures.push(format!("{label}: object {} is {state:?}", o.lsm_index));
         }
     }

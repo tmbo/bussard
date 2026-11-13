@@ -654,6 +654,8 @@ def write_rows(entries: list[dict]) -> None:
     )
     rows = []
     for e in sorted(entries, key=lambda e: (e["product"], e["variant"])):
+        if "oracle" not in e:
+            continue  # a capture without a bussard command to compare (`unload`)
         coverage = e["oracle"]["coverage"].rstrip("%")
         # A not-comparable row (bussard refused the product) has no coverage.
         coverage = coverage if re.fullmatch(r"[0-9.]+", coverage) else ""
@@ -803,11 +805,13 @@ VARIANTS: dict[str, dict] = {
     "links": {"products": ("syn-minimal", "syn-secure"),
               "doc": "the switch object linked to two group addresses and the status object to one "
                      "(driver `link`), then the application download (#478, #540)"},
-    "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure"),
+    "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure", "syn-minimal", "syn-secure-fill"),
                "doc": "a defaults download, then the same application again over the loaded device; "
                       "the capture is the second download (#488; on syn-secure the second download runs over "
-                      "the device the first one activated, with ETS's tool key, #1054)"},
-    "other-app": {"products": ("syn-s7-0705", "syn-s7-0701"),
+                      "the device the first one activated, with ETS's tool key, #1054; on syn-minimal and "
+                      "syn-secure-fill over a programmed System B device, where bussard opens a sparse "
+                      "secure download with a factory reset, #1056, #1081)"},
+    "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
                          "over it; the capture is the second download (#488)"},
     "partial": {"products": ("syn-minimal", "syn-property-param", "syn-property-nopar", "syn-trailing-writeprop",
@@ -828,9 +832,28 @@ VARIANTS: dict[str, dict] = {
                "doc": "parameters changed in ETS's parameter editor (changes.toml: a branch switch, a module "
                       "instance, a union member), each read back after the last change, then the application "
                       "download into a fresh device; the Dynamic evaluator off its defaults (#1054, #1049, #1050)"},
-    "apply": {"products": ("syn-minimal", "syn-secure"),
+    "apply": {"products": ("syn-minimal", "syn-secure", "syn-s7-0705", "syn-relseg-fill"),
               "doc": "the application with two links, then a third link added and ETS's partial download; the "
                      "capture is the partial download, compared with `bussard apply` (#829, #469, #779)"},
+    "unload": {"products": ("syn-minimal", "syn-s7-0705"),
+               "doc": "a defaults download, then ETS's \"Entladen\" of the application only; the capture is the "
+                      "unload, the reference for what a later download finds (#1056). bussard has no unload "
+                      "command, so the capture has no oracle row; knx-sim replays it",
+               "row": False},
+    "unload-full": {"products": ("syn-minimal", "syn-s7-0705"),
+                    "doc": "a defaults download, then ETS's \"Entladen\" of the individual address and the "
+                           "application; the capture is the unload (#1056). ETS asks for the programming "
+                           "button first (\"Bitte Programmierknopf drücken\", 2026-11-13), so knx-sim starts "
+                           "the device with `prog_mode: true`. ETS then resets the address by serial number, which "
+                           "knx-sim does not answer yet: ETS ends \"Entladen(Alle): fehlgeschlagen\" and nothing is "
+                           "committed (#1120). No oracle row, as `unload`",
+                    "row": False, "sim": {"prog_mode": True}},
+    "assign": {"products": ("syn-minimal",),
+               "doc": "the individual address assigned to a device in programming mode (ETS's \"Physikalische "
+                      "Adresse\" download; knx-sim starts the device at 15.15.255 with `prog_mode: true`), then "
+                      "the application; the capture is the application download, the assignment is its base "
+                      "(#1056, #779, #572)",
+               "sim": {"address": "15.15.255", "prog_mode": True}},
     "bare-restart": {"products": ("syn-master-reset",),
                      "doc": "the application download into a device without the Master Reset: knx-sim "
                             "`master_reset: refuse` answers the confirmed A_Restart with error code 2 "
@@ -839,9 +862,13 @@ VARIANTS: dict[str, dict] = {
                             "Restart, so the run raises and nothing is committed",
                      "sim": {"master_reset": "refuse"}},
 }
+# The step modes of `unload` and `unload-full`: the driver's `unload` flow and
+# the entry of ETS's "Entladen" submenu it picks.
+UNLOAD_MODES = {"unload": "application", "unload-full": "full"}
 # `other-app`: the application loaded first, a sibling of the same mask with
 # the smallest delta.
-OTHER_APP = {"syn-s7-0705": "syn-s7-hidden-default", "syn-s7-0701": "syn-s7-lsm5"}
+OTHER_APP = {"syn-s7-0705": "syn-s7-hidden-default", "syn-s7-0701": "syn-s7-lsm5",
+             "syn-minimal": "syn-hidden-default"}
 # `links`: (object number, group address) in the order the driver links them.
 # The first address of an object that transmits is its sending address.
 LINKS = {"syn-minimal": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")],
@@ -853,7 +880,9 @@ GA_SECURITY = {"syn-secure": {"1/0/2": "off"}}
 # `apply` (#829): the links of the first download, then the link added before
 # the partial download.
 APPLY_LINKS = {"syn-minimal": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
-               "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")])}
+               "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
+               "syn-s7-0705": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
+               "syn-relseg-fill": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")])}
 # The parameter changes of `partial`, `calc-input`, `calc-overflow` and
 # `params`, per product and variant (see the file's header).
 CHANGES = HERE / "changes.toml"
@@ -997,6 +1026,9 @@ def variant_steps(product: str, variant: str) -> list[dict]:
         "apply": [{**one, "links": APPLY_LINKS.get(product, ([], []))[0], "objects": True},
                   {**one, "mode": "partial", "links": APPLY_LINKS.get(product, ([], []))[1], "objects": True}],
         "bare-restart": [dict(one)],
+        "unload": [dict(one), {**one, "mode": "unload"}],
+        "unload-full": [dict(one), {**one, "mode": "unload-full"}],
+        "assign": [{**one, "mode": "address"}, dict(one)],
     }[variant]
     for i, step in enumerate(steps):
         step["name"] = "capture" if i == len(steps) - 1 else f"base-{i + 1}" if len(steps) > 2 else "base"
@@ -1158,7 +1190,11 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
             since = sweep.vm_now(c)
             log_from = len(sim.lines())
             print(f"{product} {variant} {step['name']}: {step['product']} download {step['mode']}", flush=True)
-            info["download"] = flow("download", ia="1.1.1", mode=step["mode"])
+            if step["mode"] in UNLOAD_MODES:
+                # ETS's "Entladen" from the device's context menu (#1056).
+                info["download"] = flow("unload", ia="1.1.1", what=UNLOAD_MODES[step["mode"]])
+            else:
+                info["download"] = flow("download", ia="1.1.1", mode=step["mode"])
             info["end"] = series.wait_download(c, sim, since, log_from)
             hist: list[str] = []
             for _ in range(24):
@@ -1288,7 +1324,8 @@ def capture_variant(product: str, variant: str, args) -> int:
                                        if s["product"] == product])
     dst = copy_variant(product, variant, sid, app, mask)
     extra = carried_options(variant_options(product, variant), previous.get("row_options", ""))
-    verdict = oracle_verdict(product, app, variant, extra)
+    rowless = VARIANTS[variant].get("row") is False
+    verdict = {} if rowless else oracle_verdict(product, app, variant, extra)
     requests = sum(1 for l in (dst / "requests.txt").read_text().splitlines() if l and not l.startswith("#"))
     entry = {
         "product": product, "variant": variant, "order_number": order, "application": app, "signed_id": sid,
@@ -1297,9 +1334,9 @@ def capture_variant(product: str, variant: str, args) -> int:
         "about": VARIANTS[variant]["doc"],
         "steps": [{"product": s["product"], "mode": s["mode"], "ets": s.get("ets"), "ops": s.get("ops")}
                   for s in result["steps"]],
-        "row_options": extra,
+        "row_options": "" if rowless else extra,
         "note": previous.get("note"),
-        "oracle": {k: verdict[k] for k in ORACLE_KEYS if k in verdict},
+        "oracle": {k: verdict[k] for k in ORACLE_KEYS if k in verdict} or None,
     }
     for p in involved:
         if p != product:
@@ -1308,6 +1345,10 @@ def capture_variant(product: str, variant: str, args) -> int:
     entries.append({k: v for k, v in entry.items() if v not in ("", None)})
     write_manifest(entries)
     write_rows(entries)
+    if rowless:
+        steps_done = ", ".join(f"{s.get('mode')} {s.get('ets')} {s.get('ops')} ops" for s in result["steps"])
+        print(f"{product}/{variant}: captured, no oracle row ({steps_done})")
+        return 0
     code, text = run_oracle(["--rows", str(ROWS.relative_to(REPO)), "--check"])
     print(f"{product}/{variant}: oracle {verdict['verdict']} coverage {verdict['coverage']} "
           f"loadctl {verdict['loadctl']} ({verdict['regions']}); rows --check: {'passed' if code == 0 else 'FAILED'}")

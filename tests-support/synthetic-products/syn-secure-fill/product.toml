@@ -1,0 +1,118 @@
+# A synthetic product (#1081, #1056): syn-secure with a pre-filled parameter
+# segment. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-secure (KNX Data Secure capable 07B0, MergedProcedure) with the parameter
+segment allocated `LdCtrlRelSegment Mode="1" Fill="255"`: the device fills the
+segment, so bussard writes it sparsely (only the octets that differ from the
+fill, #123), and with the confirmed restart of a secure-capable System B
+program it opens a full download with a factory reset, erase code 7
+(`insert_factory_reset`, crates/bussard-download/src/flash/plan.rs). About a
+third of the 07B0 sweep rows carry that reset where ETS sends none on a fresh
+device (#1081). The `reload` variant downloads the application twice into one
+sim: the second download runs over the programmed, activated device, and is
+ETS's reference for what it sends in place of the reset."""
+construct = "Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard plans a factory reset)"
+issues = [1081, 1056, 423]
+
+[product]
+text = "Nest-guard bolt"
+order_number = "NEST-BOLT"
+hardware_name = "NEST-BOLT"
+hardware_serial = "00FA00290002"
+bus_current = 10
+
+[application]
+number = 0x2902
+version = 0x10
+name = "Nest-guard bolt"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Nestwächterriegel" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+# KNX Data Secure (#423, #537): IsSecureEnabled and the two table sizes.
+[application.security]
+group_key_table_entries = 4
+individual_address_entries = 4
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment (the delta: Mode 1 with Fill 255), MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 1, fill = 255 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]
