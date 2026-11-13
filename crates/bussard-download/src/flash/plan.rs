@@ -1512,15 +1512,15 @@ fn plan_flash_as(
     }
 
     // A filled segment is written sparsely (only the octets that differ from
-    // the fill, issue #123). The device's fill is bookkeeping, not an erase, so
-    // on a re-flash every octet the new image leaves out keeps whatever the
-    // previous image put there (issue #117: a Jung F50 kept a blinking status
-    // LED). ETS opens an unload + download of a secure-capable application
-    // with a factory reset (erase code 7) and ends every download of one with
-    // a confirmed restart (erase code 1); do the same. An application that is
-    // not secure-capable gets neither (issue #452: 1.1.45 and 1.1.51 allocate
-    // a filled segment too, and ETS unloads them with load controls and ends
-    // with a bare A_Restart).
+    // the fill, issue #123). The download opens with no reset (issue #1081):
+    // the allocation with the fill flag has the device fill the whole
+    // segment before the sparse write (Management Procedures 03_05_02
+    // §3.31.3.4, Load Event Data Relative Allocation, Mode bit 0), so the
+    // octets the write leaves out hold the fill on a programmed device too.
+    // ETS relies on exactly that: its downloads over a programmed, activated
+    // Data Secure device (`captures/synthetic/syn-secure-fill/reload`) and
+    // over a programmed plain one (`syn-minimal/reload`, `/other-app`) send
+    // the procedure's unloads and the filled allocation, and no reset.
     // The octets no declared parameter occupies in a parameter image of a
     // segment without `<Data>` (issue #1084): kept when the allocation keeps
     // the memory ([`FlashPlan::refresh_unoccupied`], below).
@@ -1534,12 +1534,6 @@ fn plan_flash_as(
     }
 
     let form = super::restart_form(app);
-    let sparse = steps
-        .iter()
-        .any(|s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()));
-    if sparse && form.is_confirmed() && download == Download::Full {
-        insert_factory_reset(&mut steps);
-    }
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);

@@ -1801,6 +1801,15 @@ impl MockDevice {
                         self.memory.remove(&old_base.wrapping_add(i));
                     }
                 }
+                // Mode bit 0 fills the allocated memory with the fill byte
+                // (Management Procedures 03_05_02 §3.31.3.4), which ETS relies
+                // on over a programmed device (issue #1081).
+                if value.get(6).is_some_and(|mode| mode & 1 == 1) {
+                    let byte = value.get(7).copied().unwrap_or(0);
+                    for i in 0..size {
+                        self.memory.insert(base.wrapping_add(i), byte);
+                    }
+                }
                 self.segments.insert(oi, (base, size));
             }
             return answer(self.load_state(oi));

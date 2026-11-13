@@ -391,9 +391,10 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 
 /// The factory reset of a full download (issues #79, #117): a device that
 /// carries another application, or whose state could not be read, is reset
-/// before the download, on top of the reset the planner adds for a sparse,
-/// filled-segment download. `freshness` is `None` offline (a dry run), where
-/// only the planner's own reset shows. `no_factory_reset` waives it.
+/// before the download. The planner adds none of its own (issue #1081), so a
+/// fresh device and one with the same application get no reset, as from ETS.
+/// `freshness` is `None` offline (a dry run), where no reset shows.
+/// `no_factory_reset` waives it.
 ///
 /// ETS's System 7 pre-download pass ([`FlashPlan::skip_sys7_prelude`], issue
 /// #488: unload LSMs 1 to 4, basic restart) stays only with `unload_first`

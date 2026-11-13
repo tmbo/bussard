@@ -429,6 +429,18 @@ and `knx-sim` both erase on erase code 7 and answer with a process time, and a
 mock test proves a re-flash over stale octets matches the ETS image only
 because of the reset.
 
+Corrected by issue #1081 (2026-11-13). The allocation with the fill flag does
+erase: a device fills the whole segment with the fill byte (Management
+Procedures 03_05_02 §3.31.3.4, Mode bit 0), and knx-sim does. The plain ETS
+download that left the F50 blinking ran the product's `par` procedure, whose
+allocation keeps the memory (`Mode="0"`, issue #490), over bussard's earlier
+full write of a wrong image (#123). The house captures that open with erase
+code 7 send it before reading anything of the application, so it is an
+explicit ETS reset, not part of a download. ETS's download over a programmed
+device sends none (`captures/synthetic/syn-secure-fill/reload`,
+`syn-minimal/reload`), and neither does `flash` now; the reset stays only for
+a `--force` over another or an unreadable application.
+
 **ETS's standalone "Restart device"** (issues #435, #452). Six captures in
 `shared-with-windows/28-10-restarts/` hold one ETS *Restart device* each:
 

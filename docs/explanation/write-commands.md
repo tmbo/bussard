@@ -156,14 +156,15 @@ application is refused by that id, and otherwise the load state and the first
 octets of its code decide whether it runs the same application.
 
 **The factory reset (System B).** Many applications write only the octets
-that differ from a fill byte, so on a re-flash the octets the new image leaves
-out keep the old image's values. `flash` therefore opens such a download of an
-application that supports Secure, and any `--force` over an unknown one, with a
-confirmed factory reset, as ETS does: it
-keeps the address, erases application, parameters and links, waits
-for the reboot (at most a minute) and streams every object in full. A device
-that refuses or ignores the reset fails the flash before anything is written.
-Pass `--no-factory-reset` only for a device you know holds no stale image.
+that differ from a fill byte. The segment allocation asks the device to fill
+the whole segment first, so no octet of an earlier image survives, and `flash`
+opens the download with the load procedure's own unloads, as ETS does on a
+fresh or a programmed device. Only a `--force` over another application or an
+unknown one opens the download of an application that supports Secure with a
+confirmed factory reset: it keeps the address, erases application, parameters,
+links and the Data Secure keys, waits for the reboot (at most a minute) and
+streams every object in full. A device that refuses or ignores the reset fails
+the flash before anything is written. `--no-factory-reset` leaves it out.
 System 7 downloads write every region in full and never reset. An
 application that does not support Secure is never reset either: ETS sends it no
 master reset, only the download's own unloads, and ends its download with a
@@ -186,7 +187,8 @@ prompt, for example) is reopened at the next request, with no error.
       application objects (types 3 and 4) and the application id in
       `PID_PROGRAM_VERSION`; other objects only when no application object
       reports a state. System 7: each load-state machine.
-    - **Reset.** Master reset, erase code 7. `flash` waits the reboot time the
+    - **Reset.** Only over another or an unknown application (above): master
+      reset, erase code 7. `flash` waits the reboot time the
       device reports, reconnects and streams every object; the differential
       download that skips matching objects does not apply after a reset.
     - **Load-state changes** are confirmed by the state in the device's
@@ -316,7 +318,7 @@ table indexes the address table.
   key in the keyring. Use the ETS project's current keyring. `--tool-key` carries
   no group keys, so it suits only a device without secured addresses.
 - **Prints** each step in the dry run, never key bytes, and **keeps** the
-  factory reset: the device keeps its tool key across it.
+  factory reset where the plan has one.
 
 ??? note "Details"
     The object is unloaded after the other objects, then reloaded with the
