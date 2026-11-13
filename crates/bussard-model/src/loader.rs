@@ -80,7 +80,7 @@ pub enum LoadError {
     /// `bussard.lock` carries a format version this build does not read.
     #[error(
         "{path}: lock format version {version}{} is not supported (this bussard reads versions \
-         {LOCK_VERSION_V3} and {LOCK_VERSION}); regenerate it with `bussard import <export> --dir \
+         {LOCK_VERSION_V3} to {LOCK_VERSION}); regenerate it with `bussard import <export> --dir \
          <dir>`",
         written_by.as_deref().map(|w| format!(", written by {w},")).unwrap_or_default()
     )]
@@ -239,10 +239,10 @@ fn list_device_files(devices_dir: &Path) -> Vec<String> {
     out
 }
 
-/// Whether this build reads a lock of `version` (v3, or v4 which only adds
-/// `serial_number`).
+/// Whether this build reads a lock of `version` (v3, v4 which only adds
+/// `serial_number`, or v5 which only adds `group_keys`).
 fn lock_version_supported(version: u32) -> bool {
-    version == LOCK_VERSION || version == LOCK_VERSION_V3
+    (LOCK_VERSION_V3..=LOCK_VERSION).contains(&version)
 }
 
 /// Parses `bussard.lock` text.
@@ -265,9 +265,10 @@ pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError>
         });
     }
     let lock: LockFile = toml_io::parse(path, text)?;
-    // A v3 lock carries no v4 key (`serial_number`, issue #752).
-    let v4_keys = files::lock_version_for(&lock.devices) == LOCK_VERSION;
-    if !lock_version_supported(lock.version) || (v4_keys && lock.version != LOCK_VERSION) {
+    // A lock carries no key newer than its version (`serial_number` v4,
+    // issue #752; `group_keys` v5, issue #1094).
+    let needed = files::lock_version_for(&lock.devices);
+    if !lock_version_supported(lock.version) || lock.version < needed {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
             version: lock.version,

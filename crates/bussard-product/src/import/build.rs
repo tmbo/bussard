@@ -433,6 +433,7 @@ pub fn build_model(
                 // The project export carries no read-back table; PID 54 is
                 // derived from the links at download time.
                 secure_senders: Vec::new(),
+                group_keys: None,
             })
         } else {
             None

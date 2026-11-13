@@ -82,8 +82,16 @@ pub struct SecureAdoption {
     /// keyring is older than the device's last download, or lacks a key.
     pub flagged_without_key: Vec<u16>,
     /// Objects linked to a keyed group address that the device does not flag:
-    /// the keyring is newer than the device's last download.
+    /// the keyring is newer than the device's last download. An object
+    /// without a PID 61 element (group object 0) is never listed: it is
+    /// secured with its keys and no flag (issue #1094).
     pub keyed_not_flagged: Vec<u16>,
+    /// The group addresses the device's group key table holds, as far as
+    /// the adoption can tell (issue #1094): the keyed linked addresses, when
+    /// the device's flags agree with the keyring. `None` when they disagree
+    /// or the flags were not read: the record stays unset and the next
+    /// apply establishes it.
+    pub group_keys: Option<BTreeSet<GroupAddress>>,
 }
 
 /// Derives the [`SecureAdoption`] of a device from its links, the keyring's
@@ -111,16 +119,31 @@ pub fn derive_secure_adoption(
     match device_flags {
         Some(flags) => {
             let linked: BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+            // PID 61 cannot show a keyed object without an element (group
+            // object 0): it is secured by its keys (issue #1094).
+            let unflagged: BTreeSet<u16> = keyed_objects
+                .iter()
+                .copied()
+                .filter(|&o| !bussard_download::has_go_flag_element(o))
+                .collect();
+            let flagged_without_key: Vec<u16> = flags
+                .iter()
+                .filter(|o| linked.contains(o) && !keyed_objects.contains(o))
+                .copied()
+                .collect();
+            let keyed_not_flagged: Vec<u16> = keyed_objects
+                .iter()
+                .copied()
+                .filter(|&o| bussard_download::has_go_flag_element(o) && !flags.contains(&o))
+                .collect();
+            let agree = flagged_without_key.is_empty() && keyed_not_flagged.is_empty();
             SecureAdoption {
-                secure_objects: flags.clone(),
+                secure_objects: flags.union(&unflagged).copied().collect(),
+                group_keys: agree.then(|| secure_groups.clone()),
                 secure_groups,
                 from_device_flags: true,
-                flagged_without_key: flags
-                    .iter()
-                    .filter(|o| linked.contains(o) && !keyed_objects.contains(o))
-                    .copied()
-                    .collect(),
-                keyed_not_flagged: keyed_objects.difference(flags).copied().collect(),
+                flagged_without_key,
+                keyed_not_flagged,
             }
         }
         None => SecureAdoption {
@@ -129,6 +152,7 @@ pub fn derive_secure_adoption(
             from_device_flags: false,
             flagged_without_key: Vec::new(),
             keyed_not_flagged: Vec::new(),
+            group_keys: None,
         },
     }
 }
@@ -168,6 +192,11 @@ pub fn apply_secure_adoption(
         has_fdsk_certificate: previous.has_fdsk_certificate,
         sequence_number: sequence_number.or(previous.sequence_number),
         secure_senders: senders.to_vec(),
+        group_keys: adoption
+            .group_keys
+            .as_ref()
+            .map(|keys| keys.iter().copied().collect())
+            .or(previous.group_keys),
     });
     for number in &adoption.secure_objects {
         if let Some(co) = dev.com_objects.get_mut(number) {
@@ -221,6 +250,41 @@ mod tests {
             out.insert(ga(g)?, Key16::new([7; 16]));
         }
         Ok(out)
+    }
+
+    /// Review of #1094, finding 6: a device ETS downloaded with a secured
+    /// link on group object 0 flags only object 1 (PID 61). The adoption
+    /// secures object 0 by its key, does not call the keyring newer than
+    /// the device, and records the key table it implies.
+    #[test]
+    fn test_derive_secure_adoption_secures_object_0_without_a_flag() -> TestResult {
+        let links = vec![
+            Link {
+                object: 0,
+                name: None,
+                send: None,
+                listen: vec![ga("1/0/1")?, ga("1/0/2")?],
+            },
+            Link {
+                object: 1,
+                name: None,
+                send: None,
+                listen: vec![ga("1/0/3")?],
+            },
+        ];
+        let adoption = derive_secure_adoption(
+            &links,
+            &keys(&["1/0/1", "1/0/2", "1/0/3"])?,
+            Some(&BTreeSet::from([1])),
+        );
+        assert_eq!(adoption.secure_objects, BTreeSet::from([0, 1]));
+        assert!(adoption.keyed_not_flagged.is_empty(), "{adoption:?}");
+        assert!(adoption.flagged_without_key.is_empty(), "{adoption:?}");
+        assert_eq!(
+            adoption.group_keys,
+            Some(BTreeSet::from([ga("1/0/1")?, ga("1/0/2")?, ga("1/0/3")?]))
+        );
+        Ok(())
     }
 
     #[test]

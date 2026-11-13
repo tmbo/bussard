@@ -198,18 +198,8 @@ impl SecurityObject {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            secured_objects: inputs
-                .secure_objects
-                .iter()
-                .copied()
-                .filter(|&o| bussard_model::secure_invariants::has_go_flag_element(o))
-                .collect(),
-            secured_without_flag: inputs
-                .secure_objects
-                .iter()
-                .copied()
-                .filter(|&o| !bussard_model::secure_invariants::has_go_flag_element(o))
-                .collect(),
+            secured_objects: inputs.flagged_objects().into_iter().collect(),
+            secured_without_flag: inputs.unflagged_objects().into_iter().collect(),
         })
     }
 }

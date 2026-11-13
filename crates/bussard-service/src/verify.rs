@@ -97,12 +97,7 @@ impl ExpectedSecurity {
             senders,
             // PID 61 reads back only the objects with an element (group
             // object 0 has none, issue #1094).
-            secured_objects: inputs
-                .secure_objects
-                .iter()
-                .copied()
-                .filter(|&o| bussard_model::secure_invariants::has_go_flag_element(o))
-                .collect(),
+            secured_objects: inputs.flagged_objects(),
         }
     }
 

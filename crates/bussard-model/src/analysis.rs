@@ -504,6 +504,7 @@ mod tests {
             sequence_number: None,
             secure_commissioning: false,
             secure_senders: Vec::new(),
+            group_keys: None,
         });
         let model = model_with(vec![("9/0/1", protected)], vec![("1.1.4", secure)], vec![]);
 
