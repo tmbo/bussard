@@ -40,11 +40,14 @@
 //! link change must not reset the device's parameters. Only the group-object
 //! table's communication flags follow the links, inside an LSM 3 bracket.
 //!
-//! A System B table write does not restart the device — a table object
-//! activates its content on `LoadCompleted`. A System 7 one ends with a basic
-//! restart, as ETS's table-only downloads do, and `apply` waits for the device
-//! to answer again before it goes on. See the ordering and restart rationale in
-//! `bussard_download::apply_sys7`.
+//! With product data, a System B write of the link tables is ETS's partial
+//! download "Group Communication" (KNX 03_05_03 §3.9.3.5, issue #1095): it
+//! unloads the group-object, association and address tables, reloads all
+//! three and restarts the device. Without product data only the link tables
+//! are written and the device is not restarted. A System 7 write ends with a
+//! basic restart, as ETS's table-only downloads do. `apply` waits for the
+//! device to answer again after a restart before it reads it back. See
+//! `bussard_download::apply` and `bussard_download::apply_sys7`.
 //!
 //! # Safety
 //!

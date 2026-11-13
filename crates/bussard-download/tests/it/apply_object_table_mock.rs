@@ -254,8 +254,8 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
         .ok_or("the outcome reports the reload")?;
     assert!(reload.ok(), "{reload:?}");
     assert!(
-        outcome.restarted,
-        "the partial download ends with a restart"
+        outcome.restart_due,
+        "the partial download leaves its restart due"
     );
 
     // The device holds the model's table, object 2 communicating.
@@ -267,7 +267,7 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
     assert_eq!(held, wanted_image);
     assert_ne!(word(&held, 2) & COMMUNICATION, 0);
     assert_eq!(device.load_state(3), 1, "the object table is Loaded");
-    assert_eq!(device.restarts, 1, "one basic restart");
+    assert_eq!(device.restarts, 0, "the caller sends the restart");
 
     // ETS's order (issue #1095, `captures/synthetic/syn-minimal/apply`):
     // unload 3, 2, 1; open 3, 1, 2 each with its allocation; complete 3, 2, 1.
@@ -293,8 +293,8 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
 }
 
 /// The partial download's read-back finds the group-object table the device
-/// acknowledged and did not store: the outcome is not ok, and the device is
-/// not restarted (issue #1095; a silent success is the P1 of CLAUDE.md).
+/// acknowledged and did not store: the outcome is not ok, and no restart is
+/// due (issue #1095; a silent success is the P1 of CLAUDE.md).
 #[tokio::test]
 async fn test_apply_tables_with_a_dropped_object_table_write_does_not_verify() -> TestResult {
     let app = app()?;
@@ -355,7 +355,7 @@ async fn test_apply_tables_with_a_dropped_object_table_write_does_not_verify() -
     assert!(!reload.matches, "{reload:?}");
     assert!(!outcome.ok(), "{outcome:?}");
     assert!(
-        !outcome.restarted,
+        !outcome.restart_due,
         "no restart after a write that did not verify"
     );
     let devices = gw.devices()?;

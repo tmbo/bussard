@@ -17,15 +17,14 @@
 //! - [`check_object_table`] reads the device's table through the object's
 //!   `PID_TABLE_REFERENCE` and memory, and [`ObjectTableCheck::change`] names
 //!   every descriptor that differs from the model's.
-//! - [`write_object_table`] reloads the table the way the standard's partial
-//!   download of the group-object table does (03_05_03 §3.5.3: Load, Data
-//!   Relative Allocation, write, LoadCompleted), the same shape `apply` uses
-//!   for the address and association tables (see [`crate::apply`]), and reads
-//!   it back.
-//!
-//! No ETS capture shows a partial download that links a previously unlinked
-//! object on a 07B0 device yet, so the order (object table first, then the
-//! link tables) follows the standard's procedure, not a capture.
+//! - A link change writes the table with the link tables, by the partial
+//!   download "Group Communication" (03_05_03 §3.9.3.5, issue #1095, see
+//!   [`crate::apply`]): every System B link change unloads and reloads the
+//!   three tables and restarts the device, as ETS does
+//!   (`captures/synthetic/syn-minimal/apply`).
+//! - [`write_object_table`] reloads the table alone when only it differs
+//!   (03_05_03 §3.5.3: Load, Data Relative Allocation, write, LoadCompleted),
+//!   and reads it back. No ETS capture shows that case yet.
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
@@ -63,10 +62,6 @@ pub fn object_table_image(plan: &FlashPlan) -> Option<&[u8]> {
 }
 
 /// The entry count of a table image (its leading big-endian word).
-pub(crate) fn image_count(image: &[u8]) -> usize {
-    table_entry_count(image)
-}
-
 /// The entry count of a group-object table image: its leading big-endian
 /// word (`0` for an image too short to hold one).
 pub fn table_entry_count(image: &[u8]) -> usize {
@@ -84,7 +79,7 @@ fn image_words(image: &[u8]) -> Vec<u16> {
         .as_chunks::<2>()
         .0
         .iter()
-        .take(image_count(image))
+        .take(table_entry_count(image))
         .map(|w| u16::from_be_bytes(*w))
         .collect()
 }
@@ -119,7 +114,8 @@ impl LiveObjectTable {
 
     /// Whether the table is exactly `model` (count and every descriptor).
     pub fn matches(&self, model: &[u8]) -> bool {
-        usize::from(self.count) == image_count(model) && self.descriptors == image_words(model)
+        usize::from(self.count) == table_entry_count(model)
+            && self.descriptors == image_words(model)
     }
 }
 
@@ -297,7 +293,7 @@ pub async fn check_object_table<Ch: L4Channel>(
 ) -> Option<ObjectTableCheck> {
     let model = object_table_image(plan)?.to_vec();
     let live = match find_object_table(l4).await {
-        Ok(Some(index)) => read_object_table_at(l4, index, image_count(&model))
+        Ok(Some(index)) => read_object_table_at(l4, index, table_entry_count(&model))
             .await
             .map_err(|e| format!("the group-object table did not read: {e}")),
         Ok(None) => Err("the device lists no group-object table object (type 9)".to_string()),
@@ -344,7 +340,7 @@ pub(crate) async fn write_object_table<Ch: L4Channel>(
     let segment = allocate_segment(l4, object_index, image.len() as u32, 0x00, 0x00).await?;
     write_memory_chunked(l4, segment.address, image, |_| {}).await?;
     let state = write_load_control(l4, object_index, LoadControl::LoadCompleted).await?;
-    let entries = image_count(image);
+    let entries = table_entry_count(image);
     let back = read_object_table_at(l4, object_index, entries).await?;
     Ok(ObjectTableOutcome {
         state,

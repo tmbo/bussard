@@ -106,12 +106,16 @@ pub fn plan_device(inputs: &PlanInputs<'_>, read: &DeviceRead<LiveTables>) -> Pl
     if let Some(change) = &security_change {
         change.add_to(&mut built.plan, &report, Some(inputs.model));
     }
-    Planned {
+    let mut planned = Planned {
         report,
         built,
         admission,
         security_change,
-    }
+    };
+    // After every reason to rewrite the link tables is known (issue #1095).
+    let tables_change = planned.tables_change();
+    planned.built.mark_group_download(tables_change);
+    planned
 }
 
 /// The `admit_tunnel_senders` comparison of `target` (issue #297), or `None`

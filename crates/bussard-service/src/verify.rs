@@ -95,14 +95,7 @@ impl ExpectedSecurity {
         ExpectedSecurity {
             group_keys: u16::try_from(inputs.keyed(addresses).len()).unwrap_or(u16::MAX),
             senders,
-            // Only an object with a PID 61 element can read back flagged
-            // (group object 0 has none, issue #1094).
-            secured_objects: inputs
-                .secure_objects
-                .iter()
-                .copied()
-                .filter(|&o| bussard_download::has_go_flag_element(o))
-                .collect(),
+            secured_objects: inputs.secure_objects.clone(),
         }
     }
 

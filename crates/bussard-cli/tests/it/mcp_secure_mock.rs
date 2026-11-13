@@ -187,6 +187,9 @@ struct SecurityLog {
     /// The `max_nr_of_elem` the property description of PID 54 reports
     /// (issue #537); `None` answers the default description (0 elements).
     pid54_capacity: Option<u16>,
+    /// The group-object table's `PID_TABLE_REFERENCE` read is refused, so
+    /// the table cannot be read (issue #1095).
+    refuse_object_table: bool,
 }
 
 /// A write the mock device acknowledges as written and does not store, so
@@ -281,6 +284,15 @@ fn secure_device_with(
         .with_go_count(GO_COUNT)
         .with_data_secure(tool_key()?)
         .with_hook(move |_, apci, data| {
+            // `A_PropertyValue_Read` (0x3D5) of the group-object table's
+            // PID_TABLE_REFERENCE (object 3, PID 7), refused with a zero
+            // count when the log asks for it.
+            if apci == 0x3D5
+                && data.get(..2) == Some(&[3, 7])
+                && log.lock().ok()?.refuse_object_table
+            {
+                return Some(Reaction::Answer(0x3D6, vec![3, 7, 0x00, 0x01]));
+            }
             // A memory write into a dropped segment: echoed as written,
             // never stored.
             if apci & APCI_SELECTOR == A_MEMORY_WRITE
@@ -1794,52 +1806,220 @@ fn object_zero_xml() -> String {
         )
 }
 
-/// Issue #1094: a link of group object 0 to the secured, keyed 1/2/3 is
-/// written, not refused. Object 0 has no group-object table entry and so no
-/// PID 61 element (Resources 03_05_01 §6.3.15.2): the group key goes into
-/// PID 53, no flag is set, and the independent read-back verifies.
-#[test]
-fn test_cli_apply_writes_a_secured_link_on_group_object_0() -> TestResult {
-    let rt = tokio::runtime::Runtime::new()?;
-    let log = Arc::new(Mutex::new(SecurityLog::default()));
+/// `bussard <verb> 1.1.10 --keyring` on `dir` against `gw` (`plan` or
+/// `apply --yes`): whether it succeeded, its stdout and its stderr.
+fn run_cli(gw: &MockGateway, dir: &Path, verb: &str) -> TestResult<(bool, String, String)> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bussard"));
+    cmd.env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .arg(verb)
+        .arg("1.1.10");
+    if verb == "apply" {
+        cmd.arg("--yes");
+    }
+    let out = cmd
+        .arg("--dir")
+        .arg(dir)
+        .arg("--gateway")
+        .arg(format!("127.0.0.1:{}", gw.port()))
+        .arg("--keyring")
+        .arg(keyring_path())
+        .stdin(Stdio::null())
+        .output()?;
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// A device on [`object_zero_xml`] holding 1/2/0 on object 1, whose model
+/// adds group object 0 on the secured, keyed 1/2/3; `log` sets the security
+/// object's faults, `types` the interface objects (`None`: all five).
+fn object_zero_bench(
+    rt: &tokio::runtime::Runtime,
+    tag: &str,
+    log: SecurityLog,
+    types: Option<&[u16]>,
+) -> TestResult<(MockGateway, Arc<Mutex<SecurityLog>>, PathBuf)> {
+    let log = Arc::new(Mutex::new(log));
+    let mut device = secure_device_with(Arc::clone(&log), &["1/2/0"], &[(1, 1)], &[7, 0], &[])?;
+    if let Some(types) = types {
+        device = device.with_object_types(types);
+    }
     let gw = rt.block_on(
         MockGateway::builder()
             .channel(0x59)
             .tunnel_address(0x11C8)
             .keep_serving()
             .idle_timeout(Duration::from_secs(120))
-            .device(secure_device_with(
-                Arc::clone(&log),
-                &["1/2/0"],
-                &[(1, 1)],
-                &[7, 0],
-                &[],
-            )?)
+            .device(device)
             .start(),
     )?;
-    let dir = model_dir_with("object-zero", &object_zero_xml())?;
+    let dir = model_dir_with(tag, &object_zero_xml())?;
     std::fs::write(
         dir.join("devices").join("1.1.10.toml"),
         "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
          [links]\n0.listen = [\"1/2/3\"]\n1.listen = [\"1/2/0\"]\n",
     )?;
-    let run = run_cli_apply(&gw, &dir);
+    Ok((gw, log, dir))
+}
+
+/// How many restarts the bench's device received.
+fn restarts(gw: &MockGateway) -> TestResult<usize> {
+    Ok(gw.devices()?.first().ok_or("the device")?.restarts)
+}
+
+/// Issue #1094: a link of group object 0 to the secured, keyed 1/2/3 is
+/// written, not refused. Object 0 has no group-object table entry and so no
+/// PID 61 element (Resources 03_05_01 §6.3.15.2): the group key goes into
+/// PID 53, no flag is set, and the independent read-back verifies. The plan
+/// after it has nothing to do: object 0 is not "gaining" a flag forever.
+#[test]
+fn test_cli_apply_writes_a_secured_link_on_group_object_0() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, log, dir) = object_zero_bench(&rt, "object-zero", SecurityLog::default(), None)?;
+    let applied = run_cli(&gw, &dir, "apply");
+    let planned = run_cli(&gw, &dir, "plan");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = applied?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(stdout.contains("1 group key (PID 53)"), "{stdout}");
+    {
+        let log = log.lock().map_err(|_| "log poisoned")?;
+        // The security object: unloaded with the tables, loaded once.
+        assert_eq!(log.controls, vec![0x04, 0x01, 0x02], "{:?}", log.controls);
+        assert_eq!(log.pid53, 1, "the key of 1/2/3");
+        assert!(
+            log.pid61.iter().all(|&f| f == 0),
+            "no element is flagged for object 0: {:?}",
+            log.pid61
+        );
+    }
+    // The partial download ended with the device's restart.
+    assert_eq!(restarts(&gw)?, 1, "{stdout}");
+    let (success, stdout, stderr) = planned?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("nothing to write") || stdout.contains("nothing to do"),
+        "the plan after the apply is a no-op: {stdout}"
+    );
+    assert!(!stdout.contains("security flag"), "{stdout}");
+    Ok(())
+}
+
+/// Issue #1095: a security-object change of its own (an admitted tunnelling
+/// address joins PID 54) rewrites the tables by the partial download, and
+/// the plan on both surfaces says so: the group-object table, the restart,
+/// and a question that names the restart.
+#[test]
+fn test_security_only_change_plans_and_sends_the_restart() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = object_zero_bench(&rt, "admit-only", SecurityLog::default(), None)?;
+    // First bring the device to the project, then admit the tunnel senders.
+    let (success, stdout, stderr) = run_cli(&gw, &dir, "apply")?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert_eq!(restarts(&gw)?, 1);
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"192.0.2.1:3671\"\n\
+         admit_tunnel_senders = true\n",
+    )?;
+    let planned = run_cli(&gw, &dir, "plan");
+    let mcp_plan = Server::start(&dir, gw.port(), &["--allow-programming"])
+        .and_then(|mut server| plan_when_connected(&mut server, "1.1.10"));
+    let applied = run_cli(&gw, &dir, "apply");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = planned?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(stdout.contains("group-object table"), "{stdout}");
+    assert!(stdout.contains("then a restart"), "{stdout}");
+    let plan = mcp_plan?;
+    assert_eq!(plan["ok"], true, "{plan}");
+    let text = plan.to_string();
+    assert!(text.contains("\"restart\":true"), "{plan}");
+    assert!(text.contains("\"group_object_table\""), "{plan}");
+    assert!(text.contains("then restart it?"), "{plan}");
+    let (success, stdout, stderr) = applied?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert_eq!(restarts(&gw)?, 2, "one restart for the security change");
+    Ok(())
+}
+
+/// Issue #1095: a device that lists no group-object table object gets its
+/// link tables written alone, as before, without a restart; the apply is
+/// not refused.
+#[test]
+fn test_cli_apply_without_an_object_table_object_writes_the_link_tables() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let types = [
+        OT_DEVICE,
+        OT_ADDRESS_TABLE,
+        OT_ASSOCIATION_TABLE,
+        OT_APPLICATION_PROGRAM,
+    ];
+    let (gw, _log, dir) =
+        object_zero_bench(&rt, "no-type-9", SecurityLog::default(), Some(&types))?;
+    let run = run_cli(&gw, &dir, "apply");
     let _ = std::fs::remove_dir_all(&dir);
     let (success, stdout, stderr) = run?;
     assert!(success, "{stdout}\n{stderr}");
-    assert!(stdout.contains("1 group key (PID 53)"), "{stdout}");
-    let log = log.lock().map_err(|_| "log poisoned")?;
-    // The security object: unloaded with the tables, loaded once.
-    assert_eq!(log.controls, vec![0x04, 0x01, 0x02], "{:?}", log.controls);
-    assert_eq!(log.pid53, 1, "the key of 1/2/3");
-    assert!(
-        log.pid61.iter().all(|&f| f == 0),
-        "no element is flagged for object 0: {:?}",
-        log.pid61
-    );
-    // The partial download ended with the device's restart.
-    let devices = gw.devices()?;
-    let device = devices.first().ok_or("the device")?;
-    assert_eq!(device.restarts, 1, "{stdout}");
+    assert!(!stdout.contains("group-object table reloaded"), "{stdout}");
+    assert_eq!(restarts(&gw)?, 0, "{stdout}");
+    Ok(())
+}
+
+/// Issue #1095: a device that refuses the read of its group-object table is
+/// decided before anything is sent: its link tables are written alone, the
+/// group-object table is not unloaded, and nothing restarts.
+#[test]
+fn test_cli_apply_with_an_unreadable_object_table_writes_the_link_tables() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = object_zero_bench(
+        &rt,
+        "unreadable-go",
+        SecurityLog {
+            refuse_object_table: true,
+            ..SecurityLog::default()
+        },
+        None,
+    )?;
+    let before = gw.devices()?.first().ok_or("the device")?.load_state(3);
+    let run = run_cli(&gw, &dir, "apply");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = run?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(!stdout.contains("group-object table reloaded"), "{stdout}");
+    assert_eq!(restarts(&gw)?, 0, "{stdout}");
+    let after = gw.devices()?.first().ok_or("the device")?.load_state(3);
+    assert_eq!(after, before, "the group-object table is not touched");
+    Ok(())
+}
+
+/// Issue #1095: links and a parameter change together send one restart, the
+/// parameter download's: the partial download of the tables leaves its own
+/// to it, and the plan names one restart.
+#[test]
+fn test_cli_apply_of_links_and_parameters_restarts_once() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = object_zero_bench(&rt, "links-and-params", SecurityLog::default(), None)?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
+         [links]\n0.listen = [\"1/2/3\"]\n1.listen = [\"1/2/0\"]\n",
+    )?;
+    let planned = run_cli(&gw, &dir, "plan");
+    let applied = run_cli(&gw, &dir, "apply");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = planned?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert_eq!(stdout.matches("restart").count(), 1, "{stdout}");
+    let (success, stdout, stderr) = applied?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert_eq!(restarts(&gw)?, 1, "one restart: {stdout}");
     Ok(())
 }

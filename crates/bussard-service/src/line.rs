@@ -665,21 +665,24 @@ async fn visit(
     note.say(&format!("backup written to {}", backup_path.display()));
     out.backup = Some(backup_path.clone());
 
-    // The table write of the single-device apply (issue #901): the same
-    // lease, load sequence and read-back verify. A System 7 write's closing
-    // restart is waited out below, with the tables read back after it.
+    // The single-device apply's write (issues #901, #1095): the same lease,
+    // load sequence, restart and wait, lock records and independent
+    // read-back.
     let request = crate::program::apply::ApplyRequest {
         service,
         target: target.address,
         source,
         dir,
-        model: None,
+        model: Some(model),
         product: product.as_ref(),
         mask,
         desired,
         tables_change,
         object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
-        group_object_image: object_table.as_ref().map(|check| check.model.as_slice()),
+        group_object_image: object_table
+            .as_ref()
+            .filter(|check| check.live.is_ok())
+            .map(|check| check.model.as_slice()),
         images: images.as_ref(),
         security: security.as_ref(),
         parameters: None,
@@ -689,51 +692,37 @@ async fn visit(
         seed: None,
         support: &grant,
     };
-    let (written, _) = crate::program::apply::write_tables(&request, false, &mut ()).await;
+    let written = crate::program::apply::apply_device(request, &mut ()).await;
     let backed_up = |why: &str| format!("{why}; pre-state backed up to {}", backup_path.display());
-    match written {
-        crate::program::apply::TablesWritten::Lease(err) => {
-            DeviceStatus::Failed(session_error_detail(&err))
+    match &written.tables {
+        Some(crate::program::apply::TablesWritten::Lease(err)) => {
+            return DeviceStatus::Failed(session_error_detail(err));
         }
-        crate::program::apply::TablesWritten::Failed(err) => {
-            DeviceStatus::Failed(backed_up(&one_line(&err)))
+        Some(crate::program::apply::TablesWritten::Failed(err)) => {
+            return DeviceStatus::Failed(backed_up(&one_line(err)));
         }
-        crate::program::apply::TablesWritten::Ran(summary) if !summary.ok => DeviceStatus::Failed(
-            backed_up(&format!("did not verify: {}", one_line(&summary.detail))),
-        ),
-        crate::program::apply::TablesWritten::Ran(summary) if summary.restarted => {
-            // A System 7 write ends with a basic restart, the System B partial
-            // download of the three tables with its restart (issue #1095):
-            // wait for the device, then read its tables back on a fresh
-            // connection, which also shows the write survived the restart.
-            match verify_after_restart(
-                service,
-                source,
-                target.address,
-                mask,
-                desired,
-                product.as_ref(),
-                &tool_key,
-                &secure_seq,
-            )
-            .await
-            {
-                Ok(()) => DeviceStatus::Applied(changes),
-                Err(why) => DeviceStatus::Failed(backed_up(&one_line(&why))),
-            }
+        Some(crate::program::apply::TablesWritten::Ran(summary)) if !summary.ok => {
+            return DeviceStatus::Failed(backed_up(&format!(
+                "did not verify: {}",
+                one_line(&summary.detail)
+            )));
         }
-        crate::program::apply::TablesWritten::Ran(_) => {
-            // A verified secured System B write put this PID 54 table on the
-            // device: record it in the lock, as `adopt` does (issue #297). A
-            // reload of the group-object table alone does not write it.
-            if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change)
-                && let Err(err) =
-                    crate::admission::record_secure_senders(dir, target.address, &inputs.senders)
-            {
-                note.warn(&format!("warning: {}: {err}", target.address));
-            }
-            DeviceStatus::Applied(changes)
+        _ => {}
+    }
+    if let Some(Err(why)) = &written.restarted {
+        return DeviceStatus::Failed(backed_up(&format!("restart: {}", one_line(why))));
+    }
+    for (record, _) in [&written.lock.senders, &written.lock.flags]
+        .into_iter()
+        .flatten()
+    {
+        if let Err(err) = record {
+            note.warn(&format!("warning: {}: {err}", target.address));
         }
+    }
+    match written.readback.as_ref().and_then(|r| r.failure()) {
+        Some(why) => DeviceStatus::Failed(backed_up(&format!("read back: {}", one_line(&why)))),
+        None => DeviceStatus::Applied(changes),
     }
 }
 
@@ -836,70 +825,6 @@ fn table_bases(product: Option<&ProductSource>) -> bussard_download::Sys7TableBa
         .and_then(|p| p.app())
         .map(bussard_download::sys7_table_bases)
         .unwrap_or_default()
-}
-
-/// After a write's closing restart (System 7, or the System B partial
-/// download, issue #1095): waits for the device to answer
-/// again as `mask`, reads its tables back and checks they and the
-/// communication flags match `desired`.
-#[allow(clippy::too_many_arguments)] // the read phase's inputs plus what to compare
-async fn verify_after_restart(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    mask: u16,
-    desired: &DesiredTables,
-    product: Option<&ProductSource>,
-    tool_key: &Option<Key16>,
-    secure_seq: &SequenceHighWater,
-) -> Result<(), String> {
-    crate::restart::wait_until_back(
-        service,
-        target,
-        &L4Options::secured(source, tool_key.clone(), secure_seq.clone()),
-        mask,
-        crate::restart::RestartWait::default(),
-    )
-    .await
-    .map_err(|err| err.to_string())?;
-    let options = L4Options::secured(source, tool_key.clone(), secure_seq.clone());
-    let read = service
-        .with_l4(target, &options, async |l4| {
-            Ok::<_, ServiceError>(
-                bussard_download::read_live_tables(l4, table_bases(product))
-                    .await
-                    .map_err(|e| chain(&e)),
-            )
-        })
-        .await
-        .map_err(|err| session_open_error(&err))
-        .and_then(|read| read);
-    let live = match read {
-        Ok(LiveRead::Tables(live)) => live,
-        Ok(LiveRead::UnsupportedMask { mask, .. }) => {
-            return Err(format!(
-                "read back after the restart: mask {mask:04X} is not supported"
-            ));
-        }
-        Err(err) => return Err(format!("read back after the restart: {err}")),
-    };
-    if !plan(live.tables(), desired).is_noop() {
-        return Err(
-            "read back after the restart: the tables do not match your project".to_string(),
-        );
-    }
-    if let Some(s7) = live.sys7() {
-        let linked = desired.associations.iter().map(|&(_, a)| a).collect();
-        let (writes, _) = sys7_flag_writes(s7, &linked);
-        if let Some(flag) = writes.first() {
-            return Err(format!(
-                "read back after the restart: object {}'s communication flag reads {:02X}, \
-                 your project needs {:02X}",
-                flag.object, flag.from, flag.to
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Reads one device's live tables on a fresh lease (connect, best-effort

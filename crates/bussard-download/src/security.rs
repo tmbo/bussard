@@ -606,6 +606,7 @@ pub fn build_security_program(
 pub struct DeviceSecurityView {
     /// Group objects to flag: the model marks them `secure`, or they are linked
     /// to a group address that is secure in the model or keyed in the keyring.
+    /// Only objects with a PID 61 element ([`has_go_flag_element`]).
     pub secure_objects: BTreeSet<u16>,
     /// The device's linked group addresses the model marks `secure`.
     pub secure_gas: BTreeSet<GroupAddress>,
@@ -640,7 +641,7 @@ pub fn device_security_view(
             if ga_secure {
                 view.secure_gas.insert(*ga);
             }
-            if ga_secure || group_keys.contains_key(ga) {
+            if (ga_secure || group_keys.contains_key(ga)) && has_go_flag_element(link.object) {
                 view.secure_objects.insert(link.object);
             }
         }
@@ -650,7 +651,7 @@ pub fn device_security_view(
         for (number, co) in &loaded.device.com_objects {
             // Only a linked object communicates at all; an unlinked object's
             // flag is irrelevant and ETS's capture flags only linked ones.
-            if co.secure && linked.contains(number) {
+            if co.secure && linked.contains(number) && has_go_flag_element(*number) {
                 view.secure_objects.insert(*number);
             }
         }
@@ -662,7 +663,8 @@ pub fn device_security_view(
 /// link tables (issue #156): the model's and keyring's view of the device.
 #[derive(Debug, Clone, Default)]
 pub struct SecurityInputs {
-    /// Group objects to flag secured.
+    /// Group objects to flag secured: only objects with a PID 61 element
+    /// ([`has_go_flag_element`]; group object 0 has none).
     pub secure_objects: BTreeSet<u16>,
     /// Linked group addresses the model marks secure (each must have a key).
     pub secure_gas: BTreeSet<GroupAddress>,
@@ -722,7 +724,10 @@ pub fn security_inputs_for(
         let co_secure = loaded
             .and_then(|d| d.device.com_objects.get(&asap))
             .is_some_and(|co| co.secure);
-        if secure || co_secure || group_keys.contains_key(ga) {
+        // Only an object with a PID 61 element can be flagged (object 0 has
+        // none, issue #1094): every consumer of the set (the program, the
+        // plan's comparison with PID 61, the read-back, the lock) agrees.
+        if (secure || co_secure || group_keys.contains_key(ga)) && has_go_flag_element(asap) {
             inputs.secure_objects.insert(asap);
         }
     }
