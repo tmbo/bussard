@@ -1,0 +1,123 @@
+# Synthetic product (#1084, capture plan of #1054): the twin of
+# syn-relseg-dataless with a declared parameter the configuration never shows.
+# Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-relseg-dataless (a 16-octet parameter segment without `<Data>`, allocated
+with `LdCtrlRelSegment Mode="0" Fill="165"`) plus a 16-bit parameter at octets
+3 and 4 that no parameter block shows, default 4660 (`12 34`). Octets 5 to 15
+are occupied by no parameter. `MinEtsVersion` is 4.0, as on the 11 M-00EF
+rows of #1061 (`Mode="0" Fill="0"`), so the hidden default is not downloaded
+(#448): there ETS writes the octets of hidden parameters as `00`, never their
+default, but `00` is also their Fill. The capture decides which value ETS
+gives a hidden parameter's octets under a Fill other than 00: `00`, the Fill
+`a5`, or none (#1084). bussard writes `a5` there (`requests/flash.txt`).
+Octets 5 to 15 should stay unwritten, as 3 to 15 of syn-relseg-dataless."""
+construct = "data-less RelativeSegment, Mode 0 with Fill 165, a hidden parameter at octets 3 and 4 (#1084)"
+issues = [1084, 1054]
+
+[product]
+text = "Lichen padder"
+order_number = "NEST-LICHEN"
+hardware_name = "NEST-LICHEN"
+hardware_serial = "00FA002A0026"
+bus_current = 10
+
+[application]
+number = 0x2A26
+version = 0x10
+name = "Lichen padder"
+mask = "07B0"
+min_ets_version = "4.0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Flechtenpolsterer" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 16
+data_less = true
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# Declared but in no parameter block: never shown (#1084).
+[[parameter]]
+name = "calibration"
+type = "Delay"
+text = "Calibration"
+default = 4660
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment (the delta: Mode 0 with Fill 165, #1061), MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 16, mode = 0, fill = 165 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 16, verify = false }]
