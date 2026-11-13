@@ -285,6 +285,11 @@ def _step_reads(label: str, step: dict, segs: List[Tuple[int, int, str]]) -> Lis
     return out
 
 
+# The plan.json marker of a step whose property write goes out right before
+# the next memory write (bussard-service `dump::VERIFY_MODE_SENT`, #1076).
+VERIFY_MODE_SENT = "before-next-memory-write"
+
+
 def plan_operations(plan: dict) -> List[Dict[str, object]]:
     """bussard's operations from a dry run's `plan.json`, in plan order, in
     the form of `operations` (with the plan `step` instead of a kind-local
@@ -297,6 +302,15 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
         props.setdefault(w.get("step"), []).append(w)
     calls = {c["step"]: c for c in memimage.plan_function_calls(plan)}
     out: List[Dict[str, object]] = []
+    # The verify-mode step only arms the switch (`"sent":
+    # "before-next-memory-write"` in plan.json): the executor writes
+    # obj0 PID_DEVICE_CONTROL right before the next memory write that goes
+    # out, after that step's load-control records (issues #705, #1076), so
+    # its write is held until then. An image of only its pre-fill octet
+    # writes nothing and does not release it; the planner places the switch
+    # only where every write is plain. An armed switch with no later memory
+    # write is never sent.
+    armed: List[Dict[str, object]] = []
     for step in plan.get("steps", []):
         n = step.get("index")
         label = re.sub(r"^\d+\.\s*", "", str(step.get("label") or ""))
@@ -320,9 +334,17 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
                 # A read-compare stream (mask 0701) writes only the octets
                 # the device does not already hold.
                 entry["read_compare"] = True
+            entries.extend(armed)
+            armed = []
             entries.append(entry)
         for w in props.get(n, []):
-            entries.append({"op": "prop-write", "object": w["object"], "pid": w["pid"]})
+            write = {"op": "prop-write", "object": w["object"], "pid": w["pid"]}
+            if step.get("sent") == VERIFY_MODE_SENT:
+                # Keeps its own step: the state comparison counted it there.
+                write["step"] = n
+                armed.append(write)
+            else:
+                entries.append(write)
         if n in calls:
             entries.append({"op": "fcall", "object": calls[n]["object"], "pid": calls[n]["pid"]})
         restart = _step_restart(label)
@@ -330,7 +352,7 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
             entries.append(restart)
         entries.extend(_step_reads(label, step, segs))
         for e in entries:
-            e["step"] = n
+            e.setdefault("step", n)
             e["pos"] = len(out) + 1
             out.append(e)
     return out

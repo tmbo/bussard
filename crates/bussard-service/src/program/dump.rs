@@ -320,6 +320,12 @@ fn load_control_records(plan: &FlashPlan, step: &FlashStep) -> Vec<Value> {
         .collect()
 }
 
+/// The `sent` marker of the verify-mode step in `plan.json`: its
+/// `PID_DEVICE_CONTROL` write goes out right before the next memory write
+/// (the first octets of the next image that writes any), not where the step
+/// stands (issue #1076). `tools/knxtrace/sequence.py` reads it.
+pub const VERIFY_MODE_SENT: &str = "before-next-memory-write";
+
 /// Writes the dry-run dump for `plan` into `dir` (created if missing).
 ///
 /// `table_images` are the System B table images keyed by object index (1 =
@@ -505,6 +511,11 @@ pub fn write_dump(
                     "length": 1,
                     "data": format!("{:02x}", bussard_mgmt::DEVICE_CONTROL_VERIFY_MODE),
                 });
+                // The step only arms the switch: the executor writes it right
+                // before the next memory write that goes out, after that
+                // step's load-control records (issues #705, #1076). The
+                // planner places it only where every write is plain.
+                record["sent"] = json!(VERIFY_MODE_SENT);
             }
             // A load procedure's property write (issue #390), as the wire
             // carries it: an index-addressed object with the plain service,
@@ -921,6 +932,16 @@ mod tests {
     /// segment allocated with `Mode="1" Fill="{fill}"` (no `<Data>`, no
     /// parameter: its image is the fill `00`, issue #1088).
     fn dumped_fill_only(mode: u8, fill: u8) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        Ok(dumped_steps(mode, fill)?
+            .iter()
+            .filter(|s| s["image"]["image_kind"] == json!("code"))
+            .map(|s| s["image"]["fill_only"].clone())
+            .collect())
+    }
+
+    /// The `plan.json` steps `write_dump` gives the 16-octet `Verify="true"`
+    /// System B code image of [`dumped_fill_only`].
+    fn dumped_steps(mode: u8, fill: u8) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
              <ApplicationProgram Id="M-2_A-8" ApplicationNumber="8" ApplicationVersion="1"
@@ -967,13 +988,28 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("plan.json"))?;
         let _ = std::fs::remove_dir_all(&dir);
         let dump: Value = serde_json::from_str(&text)?;
-        Ok(dump["steps"]
-            .as_array()
-            .ok_or("steps")?
+        Ok(dump["steps"].as_array().ok_or("steps")?.clone())
+    }
+
+    #[test]
+    fn test_write_dump_marks_the_verify_mode_write_as_sent_before_the_next_memory_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1076: the verify-mode step arms the switch; its PID 14 write
+        // goes out right before the next memory write. The oracle's operation
+        // order (`tools/knxtrace/sequence.py`) reads this marker, not the label.
+        let steps = dumped_steps(1, 255)?;
+        let switch = steps
             .iter()
-            .filter(|s| s["image"]["image_kind"] == json!("code"))
-            .map(|s| s["image"]["fill_only"].clone())
-            .collect())
+            .position(|s| s["property"]["pid"] == json!(bussard_mgmt::PID_DEVICE_CONTROL))
+            .ok_or("a verify-mode step")?;
+        assert_eq!(steps[switch]["sent"], json!(VERIFY_MODE_SENT));
+        assert_eq!(VERIFY_MODE_SENT, "before-next-memory-write");
+        assert!(
+            steps[switch + 1..].iter().any(|s| s["image"].is_object()),
+            "a memory write follows the switch"
+        );
+        assert!(steps.iter().filter(|s| s.get("sent").is_some()).count() == 1);
+        Ok(())
     }
 
     #[test]

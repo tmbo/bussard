@@ -396,16 +396,23 @@ MV-0701, not a device limitation, and ETS read-compare-writes it instead
   every other download drops it (`FlashPlan::skip_sys7_prelude`, issue #488,
   the table above). An LSM the device lacks (count 0) or that answers Error
   is skipped with a warning; the procedure's own unloads stay strict.
-- `Sys7EnableVerifyMode` on masks with `VerifyMode` (0705): read PID 14 and
+- `EnableVerifyMode` on masks with `VerifyMode` (0705): read PID 14 and
   write it back with bit 2 set, only when the bit is clear, keeping the other
-  bits. It goes right after the first `StartLoading`, one record earlier than
-  ETS (the allocation and its stream are one step in bussard; nothing depends
-  on the order). Each segment write waits for its echo, which must name the
-  chunk's address and carry the octets written, or the step fails with both
-  values (#524); a missing echo is a silence the resume path retries on a new
-  connection. The session sets verify mode again on every connection it
-  opens after the step, before the next write; a device that refuses or lacks
-  PID 14 streams blind with a warning. An LSM record write (0701, memory-mapped)
+  bits. It goes out where ETS sends it, right before the first memory write
+  (#1076): on a full download after LSM 1's `StartLoading` and its first
+  `LdCtrlAbsSegment` record (`captures/synthetic/syn-s7-0705/{defaults,reload,
+  other-app,params}` ops 11 to 15, and the other 0705 synthetic rows), on a
+  parameter-only download after LSM 3's `StartLoading` (`syn-s7-0705/partial`
+  ops 11 to 14). The allocation and its stream are one step in bussard, so the
+  plan step stands before that step and only arms the switch; the executor
+  sends it after the step's allocation record (as on System B, #705), and it
+  stays armed until the device answers, so a connection lost during the switch
+  switches it on over the next one. Each segment write waits for its echo,
+  which must name the chunk's address and carry the octets written, or the
+  step fails with both values (#524); a missing echo is a silence the resume
+  path retries on a new connection. The session sets verify mode again on
+  every connection it opens after the switch, before the next write; a device
+  that refuses or lacks PID 14 streams blind with a warning naming which. An LSM record write (0701, memory-mapped)
   is not echo-checked; its echo, if any, is drained, and `read_memory` skips a
   late echo whose address is not the one it asked for.
 - **State read-backs follow the realisation.** On the property realisation
