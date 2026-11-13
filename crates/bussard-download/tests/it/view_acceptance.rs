@@ -10,10 +10,12 @@
 //!   (`Access="None"`, which the view never lists) left out on both sides;
 //! - the objects the view shows ([`shown_objects`]) are the ones the object
 //!   table gets a descriptor for ([`dynamic_group_object_descriptors`]);
-//! - [`DeviceAnalysis::ignored_overrides`] names exactly the stored values the image does
-//!   not carry: on refs without a slot (and, for a ref without memory, that
-//!   the evaluation does not reach), or replaced by an `<Assign>`; and on a
-//!   module instance's refs the evaluation does not reach (issue #1050).
+//! - [`DeviceAnalysis::ignored_overrides`] with
+//!   [`DeviceAnalysis::assigned_overrides`] names exactly the stored values
+//!   the image does not carry: on refs without a slot (and, for a ref without
+//!   memory, that the evaluation does not reach), or replaced by an
+//!   `<Assign>`, shown or not (issue #1070); and on a module instance's refs
+//!   the evaluation does not reach (issue #1050).
 //!
 //! The view runs over the product model, the download over the application
 //! XML. The test sits here, not in `bussard-prod`, because the object table
@@ -259,10 +261,20 @@ fn compare(
         .filter(|p| p.module.is_none())
         .map(|p| p.param_ref_id.as_str())
         .collect();
+    // The values an `<Assign>` replaces are reported apart (issue #1070);
+    // together with the ignored ones they are every stored value the image
+    // does not carry. An application ref counts on a page only, as above.
+    let replaced: Vec<String> = analysis
+        .assigned_overrides()
+        .into_iter()
+        .map(|o| o.reference)
+        .filter(|r| r.starts_with("MD-") || held.contains(r.as_str()))
+        .collect();
     let ignored: BTreeSet<String> = analysis
         .ignored_overrides()
         .into_iter()
         .map(|o| o.reference)
+        .chain(replaced)
         // A default the XML alone does not tell is left out of the
         // comparison (see [`default_in`]).
         .filter(|r| default_in(app, &config, r).is_some())
@@ -285,20 +297,13 @@ fn compare(
         .iter()
         .filter_map(|p| instance_key(p.module, &p.param_ref_id))
         .collect();
-    let module_shown: BTreeSet<String> = config
-        .parameters
-        .iter()
-        .zip(&config.parameter_placements)
-        .filter(|(_, place)| place.shown)
-        .filter_map(|(p, _)| instance_key(p.module, &p.param_ref_id))
-        .collect();
     let module_in_effect = |key: &str, reference: &str, module: Option<usize>| {
         let written = if located.contains(reference) {
             carried.contains(key)
         } else {
             module_reached.contains(key)
         };
-        written && (module_shown.contains(key) || !config.is_assigned(module, reference))
+        written && !config.is_assigned(module, reference)
     };
     let expected: BTreeSet<String> = values
         .iter()
@@ -317,9 +322,9 @@ fn compare(
                 None => {
                     // The image carries the stored value of a ref the
                     // evaluation reaches (as its slot, or as the source of
-                    // an `<Assign>`), unless an `<Assign>` replaces it.
-                    let in_effect = reached.contains(r.as_str())
-                        && (placed_shown.contains(r.as_str()) || !config.is_assigned(None, r));
+                    // an `<Assign>`), unless an `<Assign>` replaces it, shown
+                    // or not (issue #1070).
+                    let in_effect = reached.contains(r.as_str()) && !config.is_assigned(None, r);
                     held.contains(r.as_str()) && !in_effect
                 }
             }

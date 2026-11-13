@@ -1301,3 +1301,74 @@ fn test_file_flows_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -
 
     Ok(())
 }
+
+/// The synthetic application with an `<Assign>` (issue #1070): with
+/// "Object 2" off, the Dynamic section assigns 5 to "Threshold", which it
+/// shows on the same page, as `syn-assign-rewrite` does with its delay.
+fn assign_bench(tag: &str, params: [u8; 2], model: &str) -> Result<Option<Bench>, Box<dyn Error>> {
+    let anchor = r#"<when test="1"><ComObjectRefRef"#;
+    if !APP_XML.contains(anchor) {
+        return Err("the synthetic app no longer has the Object 2 branch".into());
+    }
+    let xml = APP_XML.replacen(
+        anchor,
+        &format!(
+            r#"<when test="0"><Assign TargetParamRefRef="M-00FA_A-0002_P-0_R-1" Value="5" /></when>{anchor}"#
+        ),
+        1,
+    );
+    let Some(bench) = Bench::start_with_app(tag, MockDevice::running(params), model, &xml)? else {
+        return Ok(None);
+    };
+    bench.pin_product()?;
+    Ok(Some(bench))
+}
+
+/// Issue #1070: a stored value an `<Assign>` replaces is named once by the
+/// CLI plan and apply and by the MCP plan and apply; both write the assigned
+/// value and the independent read-back compares against it (the write
+/// verifies, the device holds 5, a fresh plan has nothing to do).
+#[test]
+fn test_mcp_and_cli_apply_name_the_assign_and_verify_the_assigned_value() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n";
+    let note = "`thr@P-0_R-1` = 12 replaced by 5: an `<Assign>` sets it while Object 2 = Off";
+    let Some(cli) = assign_bench("assign-cli", [7, 0], model)? else {
+        return Ok(());
+    };
+    let Some(mcp) = assign_bench("assign-mcp", [7, 0], model)? else {
+        return Ok(());
+    };
+
+    let out = cli.bussard(&["plan", "1.1.4"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(stdout.matches(note).count(), 1, "plan:\n{stdout}{stderr}");
+    let out = cli.bussard(&["apply", "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(stdout.contains("parameters verified"), "{stdout}");
+    let both = format!("{stdout}{stderr}");
+    assert_eq!(both.matches("replaced by 5").count(), 1, "apply:\n{both}");
+    assert_eq!(cli.device().memory.get(&PARAM_BASE).copied(), Some(5));
+    let out = cli.bussard(&["plan", "1.1.4", "--json"])?;
+    let replan: Value = serde_json::from_str(&text(&out).0)?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+
+    let mut server = mcp.mcp()?;
+    let plan = server.plan()?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert_eq!(sentences.matches(note).count(), 1, "{sentences}");
+    let applied = server.apply(&plan)?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    assert!(
+        applied.to_string().matches("replaced by 5").count() <= 1,
+        "apply: {applied}"
+    );
+    assert_eq!(mcp.device().memory.get(&PARAM_BASE).copied(), Some(5));
+    assert_eq!(cli.device().memory_writes, mcp.device().memory_writes);
+    let replan = server.plan()?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    Ok(())
+}

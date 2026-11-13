@@ -1037,6 +1037,38 @@ pub struct CalculatedOverride {
     pub computed: String,
 }
 
+/// One `<when>` branch the walk took on its way to an `<Assign>`: the
+/// `<choose>`'s controlling ref and the value that took the branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignCondition {
+    /// The module instance id of `param_ref`, `""` at the application level.
+    pub module_instance: String,
+    /// The `<choose>`'s app-relative controlling `ParameterRef` id.
+    pub param_ref: String,
+    /// Its value, which takes the branch (empty when it has none).
+    pub value: String,
+}
+
+/// An override of an `<Assign>` target that the `<Assign>` replaced with
+/// another value (see [`DynamicConfig::assigned_overrides`], issue #1070).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedOverride {
+    /// The module instance id the target belongs to, `""` for an
+    /// application-level parameter.
+    pub module_instance: String,
+    /// The target's app-relative `ParameterRef` id.
+    pub param_ref: String,
+    /// The value the override set.
+    pub overridden: String,
+    /// The value the `<Assign>` put in its place, which the image writes.
+    pub assigned: String,
+    /// The `<Assign>`'s source as (module instance id or `""`, app-relative
+    /// ref); `None` for an `<Assign>` of a literal value.
+    pub source: Option<(String, String)>,
+    /// The `<when>` branches in front of the `<Assign>`, outermost first.
+    pub conditions: Vec<AssignCondition>,
+}
+
 /// A value a `<ParameterCalculation>` computed (see
 /// [`DynamicConfig::computed_values`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1081,6 +1113,11 @@ pub struct DynamicConfig {
     /// with another value: ETS does not let the user set such a parameter, so
     /// a download refuses rather than write a value the model does not say.
     pub calculated_overrides: Vec<CalculatedOverride>,
+    /// The overrides of an `<Assign>` target that a reached `<Assign>`
+    /// replaced with another value, sorted by module instance and ref (issue
+    /// #1070). The image writes the assigned value, as ETS does (capture
+    /// `syn-assign-rewrite/params`), so the views report each one.
+    pub assigned_overrides: Vec<AssignedOverride>,
     /// Resolved values keyed by (module instance id or `""`, app-relative
     /// `ParameterRef` id): the overrides and the `<Assign>` results.
     values: HashMap<(String, String), String>,
@@ -1306,6 +1343,8 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         }
     }
 
+    // The caller's values, to tell which an `<Assign>` replaced (#1070).
+    let caller = values.clone();
     let unions = UnionIndex::new(app);
     let placed = Rc::new(placed_parameters(app));
     let assigned = Rc::new(assigned_parameters(app));
@@ -1378,6 +1417,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         calcs.refuse_unsettled(app);
     }
     let (refused, calculated_overrides, computed) = calcs.finish(app, &values);
+    let assigned_overrides = replaced_overrides(&walk, &caller, &values, &overridden);
 
     // The written parameters: every reached ParameterRefRef plus the target
     // and source of every reached Assign, without duplicates.
@@ -1462,10 +1502,61 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         unresolved_overrides: unresolved,
         refused_calculations: refused,
         calculated_overrides,
+        assigned_overrides,
         values,
         overridden,
         computed,
     }
+}
+
+/// [`DynamicConfig::assigned_overrides`]: for each target of a reached
+/// `<Assign>` the last one reached (the one whose value stands), when the
+/// caller set the target and the `<Assign>` put another value in its place.
+fn replaced_overrides(
+    walk: &Walk,
+    caller: &HashMap<(String, String), String>,
+    values: &HashMap<(String, String), String>,
+    overridden: &HashSet<(String, String)>,
+) -> Vec<AssignedOverride> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for a in walk.assigns.iter().rev() {
+        let key = (
+            walk.instance_id(a.target_module).to_string(),
+            a.target.clone(),
+        );
+        if !seen.insert(key.clone()) || overridden.contains(&key) {
+            continue;
+        }
+        let (Some(set), Some(now)) = (caller.get(&key), values.get(&key)) else {
+            continue;
+        };
+        if set == now {
+            continue;
+        }
+        out.push(AssignedOverride {
+            module_instance: key.0,
+            param_ref: key.1,
+            overridden: set.clone(),
+            assigned: now.clone(),
+            source: a
+                .source
+                .as_ref()
+                .filter(|_| a.value.is_none())
+                .map(|s| (walk.instance_id(a.source_module).to_string(), s.clone())),
+            conditions: a
+                .conditions
+                .iter()
+                .map(|(m, r, v)| AssignCondition {
+                    module_instance: walk.instance_id(*m).to_string(),
+                    param_ref: r.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
+        });
+    }
+    out.sort_by(|a, b| (&a.module_instance, &a.param_ref).cmp(&(&b.module_instance, &b.param_ref)));
+    out
 }
 
 /// The app-relative `ParameterRef` ids whose value decides which parameters
@@ -2456,6 +2547,8 @@ struct ReachedAssign {
     value: Option<String>,
     /// Where the `<Assign>` element sits.
     place: Place,
+    /// The `<when>` branches taken in front of it (see [`Walk::taken`]).
+    conditions: Vec<(Option<usize>, String, String)>,
 }
 
 /// One pass over the Dynamic tree.
@@ -2473,6 +2566,10 @@ struct Walk {
     /// The channel and block path at the current point of the walk.
     ctx: Rc<Context>,
     assigns: Vec<ReachedAssign>,
+    /// The `<when>` branches taken at the current point of the walk,
+    /// outermost first: the scope of the `<choose>`'s ref, the ref and the
+    /// value that took the branch (issue #1070).
+    taken: Vec<(Option<usize>, String, String)>,
     /// What the previous pass left in the unions' shared memory.
     shared: SharedUnions,
     /// The parameters the Dynamic section shows somewhere
@@ -2915,11 +3012,10 @@ impl Walk {
                     if !self.is_active(app, instance, param_ref_id, default_only) {
                         continue;
                     }
-                    let value = shared
-                        .or_else(|| {
-                            value_of(app, values, instance, self.module_args(scope), param_ref_id)
-                        })
-                        .and_then(|v| v.trim().parse::<f64>().ok());
+                    let raw = shared.or_else(|| {
+                        value_of(app, values, instance, self.module_args(scope), param_ref_id)
+                    });
+                    let value = raw.as_deref().and_then(|v| v.trim().parse::<f64>().ok());
                     // A never-shown virtual parameter on System B that no
                     // `<Assign>` sets selects no `test` branch (issue #839);
                     // a `default` branch beside tests is taken as usual (ABB
@@ -2931,7 +3027,13 @@ impl Walk {
                             if no_tests && w.test != WhenTest::Default {
                                 continue;
                             }
+                            self.taken.push((
+                                scope,
+                                param_ref_id.clone(),
+                                raw.clone().unwrap_or_default(),
+                            ));
                             self.run(app, values, &w.children, module, depth);
+                            self.taken.pop();
                         }
                     }
                 }
@@ -3008,6 +3110,7 @@ impl Walk {
                     source: source.clone(),
                     value: value.clone(),
                     place: self.place(module),
+                    conditions: self.taken.clone(),
                 }),
             }
         }
