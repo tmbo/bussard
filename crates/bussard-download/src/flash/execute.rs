@@ -1729,8 +1729,9 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
         let tail_addr = addr.saturating_add(confirmed as u32);
         // A download in verify mode compares every echo (issues #524, #705,
         // Management Procedures 03_05_02 §3.16.3); a new connection sets the
-        // mode again first, and an armed System B download switches it on
-        // before its first plain write. Every other download writes as before.
+        // mode again first, and an armed download (System B #705, System 7
+        // #1076) switches it on before its first plain write. Every other
+        // download writes as before.
         let plain = bussard_mgmt::memory_service(session.l4(), tail_addr, bytes.len() - confirmed)
             != bussard_mgmt::MemoryService::Extended;
         let (echoed, result) = match session.ensure_verify_mode(plain).await {

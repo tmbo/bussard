@@ -953,6 +953,10 @@ impl FlashPlan {
         }
         let mut written: BTreeSet<String> = BTreeSet::new();
         let mut steps = Vec::new();
+        // The full plan switches verify mode on (a mask with `VerifyMode`);
+        // the parameter-only download does it before its first write.
+        let verify_mode = self.steps.contains(&FlashStep::EnableVerifyMode);
+        let mut switched = false;
         for step in &self.steps {
             match step {
                 FlashStep::Sys7StartLoading { lsm } | FlashStep::Sys7LoadCompleted { lsm }
@@ -982,6 +986,14 @@ impl FlashPlan {
                         .images
                         .get(&image.segment_id)
                         .map_or(image.len, Vec::len);
+                    // ETS switches verify mode on right before the first
+                    // parameter write, after LSM 3's StartLoading
+                    // (`captures/synthetic/syn-s7-0705/partial`, ops 11 to
+                    // 14; issue #1076): the full plan's switch goes here.
+                    if verify_mode && !switched {
+                        steps.push(FlashStep::EnableVerifyMode);
+                        switched = true;
+                    }
                     steps.push(FlashStep::WriteMem {
                         address,
                         image: ImageRef {
@@ -1005,7 +1017,7 @@ impl FlashPlan {
                 FlashStep::DescribeProp {
                     unwritten: Some(_), ..
                 } => steps.push(step.clone()),
-                FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::EnableVerifyMode => {
+                FlashStep::Restart | FlashStep::Delay { .. } => {
                     steps.push(step.clone());
                 }
                 // No pre-download pass (issue #488): ETS's partial download
