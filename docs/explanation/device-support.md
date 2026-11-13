@@ -76,12 +76,23 @@ those devices with ETS.
 - **System B communication flags.** The same holds on System B: a full flash
   clears the flag of every object your project does not link. With the device's
   product data, `plan` reads the group-object table and compares it with the
-  table a full flash would write; when they differ, `apply` reloads the table
-  before the link tables and reads it back, and `plan` names each object whose
-  descriptor changes. `apply --line` does the same. Without product data `plan`
-  names each newly linked object whose flag it could not check. No ETS capture
-  of such a partial download exists yet, so the order follows the KNX
-  standard's partial download of the group-object table.
+  table a full flash would write, and names each object whose descriptor
+  changes. `apply` and `apply --line` write it with the link tables. Without
+  product data `plan` names each newly linked object whose flag it could not
+  check.
+- **System B link change.** With product data, every link change unloads the
+  group-object, association and address tables, reloads all three and
+  restarts the device, as ETS does (KNX 03_05_03 §3.9.3.5, ETS capture
+  `syn-minimal/apply`). `apply --line` restarts each device it writes.
+  `apply` waits for the device to answer again, then reads it back. When
+  links and parameters change together, the parameter download sends the one
+  restart; no ETS capture of that combination exists yet. A restart that
+  could not be sent stays pending: the next `plan` offers it.
+- **Unfinished table download.** A write of the link tables alone (no
+  product data, `restore`) first checks the group-object table's load
+  state. When a failed download left it unloaded, the write is refused
+  before anything is sent: `apply` from your project (with product data) or
+  `flash` reloads it.
 - **System 7 restart.** Like ETS, `apply` restarts a System 7 device after
   writing its tables (a basic restart). It waits for the device to answer
   again, then reads the tables back, so the read-back also shows that the

@@ -1165,6 +1165,28 @@ pub async fn write_security_program<Ch: L4Channel>(
     // the error says so.
     let written: Result<(), WriteError> = async {
         security_transition(l4, LoadControl::Unload).await?;
+        load_security_program(l4, program).await
+    }
+    .await;
+    written.map_err(|err| left_not_loaded(l4.target(), err))
+}
+
+/// The load half of [`write_security_program`], for a security object already
+/// `Unloaded`: `StartLoading`, the IA-table clear and entries, the group key
+/// table, the group-object flags, `LoadCompleted`. The partial download of
+/// the tables (`apply`, see [`crate::apply`]) unloads the object with the
+/// table objects and loads it between the association and the address table
+/// images, where ETS does.
+///
+/// # Errors
+///
+/// [`WriteError::SecurityObjectNotLoaded`] for any failure: the object is not
+/// `Loaded` until the last step.
+pub async fn load_security_program<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    program: &SecurityProgram,
+) -> Result<(), WriteError> {
+    let written: Result<(), WriteError> = async {
         security_transition(l4, LoadControl::StartLoading).await?;
         clear_security_address_table(l4).await?;
         write_security_address_table(l4, &program.senders).await?;

@@ -71,6 +71,9 @@ pub enum ChangeSubject {
     /// The KNXnet/IP parameter object of an IP interface: the `[knxnet]`
     /// table of its device file (issue #391).
     Interface,
+    /// A restart the last write could not send (issue #1095): the device
+    /// holds the tables, the procedure that wrote them is unfinished.
+    Restart,
 }
 
 /// One line of a device plan.
@@ -140,13 +143,17 @@ pub struct PlanWrites {
     /// PID in write order (issue #391).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interface_properties: Vec<u8>,
-    /// The write ends with a basic restart: a System 7 table write, as ETS's
-    /// table-only downloads do (see [`crate::apply_sys7`]).
+    /// The write ends with a restart: a System 7 table write, as ETS's
+    /// table-only downloads do (see [`crate::apply_sys7`]), and every System B
+    /// write of the link tables with product data, the partial download of
+    /// the three tables (issue #1095, see [`crate::apply`]). A parameter write
+    /// that follows sends the one restart.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub restart: bool,
-    /// The System B group-object table is reloaded from the image the full
-    /// flash writes, because the device's differs from it (issue #540, see
-    /// [`crate::object_table`]).
+    /// The System B group-object table is written from the image the full
+    /// flash writes: with the link tables by the partial download of the
+    /// three tables (issue #1095), or alone because the device's differs from
+    /// it (issue #540, see [`crate::object_table`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_object_table: Option<ObjectTableWrite>,
 }
@@ -239,6 +246,7 @@ impl PlanWrites {
             && self.interface_properties.is_empty()
             && self.communication_flags.is_empty()
             && self.group_object_table.is_none()
+            && !self.restart
     }
 
     /// `address table (4 entries), association table (5 entries), 1 parameter
@@ -253,7 +261,6 @@ impl PlanWrites {
             }
             return parts.join(", ");
         }
-        // The group-object table is loaded first (issue #540).
         if let Some(table) = &self.group_object_table {
             parts.push(table.describe());
         }
@@ -364,18 +371,25 @@ impl DevicePlan {
         self.changes.len()
     }
 
-    /// `apply these 3 changes to 1.1.47 through 192.0.2.74:3671?`
+    /// `apply these 3 changes to 1.1.47 through 192.0.2.74:3671?`, or with
+    /// `, then restart it?` when the write ends with a restart
+    /// ([`PlanWrites::restart`]).
     pub fn question(&self) -> String {
         let n = self.change_count();
         format!(
-            "apply {} to {} through {}?",
+            "apply {} to {} through {}{}?",
             if n == 1 {
                 "this change".to_string()
             } else {
                 format!("these {n} changes")
             },
             self.address,
-            self.gateway
+            self.gateway,
+            if self.writes.restart {
+                ", then restart it"
+            } else {
+                ""
+            }
         )
     }
 

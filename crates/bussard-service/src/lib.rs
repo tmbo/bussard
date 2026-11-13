@@ -117,6 +117,7 @@ pub mod model_handle;
 pub mod monitor;
 pub mod observer;
 pub mod params;
+pub mod pending_restart;
 pub mod policy;
 pub mod program;
 pub mod project_diff;

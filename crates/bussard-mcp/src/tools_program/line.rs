@@ -268,9 +268,11 @@ impl BussardMcp {
         let mut report = LineReport::new(&model, &line_text, LineMode::Plan, &gateway, &visited);
         if let Some(digest) = digest {
             report.approval = Approval {
-                question: Some(format!(
-                    "Write the links in your project to {changed} device(s) on line {line_text} via \
-                     {gateway}?"
+                question: Some(line_question(
+                    changed,
+                    report.totals.restarts,
+                    &line_text,
+                    &gateway,
                 )),
                 plan_digest: Some(digest),
                 expires_at: Some(tier.line_plans.expires_at(SystemTime::now())),
@@ -438,6 +440,20 @@ impl BussardMcp {
     }
 }
 
+/// The approval question of a line write: how many devices are written and
+/// how many of them restart (issue #1095).
+fn line_question(changed: usize, restarts: usize, line: &str, gateway: &str) -> String {
+    let restart = match restarts {
+        0 => String::new(),
+        n if n == changed => ", restarting each of them".to_string(),
+        n => format!(", restarting {n} of them"),
+    };
+    format!(
+        "Write the links in your project to {changed} device(s) on line {line} via \
+         {gateway}{restart}?"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -453,6 +469,7 @@ mod tests {
                     fingerprint: None,
                     backup: None,
                     support: None,
+                    restarts: false,
                 },
                 Vec::new(),
             ))
@@ -491,6 +508,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_line_question_names_the_restarts() {
+        assert_eq!(
+            line_question(3, 0, "1.1", "gw"),
+            "Write the links in your project to 3 device(s) on line 1.1 via gw?"
+        );
+        assert_eq!(
+            line_question(3, 2, "1.1", "gw"),
+            "Write the links in your project to 3 device(s) on line 1.1 via gw, restarting 2 of \
+             them?"
+        );
+        assert!(line_question(2, 2, "1.1", "gw").ends_with("restarting each of them?"));
+    }
+
+    #[test]
     fn test_line_address_is_the_coupler() -> Result<(), String> {
         assert_eq!(line_address((1, 1))?.to_string(), "1.1.0");
         Ok(())
@@ -508,6 +539,7 @@ mod tests {
             fingerprint: Some(fingerprint.into()),
             backup: None,
             support: None,
+            restarts: false,
         };
         let a = line_digest((1, 1), "m", &[outcome("x")]);
         assert_ne!(a, line_digest((1, 1), "m", &[outcome("y")]));

@@ -901,11 +901,80 @@ pub struct BuiltPlan {
     /// Every run of parameter octets the plan writes, with the parameters
     /// behind it (issue #279). Empty when no parameter octet is written.
     pub octet_ranges: Vec<OctetAttribution>,
-    /// The System B group-object table image `apply` reloads, because the
-    /// device's differs from the one the full flash writes (issue #540).
-    /// `None` when it matches, was not compared, or a full download is
-    /// needed anyway.
-    pub object_table: Option<Vec<u8>>,
+    /// The System B group-object table as `apply` writes it (issues #540,
+    /// #1095); `None` on System 7, without product data, when the device's
+    /// table was not read, and when a full download is needed anyway.
+    pub object_table: Option<GroupObjectImage>,
+    /// Why the last write's restart is pending (issue #1095,
+    /// [`crate::pending_restart`]): the plan offers it and `apply` sends it.
+    pub restart_pending: Option<String>,
+}
+
+/// The System B group-object table image the full flash writes, for a device
+/// whose own table was read (a type-9 object, a readable table), and whether
+/// the device's differs from it.
+///
+/// One rule decides what `apply` writes with it
+/// ([`GroupObjectImage::written`]): a write of the link tables writes it with
+/// them by the partial download of the three tables (issue #1095); a table
+/// that differs while the links stay is reloaded alone (issue #540).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupObjectImage {
+    /// The image: count word and descriptors.
+    pub image: Vec<u8>,
+    /// The device's table differs from the image.
+    pub differs: bool,
+}
+
+impl GroupObjectImage {
+    /// The image a write sends, when it sends one: with the link tables
+    /// (`tables_change`) always, alone only when the device's differs.
+    pub fn written(&self, tables_change: bool) -> Option<&[u8]> {
+        (tables_change || self.differs).then_some(self.image.as_slice())
+    }
+}
+
+impl BuiltPlan {
+    /// Whether a write of this plan rewrites the link tables: a link changes
+    /// (`report`), a security-object change or an admitted sender rewrites
+    /// them with the security object, or a System 7 communication flag
+    /// follows its links. The one formula the plan, the CLI and the MCP
+    /// server use.
+    pub fn tables_change(&self, report: &PlanReport) -> bool {
+        !report.is_noop()
+            || self.plan.writes.security_object
+            || !self.plan.writes.communication_flags.is_empty()
+    }
+
+    /// Marks the plan's writes once every reason to rewrite the tables is
+    /// known: the partial download of the three tables when the tables
+    /// change and the group-object table image is known (issue #1095), and
+    /// a pending restart. Both end the write with a restart, and the plan
+    /// says so.
+    pub fn mark_restart(&mut self, report: &PlanReport) {
+        let tables_change = self.tables_change(report);
+        if let Some(group) = self.object_table.as_ref().filter(|_| tables_change) {
+            let writes = &mut self.plan.writes;
+            writes.restart = true;
+            writes
+                .group_object_table
+                .get_or_insert_with(|| ObjectTableWrite {
+                    entries: bussard_download::table_entry_count(&group.image),
+                    objects: Vec::new(),
+                });
+        }
+        if let Some(why) = &self.restart_pending {
+            self.plan.writes.restart = true;
+            self.plan.changes.push(PlanChange {
+                mark: bussard_download::ChangeMark::Changed,
+                subject: bussard_download::ChangeSubject::Restart,
+                channel: None,
+                key: "restart".to_string(),
+                object: None,
+                sentence: format!("restart pending: {why}"),
+            });
+        }
+    }
 }
 
 /// A run of parameter octets a plan writes, in the model's words (issue
@@ -1365,7 +1434,11 @@ fn object_table_plan(
     params: Option<&ParamState>,
     full_download: bool,
     notes: &mut Vec<String>,
-) -> (Option<ObjectTableWrite>, Option<Vec<u8>>, Option<Vec<u8>>) {
+) -> (
+    Option<ObjectTableWrite>,
+    Option<GroupObjectImage>,
+    Option<Vec<u8>>,
+) {
     if live.sys7().is_some() || full_download {
         return (None, None, None);
     }
@@ -1390,7 +1463,14 @@ fn object_table_plan(
                 unchecked(why, notes);
                 (None, None, None)
             }
-            (Ok(_), None) => (None, None, read),
+            (Ok(_), None) => (
+                None,
+                Some(GroupObjectImage {
+                    image: check.model.clone(),
+                    differs: false,
+                }),
+                read,
+            ),
             (Ok(_), Some(change)) => {
                 notes.extend(
                     change
@@ -1402,7 +1482,11 @@ fn object_table_plan(
                     entries: change.to_count,
                     objects: change.objects.iter().map(|c| c.object).collect(),
                 };
-                (Some(write), Some(check.model.clone()), read)
+                let image = GroupObjectImage {
+                    image: check.model.clone(),
+                    differs: true,
+                };
+                (Some(write), Some(image), read)
             }
         },
         None if detail.is_some() => (None, None, None),
@@ -1718,6 +1802,7 @@ pub fn build_device_plan(
         parameters_skipped,
         octet_ranges,
         object_table,
+        restart_pending: None,
     }
 }
 
