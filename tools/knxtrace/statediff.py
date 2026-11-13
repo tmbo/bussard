@@ -59,24 +59,22 @@ def writes(ops: Optional[DeviceOps]) -> Dict[int, int]:
     return out
 
 
-def segments(ops_list: List[Optional[DeviceOps]]) -> Dict[int, Tuple[int, int]]:
-    """Load-state object -> (start, length) of its absolute segment, from the
-    `AbsSegment` records of the captures (a later record wins)."""
-    out: Dict[int, Tuple[int, int]] = {}
+def segments(ops_list: List[Optional[DeviceOps]]) -> List[Tuple[int, int, int]]:
+    """(load-state object, start, length) of every absolute segment, from the
+    `AbsSegment` records of the captures in order, parsed by
+    `sequence.abs_segment` (both record forms, issue #1080). An object may
+    have several (a System 7 LSM 3 with its data and parameter segments)."""
+    out: List[Tuple[int, int, int]] = []
     for ops in ops_list:
         if ops is None:
             continue
         for rec in memimage.load_control_writes(ops):
-            data = bytes.fromhex(str(rec["data"]))
-            event = data[0] & 0x0F if rec["form"] == "memory" else data[0]
-            if event != 3 or len(data) < 6 or data[1] != memimage.SUB_ABS_DATA:
+            seg = sequence.abs_segment(rec)
+            if seg is None or seg[0] is None:
                 continue
-            obj = rec.get("lsm") if rec["form"] == "memory" else rec.get("object")
-            if obj is None:
-                continue
-            start = int.from_bytes(data[2:4], "big")
-            length = int.from_bytes(data[4:6], "big")
-            out[int(obj)] = (start, length)
+            obj, start, length = seg
+            if (obj, start, length) not in out:
+                out.append((int(obj), start, length))
     return out
 
 
@@ -215,9 +213,10 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
     }
 
 
-def region_of(addr: int, segs: Dict[int, Tuple[int, int]]) -> Tuple[str, int]:
-    """The region name and the region's start for an address."""
-    for obj, (start, length) in sorted(segs.items()):
+def region_of(addr: int, segs: List[Tuple[int, int, int]]) -> Tuple[str, int]:
+    """The region name and the region's start for an address: the segment
+    holding it (a later record wins where two overlap)."""
+    for obj, start, length in reversed(segs):
         if start <= addr < start + length:
             return REGION_NAMES.get(obj, "application (obj%d)" % obj), start
     return "memory 0x%04X" % (addr & ~0xFF), addr & ~0xFF
@@ -248,10 +247,11 @@ def compare_states(
     ours_final.update(ours_step)
     segs = segments(list(base) + [ets, bussard])
     touched = sorted(set(ets_step) | set(ours_step))
+    # By name and start: an object with two segments has two regions.
     regions: Dict[str, Dict[str, object]] = {}
     for addr in touched:
         name, start = region_of(addr, segs)
-        reg = regions.setdefault(name, {"region": name, "start": start, "compared": 0, "diff_octets": 0,
+        reg = regions.setdefault("%s@%d" % (name, start), {"region": name, "start": start, "compared": 0, "diff_octets": 0,
                                         "unknown_octets": 0, "ets_written": 0, "bussard_written": 0,
                                         "first_offset": None, "differences": []})
         reg["compared"] = int(reg["compared"]) + 1
