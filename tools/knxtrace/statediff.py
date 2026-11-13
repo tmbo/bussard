@@ -139,7 +139,11 @@ def _whole(elements: Dict[Tuple[str, int, int], str], label: str, pid: int) -> s
 def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
                        bussard: Optional[DeviceOps]) -> Dict[str, object]:
     """The property elements either side wrote in the step, compared on
-    their final values (see the module doc). The writes `image` never
+    their final values (see the module doc). The elements of a property only
+    one side wrote in the step are listed under `ets_only_step` or
+    `bussard_only_step` and differ even where the device already held the
+    value (bussard issue #1073: a write left out must not read ok). The
+    writes `image` never
     compares (`image.property_exemption`) are listed under `not_compared`;
     the security object's properties compare whole, by `image.value_check`
     (the group key table and the sender table by entry, the sender
@@ -155,6 +159,10 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
     touched = sorted(set(ets_step) | set(ours_step))
     differences, notes = [], []
     matched, ets_only, bussard_only, value = [], [], [], 0
+    ets_only_step: List[str] = []
+    bussard_only_step: List[str] = []
+    ets_props = {(k, p) for k, p, _ in ets_step}
+    ours_props = {(k, p) for k, p, _ in ours_step}
     not_compared: List[Dict[str, object]] = []
     whole_done = set()
     for key in touched:
@@ -188,6 +196,18 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
                 differences.append({"property": name, "bussard": a, "ets": b, "why": why})
             continue
         a, b = ours_final.get(key), ets_final.get(key)
+        # A property one tool wrote in this step and the other did not write
+        # at all (bussard issue #1073): the final values can still agree when
+        # the device held them before the step, and a write left out would
+        # then read ok. Its elements are counted on their own and fail the
+        # comparison. A tool that rewrites only the changed elements of a
+        # property it writes (issue #944) is judged on the final values.
+        if ((label, pid) in ets_props) != ((label, pid) in ours_props):
+            (ets_only_step if (label, pid) in ets_props else bussard_only_step).append(name)
+            differences.append({"property": name, "bussard": a or "--", "ets": b or "--",
+                                "why": "property written by %s only in this step"
+                                       % ("ETS" if (label, pid) in ets_props else "bussard")})
+            continue
         if a is not None and a == b:
             matched.append(name)
             continue
@@ -207,6 +227,7 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
         "compared": compared, "differing": len(differences),
         "ets_step": len(ets_step), "bussard_step": len(ours_step),
         "matched": matched, "ets_only": ets_only, "bussard_only": bussard_only,
+        "ets_only_step": ets_only_step, "bussard_only_step": bussard_only_step,
         "value_counts": {"differs": value},
         "not_compared": not_compared, "notes": notes,
         "differences": differences[:64],
@@ -345,6 +366,9 @@ def render(report: Dict[str, object]) -> List[str]:
     if props.get("compared"):
         lines.append("  property elements written in the step: ETS %d, bussard %d; compared %d (final state), %d differ"
                      % (props["ets_step"], props["bussard_step"], props["compared"], props["differing"]))
+        if props.get("ets_only_step") or props.get("bussard_only_step"):
+            lines.append("  written by one side only in the step: ETS %d, bussard %d element(s)"
+                         % (len(props.get("ets_only_step") or []), len(props.get("bussard_only_step") or [])))
         for d in props.get("differences") or []:
             lines.append("      %-28s bussard %s  ets %s" % (d["property"], d["bussard"][:40], d["ets"][:40]))
     for e in props.get("not_compared") or []:

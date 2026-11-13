@@ -27,6 +27,10 @@ prop-read obj3/PID_1 count=1 index=1
 prop-read obj4/PID_1 count=1 index=1
 prop-read obj5/PID_1 count=1 index=1
 prop-read obj6/PID_1 count=1 index=1
+prop-read obj7/PID_1 count=1 index=1
+prop-read obj8/PID_1 count=1 index=1
+prop-read obj9/PID_1 count=1 index=1
+prop-read obj10/PID_1 count=1 index=1
 prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
 prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
@@ -37,6 +41,7 @@ prop-read obj2/PID_27 count=1 index=0
 prop-read obj3/PID_27 count=1 index=0
 prop-read obj4/PID_27 count=1 index=0
 prop-desc-read obj9/PID_ROUTING_COUNT obj=9 pid=51 pid_name=PID_ROUTING_COUNT prop_index=0
+prop-write obj9/PID_ROUTING_COUNT count=1 index=1 len=1 sha=4bf5122f
 load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
@@ -67,6 +72,7 @@ load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
 load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
 load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
 load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+prop-write obj9/PID_ROUTING_COUNT count=1 index=1 len=1 sha=dbc1b4c9
 restart Restart type=basic
 connect T_Connect
 descriptor type0 type=0
@@ -87,6 +93,10 @@ prop-read obj3/PID_1 count=1 index=1
 prop-read obj4/PID_1 count=1 index=1
 prop-read obj5/PID_1 count=1 index=1
 prop-read obj6/PID_1 count=1 index=1
+prop-read obj7/PID_1 count=1 index=1
+prop-read obj8/PID_1 count=1 index=1
+prop-read obj9/PID_1 count=1 index=1
+prop-read obj10/PID_1 count=1 index=1
 prop-read obj1/PID_23 count=1 index=0
 prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0xa000 addr_int=40960 count=2
@@ -106,8 +116,14 @@ prop-read obj3/PID_1 count=1 index=1
 prop-read obj4/PID_1 count=1 index=1
 prop-read obj5/PID_1 count=1 index=1
 prop-read obj6/PID_1 count=1 index=1
+prop-read obj7/PID_1 count=1 index=1
+prop-read obj8/PID_1 count=1 index=1
+prop-read obj9/PID_1 count=1 index=1
+prop-read obj10/PID_1 count=1 index=1
 prop-read obj4/PID_201 count=1 index=1
 prop-read obj4/PID_202 count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj9/PID_ROUTING_COUNT count=1 index=1
 disconnect T_Disconnect
 
 memory image (3 region(s), chunking removed):

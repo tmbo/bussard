@@ -2219,10 +2219,17 @@ pub async fn read_property_description_optional<Ch: L4Channel>(
 /// The interface-object index the discovery sweep stops at (exclusive).
 ///
 /// Interface objects are contiguously indexed from 0, so the sweep ends at the
-/// first index that answers "no object here". The full `0..16` range matters: a
-/// device whose application-program object sits at index 12–15 is still found,
-/// where a tighter budget silently misses it.
-pub const MAX_OBJECT_INDEX: u8 = 16;
+/// first index that answers "no object here": the standard's own scans stop
+/// there (KNX 3/5/2 §3.28.2 `DMP_InterfaceObjectScan_R` and §3.28.3, "until
+/// PID = 0"), and `PID_IO_LIST` lists the object types in ascending index
+/// order behind their count (KNX 3/5/1 §4.3.22). The bound is the 8-bit index
+/// space, not a smaller budget: the Hager 07B0 actuators have objects 0 to 31
+/// (ETS writes objects 9 to 31 in the sweep captures of
+/// `M-0009_A-E802-13-7620`), and a walk cut at 16 left objects 16 to 31 out
+/// of the table every caller checks writes against (issue #1073). A device
+/// with fewer objects pays nothing: the walk still ends at its first absent
+/// index.
+pub const MAX_OBJECT_INDEX: u8 = u8::MAX;
 
 /// `PID_OBJECT_TYPE` (1) — the interface-object type, the property every object
 /// discovery walk reads.

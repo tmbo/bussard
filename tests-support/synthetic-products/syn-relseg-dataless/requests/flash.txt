@@ -103,6 +103,7 @@ prop-read obj5/PID_1 count=1 index=1
 prop-read obj6/PID_1 count=1 index=1
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x6000 addr_int=24576 count=16
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 
 memory image (4 region(s), chunking removed):

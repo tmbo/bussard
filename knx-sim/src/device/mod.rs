@@ -559,7 +559,15 @@ impl Device {
                 }
             }
         }
-        if listed && let Some(index) = (0..=u8::MAX).find(|i| !self.objects.contains_key(i)) {
+        // The lowest index without an object of the product's: a
+        // placeholder there gives way (bussard issue #1073).
+        if listed
+            && let Some(index) = (0..=u8::MAX).find(|i| {
+                self.objects
+                    .get(i)
+                    .is_none_or(InterfaceObject::is_placeholder)
+            })
+        {
             self.objects.insert(index, object.clone());
         }
         self.knxnet_by_type = Some(object);

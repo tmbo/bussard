@@ -261,3 +261,45 @@ async fn test_probe_object_types_uses_seeded_table() -> TestResult {
     );
     Ok(())
 }
+
+/// The 32 interface objects of a Hager 07B0 actuator (`M-0009_A-E802-13-7620`
+/// addresses objects 0 to 31, issue #1073): the system objects, then 27
+/// manufacturer objects.
+fn hager_types() -> Vec<u16> {
+    let mut types = vec![
+        OT_DEVICE,
+        OT_ADDRESS_TABLE,
+        OT_ASSOCIATION_TABLE,
+        OT_GROUP_OBJECT_TABLE,
+        OT_APPLICATION_PROGRAM,
+        OT_APPLICATION_PROGRAM,
+    ];
+    types.extend((6..32).map(|i| 50_000 + i));
+    types
+}
+
+#[tokio::test]
+async fn test_probe_object_types_walks_past_sixteen_objects() -> TestResult {
+    // Issue #1073: the walk ends at the first index without an object (KNX
+    // 3/5/2 §3.28.2), not at a fixed 16: objects 16 to 31 are in the table
+    // writes and reads are checked against.
+    let types = hager_types();
+    let table = walk(MockDevice::new(target()?).with_object_types(&types)).await?;
+    assert_eq!(table.len(), 32);
+    assert_eq!(table.last(), Some(&(31, 50_031)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_discover_object_table_takes_an_io_list_of_more_than_sixteen_objects() -> TestResult {
+    // Issue #1073: a list of 32 objects was refused as out of range, and the
+    // walk that replaced it stopped at 16. The list now stands, checked as
+    // before, in 1 + 3 reads and 3 probes instead of a 33-probe walk.
+    let types = hager_types();
+    let device = MockDevice::new(target()?).with_object_types(&types);
+    let ((table, source), requests) = discover(device, Some(233)).await?;
+    assert_eq!(source, ObjectTableSource::IoList);
+    assert_eq!(table.len(), 32);
+    assert_eq!(property_reads(&requests).len(), 7);
+    Ok(())
+}

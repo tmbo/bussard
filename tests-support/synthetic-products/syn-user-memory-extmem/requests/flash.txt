@@ -379,6 +379,7 @@ mem-read 0x01202b addr_int=73771 count=61
 mem-read 0x012068 addr_int=73832 count=61
 mem-read 0x0120a5 addr_int=73893 count=61
 mem-read 0x0120e2 addr_int=73954 count=30
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 
 memory image (4 region(s), chunking removed):

@@ -118,6 +118,7 @@ prop-read obj5/PID_1 count=1 index=1
 prop-read obj6/PID_1 count=1 index=1
 prop-read obj4/PID_201 count=1 index=1
 prop-read obj4/PID_202 count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 
 memory image (3 region(s), chunking removed):

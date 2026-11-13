@@ -125,6 +125,7 @@ prop-read type17.1/PID53 count=1 index=0 key_material=True secured=tool
 prop-read type17.1/PID61 count=1 index=0 secured=tool
 prop-read type17.1/PID61 count=1 index=1 secured=tool
 prop-read type17.1/PID54 count=1 index=0 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
 disconnect T_Disconnect
 
 memory image (4 region(s), chunking removed):

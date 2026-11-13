@@ -62,7 +62,11 @@ lets a tool's bug slip through; strictness is what catches it.
   `PID_LOAD_STATE_CONTROL` load events and sub-commands), segment allocation
   (`AdditionalLoadControls`/`RelSegment`), memory read/write bounded to an
   allocated segment, `A_Restart` master reset, device-descriptor read, and
-  property read/write.
+  property read/write. The interface objects are indexed without gaps (KNX
+  3/5/2 §3.28.2, 3/5/1 §4.3.22): an index the product data leaves free below
+  the highest object holds a placeholder that answers only
+  `PID_OBJECT_TYPE`, since the product data does not say what a real device
+  keeps there (bussard issue #1073).
 
 - **`bus/`** — the virtual bus. Carries cEMI `L_Data` telegrams. A
   connection-oriented (management) telegram is delivered to the addressed

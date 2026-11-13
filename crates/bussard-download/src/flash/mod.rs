@@ -380,9 +380,9 @@ pub enum FlashStep {
         verify: bool,
         /// The value comes from the program's property-located parameters
         /// (`<Parameter><Property …/></Parameter>`), not from the op's
-        /// `InlineData`: the model decides it, so the post-write read-back
-        /// compares it on every system (issue #669), and the executor never
-        /// skips it as a template write to an absent object.
+        /// `InlineData`: the model decides it. The post-flash read-back
+        /// compares every write, this flag or not (issue #1073); the flag
+        /// decides what a parameter change rewrites.
         from_parameters: bool,
     },
     /// An `LdCtrlWriteProp` whose value the device already holds after the

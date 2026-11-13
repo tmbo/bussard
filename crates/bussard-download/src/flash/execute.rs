@@ -228,6 +228,19 @@ pub(super) fn resolve_object_target_opt(
     }
 }
 
+/// The flash result's note for a step left out because the device lists no
+/// object at the index it names (issue #1073): a master-template step for an
+/// object the device lacks ([`resolve_object_target_opt`]). It names the step
+/// and the object, so the outcome says what did not run.
+fn absent_object_note(index: usize, step: &FlashStep, target: Option<u32>) -> String {
+    format!(
+        "step {}: {} left out: the device lists no interface object {}",
+        index + 1,
+        step_label(step, &LabelCtx::default()),
+        target.map_or_else(|| "for it".to_string(), |t| t.to_string()),
+    )
+}
+
 /// Executes a validated [`FlashPlan`] against the device over the session's
 /// connection, reporting progress through `progress`, then verifies the result.
 ///
@@ -500,6 +513,7 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings.push(absent_object_note(index, step, *target));
                     return Ok(());
                 };
                 // A parameter-only download rewrites the resident
@@ -527,6 +541,7 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings.push(absent_object_note(index, step, *target));
                     return Ok(());
                 };
                 start_loading_resumable(session, obj, object_table).await?;
@@ -543,6 +558,7 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings.push(absent_object_note(index, step, *target));
                     return Ok(());
                 };
                 let alloc =
@@ -776,23 +792,16 @@ impl StepExecutor for SystemB<'_> {
                     });
                 }
             }
-            // A spliced template writes properties on obj4 and obj5 (the app
-            // id, PID 13). Skip a write to an object index the device does not
-            // expose (obj5 on a device without a PEI program), exactly like
-            // the load-control steps — otherwise the device NAKs the write to
-            // the absent object and fails the flash. A `u32::MAX`-bounded index
-            // is compared against the discovered table. A value the model's
-            // parameters compose is never skipped (issue #669): a device
-            // without its object fails the write instead.
-            FlashStep::WriteProp {
-                object,
-                from_parameters: false,
-                ..
-            } if plan.spliced_from_template
-                && !plan.is_parameters_only()
-                && object.index().is_some_and(|obj_idx| {
-                    !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
-                }) => {}
+            // A property write naming an object by index goes to that index,
+            // found by the walk or not, as ETS sends it (issue #1073): ETS
+            // walks no objects before the download and writes objects 9 to 31
+            // of `M-0009_A-E802-13-7620` by the index the procedure names
+            // (`captures/ets-sweep/M-0009_A-E802-13-7620/params-1-0/ops.txt`
+            // ops 45 to 414). The one write a device may lack the object for,
+            // object 5's program version without Application Program 2, is
+            // not in the plan (`application_program_1_only`, KNX 3/5/3
+            // §3.9.3.4). A device without the object refuses the write, and
+            // the flash fails naming the object and the property.
             // An object named by type, on a program that is not Data Secure
             // enabled: written at the index the device's interface-object
             // list gives it, with the plain services, as ETS writes the
@@ -1000,6 +1009,7 @@ impl StepExecutor for SystemB<'_> {
                         app_obj,
                         plan.spliced_from_template,
                     ) else {
+                        self.warnings.push(absent_object_note(index, step, *target));
                         return Ok(());
                     };
                     // The read base is this object's segment address. Prefer the
@@ -1156,6 +1166,7 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings.push(absent_object_note(index, step, *target));
                     return Ok(());
                 };
                 write_load_control_resumable(session, obj, LoadControl::LoadCompleted).await?;
@@ -1390,6 +1401,9 @@ impl StepExecutor for SystemB<'_> {
                     let value =
                         super::session::read_table_reference_resumable(session, obj).await?;
                     self.table_references.insert(obj, value);
+                } else {
+                    self.warnings
+                        .push(absent_object_note(index, step, Some(*obj_idx)));
                 }
             }
             FlashStep::CompareTableReference { obj_idx } => {
@@ -1413,6 +1427,9 @@ impl StepExecutor for SystemB<'_> {
                                 .to_string(),
                         });
                     }
+                } else {
+                    self.warnings
+                        .push(absent_object_note(index, step, Some(*obj_idx)));
                 }
             }
             // System 7 steps never reach this executor: `flash_sys7` runs a

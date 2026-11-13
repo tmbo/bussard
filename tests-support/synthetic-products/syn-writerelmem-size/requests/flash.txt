@@ -108,6 +108,7 @@ prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x6000 addr_int=24576 count=63
 mem-read 0x603f addr_int=24639 count=63
 mem-read 0x607e addr_int=24702 count=2
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 
 memory image (4 region(s), chunking removed):
