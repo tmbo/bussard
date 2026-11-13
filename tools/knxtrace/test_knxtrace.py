@@ -3432,20 +3432,30 @@ class TestSequence(unittest.TestCase):
         plan = {"steps": [
             {"index": 1, "label": "1. [S7] open LSM 1 for loading", "load_controls": [
                 {"data": "01000000000000000000", "form": "property", "object": 1}]},
-            {"index": 2, "label": "2. enable verify mode (object 0 PID_DEVICE_CONTROL bit 2)",
+            {"index": 2, "label": "2. switch verify mode on right before the next memory write",
              "property": {"data": "04", "length": 1, "object": 0, "pid": 14,
-                          "start_element": 1}},
-            {"index": 3, "label": "3. [S7] alloc + stream segment (3 bytes) to 0x4000 on LSM 1",
+                          "start_element": 1},
+             "sent": "before-next-memory-write"},
+            {"index": 3, "label": "3. write code image (16 bytes) at segment+0 (obj 4)",
+             "image": {"object": 4, "length": 16, "prefill": 0, "fill_only": True}},
+            {"index": 4, "label": "4. [S7] alloc + stream segment (3 bytes) to 0x4000 on LSM 1",
              "load_controls": [{"data": "03004000000333038000", "form": "property",
                                 "object": 1}],
              "image": {"address": 0x4000, "length": 3}},
         ]}
         ops = sequence.plan_operations(plan)
+        # The fill-only image writes nothing and does not release the switch.
         self.assertEqual([(e["op"], e["step"]) for e in ops], [
-            ("load-control", 1), ("load-control", 3), ("prop-write", 2), ("mem-write", 3)])
+            ("load-control", 1), ("load-control", 4), ("prop-write", 2), ("mem-write", 4)])
         # No memory write after it: the switch is never sent.
-        ops = sequence.plan_operations({"steps": plan["steps"][:2]})
+        ops = sequence.plan_operations({"steps": plan["steps"][:3]})
         self.assertEqual([e["op"] for e in ops], ["load-control"])
+        # Without the marker the write goes out where the step stands.
+        unmarked = [dict(s) for s in plan["steps"]]
+        del unmarked[1]["sent"]
+        ops = sequence.plan_operations({"steps": unmarked})
+        self.assertEqual([e["op"] for e in ops],
+                         ["load-control", "prop-write", "load-control", "mem-write"])
 
     def test_plan_operations_fill_only_image_is_no_mem_write(self):
         # Issue #1088: an image of nothing but the pre-fill octet is no write.

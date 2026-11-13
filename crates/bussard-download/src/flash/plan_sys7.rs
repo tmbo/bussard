@@ -175,12 +175,13 @@ pub(super) const SYS7_PRELUDE_UNLOAD_LSMS: [u32; 4] = [1, 2, 3, 4];
 ///   that segment (issue #1076): after LSM 1's `StartLoading` and
 ///   `LdCtrlAbsSegment` on a fresh, a reloaded and an other-application device
 ///   (`captures/synthetic/syn-s7-0705/{defaults,reload,other-app,params}`, ops
-///   11 to 15, and every other 0705 synthetic row), after LSM 3's
-///   `StartLoading` on a parameter-only download, which sends no allocation
-///   record (`syn-s7-0705/partial`, ops 11 to 14). The allocation and its
+///   11 to 15, and every other 0705 synthetic row). The allocation and its
 ///   stream are one step here, so the step only arms the switch and the
-///   executor sends it before the step's first memory write, as on System B
-///   (issue #705). No write that verify mode protects goes out before it: the
+///   executor sends it after that step's allocation record, before its first
+///   memory write, as on System B (issue #705). The parameter-only download
+///   (`FlashPlan::parameters_only`) moves the step before its first
+///   `WriteMem`, after LSM 3's `StartLoading`, where ETS writes it
+///   (`syn-s7-0705/partial`, ops 11 to 14). No write that verify mode protects goes out before it: the
 ///   load controls and allocation records ahead of it are property writes,
 ///   confirmed by their own responses. Mask 0701 declares no `VerifyMode`
 ///   (read-compare-write) and gets no step; its captures
@@ -192,12 +193,9 @@ pub(super) const SYS7_PRELUDE_UNLOAD_LSMS: [u32; 4] = [1, 2, 3, 4];
 /// reproduced; `dev/system7-spec.md` §3 lists why.
 fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profile) {
     if !profile.read_compare_write()
-        && let Some(first_write) = steps.iter().position(|s| {
-            matches!(
-                s,
-                FlashStep::Sys7AbsSegment { image: Some(_), .. } | FlashStep::WriteMem { .. }
-            )
-        })
+        && let Some(first_write) = steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::Sys7AbsSegment { image: Some(_), .. }))
     {
         steps.insert(first_write, FlashStep::EnableVerifyMode);
     }
@@ -3508,35 +3506,6 @@ mod tests {
             &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
         );
         assert!(!steps.contains(&FlashStep::EnableVerifyMode));
-
-        // A parameter-only download writes in place: verify mode goes right
-        // before its first `WriteMem`, after the `StartLoading`
-        // (`syn-s7-0705/partial`, ops 11 to 14).
-        let write = FlashStep::WriteMem {
-            address: 0x4440,
-            image: ImageRef {
-                segment_id: "params".to_string(),
-                kind: ImageKind::Parameters,
-                len: 3,
-                offset: 0,
-            },
-        };
-        let mut steps = vec![FlashStep::Sys7StartLoading { lsm: 3 }, write.clone()];
-        add_ets_prelude(
-            &mut steps,
-            &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
-        );
-        // The restart pass leads; then the load, the switch and the write.
-        assert_eq!(
-            steps.get(1..),
-            Some(
-                &[
-                    FlashStep::Sys7StartLoading { lsm: 3 },
-                    FlashStep::EnableVerifyMode,
-                    write
-                ][..]
-            )
-        );
 
         // A procedure that loads nothing gets no prelude.
         let mut steps = vec![FlashStep::Restart];

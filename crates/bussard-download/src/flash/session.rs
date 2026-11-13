@@ -833,7 +833,8 @@ impl<C: Connector> Session<C> {
     }
 
     /// What the device answered when an armed verify-mode switch did not
-    /// take (issue #705), `None` when it took or was never tried.
+    /// take (System B issue #705, System 7 issue #1076), `None` when it took
+    /// or was never tried.
     pub(super) fn verify_mode_declined(&self) -> Option<bussard_mgmt::VerifyModeOutcome> {
         self.verify.declined
     }
@@ -842,8 +843,11 @@ impl<C: Connector> Session<C> {
     /// `plain` says whether that write goes out over the plain (or user)
     /// memory services; an extended write is confirmed by its own response.
     ///
-    /// An armed System B download (issue #705) switches verify mode on here
-    /// before its first plain write. When the download wants verify mode and
+    /// An armed download (System B issue #705, System 7 issue #1076)
+    /// switches verify mode on here before its first plain write; it stays
+    /// armed until the device answers the switch, so a connection that dies
+    /// during the exchange switches it on again on the next one. When the
+    /// download wants verify mode and
     /// the current connection is a new one, this sets it again first
     /// (Resources 03_05_01 §4.2.14: the device cleared it when the previous
     /// connection closed).
@@ -858,8 +862,14 @@ impl<C: Connector> Session<C> {
             if !(self.verify.armed && plain) {
                 return Ok(false);
             }
+            // The switch stays armed until the device answered: a
+            // connection that dies during the exchange errors out here,
+            // `write_image` reconnects, and the next attempt switches the
+            // mode on over the new connection. Disarming before the answer
+            // let the resumed segment go out unechoed with no warning.
+            let outcome = bussard_mgmt::enable_verify_mode(self.l4()).await?;
             self.verify.armed = false;
-            return match bussard_mgmt::enable_verify_mode(self.l4()).await? {
+            return match outcome {
                 bussard_mgmt::VerifyModeOutcome::Enabled { .. }
                 | bussard_mgmt::VerifyModeOutcome::AlreadyOn(_) => {
                     self.verify.wanted = true;
