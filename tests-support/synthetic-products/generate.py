@@ -633,7 +633,9 @@ LOAD_OPS_LATER = {"LdCtrlLoadImageProp", "LdCtrlCompareProp",
 # ProductProcedure over absolute segments (dev/system7-spec.md sections 2.3
 # and 4); the tables live in named absolute segments.
 
-SYS7_MASKS = ("0705", "0701")
+# System 7 and the BCU 2 (mask 0021, #525) share the shape: a ProductProcedure
+# over absolute segments with the same load controls (KNX 3/5/2 section 3.31).
+SYS7_MASKS = ("0705", "0701", "0021")
 # [application] keys of a System 7 product: the PEI type, and the absolute
 # segment each table lives in (offset 0).
 SYS7_APP_KEYS = {"pei_type", "address_table_segment", "association_table_segment",

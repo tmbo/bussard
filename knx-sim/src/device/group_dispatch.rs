@@ -17,6 +17,12 @@ impl Device {
     /// the exact bytes the download wrote — so the routing is self-describing and
     /// a mistake in the written tables shows up as wrong bus behaviour.
     pub(super) fn refresh_group_comm(&mut self) {
+        // A BCU 2 does not take part on the group side yet: its Realisation
+        // Type 2 tables are not parsed (bussard issue #525, DESIGN.md).
+        if self.is_bcu2() {
+            self.group_comm = None;
+            return;
+        }
         // System 7: the three LSMs are the tables. Once LSM 1 and 2 are Loaded the
         // device self-parses its own written S7-format tables from the absolute
         // memory anchors (spec §7) and comes alive.

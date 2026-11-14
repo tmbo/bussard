@@ -220,6 +220,11 @@ impl Device {
         // §2.1/§2.3.)
         let value = if pid == PID_LOAD_STATE_CONTROL {
             self.report_load_state(object).map(|s| vec![s])
+        } else if pid == super::bcu2::PID_RUN_STATE_CONTROL
+            && object == super::bcu2::APP_OBJECT
+            && self.is_bcu2()
+        {
+            self.bcu2_run_state().map(|s| vec![s])
         } else if pid == PID_MCB_TABLE {
             // PID_MCB_TABLE (27) is device-computed: answer with the 8-octet
             // memory-control-block entry (size + CRC-16/AUG-CCITT) over the bytes
@@ -309,8 +314,14 @@ impl Device {
         let (object, pid, count, start, hdr) = Self::property_header(apdu)?;
         let value = &apdu.data[hdr..];
 
-        // Writes require authorization (level 0).
-        if self.access_level != 0 {
+        // Writes require authorization (level 0; a BCU 2 lets level 1 drive
+        // the table LSMs, KNX 9/4/1 §5.1.2.14).
+        let required = if self.is_bcu2() {
+            self.bcu2_property_write_level(object, pid)
+        } else {
+            0
+        };
+        if self.access_level > required {
             return Err(DeviceError::Unauthorized {
                 level: self.access_level,
             });

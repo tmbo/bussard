@@ -190,6 +190,54 @@ pub struct ProductData {
     /// when the `Hardware2Program`s listing it disagree, or when the mask
     /// declares no first application object.
     pub factory_properties: Vec<FactoryProperty>,
+    /// The `PeiType` the application program requires (its
+    /// `ApplicationProgram/@PeiType`), when it declares one. A BCU 2 of that
+    /// hardware has this PEI connected (KNX 9/4/1 §5.1.2.6.3: the program
+    /// only runs when the required PEI type equals the physical one).
+    pub pei_type: Option<u8>,
+    /// Every `LdCtrlAbsSegment` allocation the application's load procedures
+    /// make, in document order (bussard issue #525). A BCU 2 of that
+    /// hardware has memory where its own procedure allocates.
+    pub abs_segment_steps: Vec<AbsSegmentStep>,
+    /// The `Static/Code/AbsoluteSegment` images: the memory image the
+    /// program declares at fixed addresses (System 2 and System 7).
+    pub absolute_segments: Vec<AbsoluteSegment>,
+}
+
+/// One `LdCtrlAbsSegment` of a load procedure: an absolute allocation record
+/// (KNX 3/5/2 §3.31.3.4, segment types 0 and 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbsSegmentStep {
+    /// The load-state machine the allocation belongs to.
+    pub lsm_index: u8,
+    /// The segment type (0 code/data, 1 stack).
+    pub seg_type: u8,
+    /// The first address.
+    pub address: u16,
+    /// The length in octets.
+    pub size: u16,
+    /// The access attributes (read level in the high nibble, write level in
+    /// the low nibble).
+    pub access: u8,
+    /// The memory type (1 zero page RAM, 2 RAM, 3 EEPROM).
+    pub mem_type: u8,
+    /// The memory attributes (bit 7: checksum control).
+    pub seg_flags: u8,
+}
+
+/// A `Static/Code/AbsoluteSegment`: the octets the program declares at an
+/// absolute address, with the mask of the octets it defines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbsoluteSegment {
+    /// The first address.
+    pub address: u16,
+    /// The declared length in octets.
+    pub size: u16,
+    /// The decoded `<Data>` (empty when absent).
+    pub data: Vec<u8>,
+    /// The decoded `<Mask>`, one octet per data octet; empty when every
+    /// octet is defined.
+    pub mask: Vec<u8>,
 }
 
 /// A property value the device holds after a reset of its parameters: one

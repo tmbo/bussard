@@ -7,6 +7,7 @@
 //! records observations on the event stream.
 
 mod apci;
+mod bcu2;
 mod build;
 mod data_secure;
 pub use data_secure::ActivatedTables;
@@ -224,7 +225,11 @@ pub struct Device {
     /// The mask profile: System B or System 7 behaviour.
     profile: Profile,
     /// System 7 runtime (the three LSMs + layout); `None` on a System B device.
+    /// A BCU 2 device uses it too: its LSMs take the same records.
     sys7: Option<Sys7Runtime>,
+    /// The BCU 2 state beside the LSMs (memory map, keys, allocations);
+    /// `None` on every other device (bussard issue #525).
+    bcu2: Option<bcu2::Bcu2Runtime>,
     /// Interface objects keyed by object index (0 = device object).
     objects: BTreeMap<u8, InterfaceObject>,
     /// Loadable-object runtime state keyed by LSM index.
@@ -432,9 +437,9 @@ impl Device {
                     .and_then(|m| <[u8; 10]>::try_from(m).ok())
                     .unwrap_or_else(|| profile::default_hardware_type(product.application_number)),
             }),
-            // A property-only procedure on mask 0021 (bussard issue #390): the
-            // Jung IPS 300 SREG KNX IP interface.
-            profile::MaskFamily::Other if mask == 0x0021 && product.property_only => {
+            // A property-only procedure on a System 2 mask (bussard issue
+            // #390): the Jung IPS 300 SREG KNX IP interface on 0021.
+            profile::MaskFamily::System2 if product.property_only => {
                 let secure = overrides.secure.map(|a| {
                     crate::secure::DataSecureSession::new(
                         a.tool_key,
@@ -451,10 +456,29 @@ impl Device {
                     events,
                 ));
             }
+            // A BCU 2 (bussard issue #525).
+            profile::MaskFamily::System2 => {
+                let secure = overrides.secure.map(|a| {
+                    crate::secure::DataSecureSession::new(
+                        a.tool_key,
+                        a.initial_tx_seq,
+                        a.initial_rx_seq,
+                    )
+                });
+                return Ok(Self::build_system2(
+                    address,
+                    product,
+                    initial_state,
+                    mask,
+                    overrides.prog_mode,
+                    secure,
+                    events,
+                ));
+            }
             profile::MaskFamily::Other => {
                 return Err(format!(
-                    "mask 0x{mask:04x} is not a modelled family (only System B 07B0/57B0 and \
-                     System 7 0705/0701 are simulated)"
+                    "mask 0x{mask:04x} is not a modelled family (only System B 07B0/57B0, \
+                     System 7 0700/0701/0705 and System 2 0020/0021/0025 are simulated)"
                 ));
             }
         };
@@ -849,6 +873,7 @@ impl Device {
                 new_address,
             });
             self.address = new_address;
+            self.bcu2_sync_address();
         }
         true
     }

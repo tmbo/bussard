@@ -15,10 +15,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use sha2::{Digest, Sha256};
 
 /// A self-cleaning temporary directory (no `tempfile` dev-dependency needed).
-struct TmpDir(PathBuf);
+pub(crate) struct TmpDir(PathBuf);
 
 impl TmpDir {
-    fn new(tag: &str) -> std::io::Result<Self> {
+    pub(crate) fn new(tag: &str) -> std::io::Result<Self> {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -29,7 +29,7 @@ impl TmpDir {
         Ok(TmpDir(path))
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -635,7 +635,7 @@ fn test_flash_dry_run_assign_rewrite_names_the_assign() -> Result<(), String> {
 /// The project of the `params` row of `syn-assign-rewrite` in `tmp/knx`: the
 /// captured model (chore interval 1000, nap length 7, mode automatic) with
 /// the product imported and pinned for 1.1.1. Returns the project folder.
-fn assign_rewrite_project(tmp: &Path) -> Result<PathBuf, String> {
+pub(crate) fn assign_rewrite_project(tmp: &Path) -> Result<PathBuf, String> {
     let knxprod = synthetic_knxprod("syn-assign-rewrite", tmp)?;
     let template = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../captures/synthetic/syn-assign-rewrite/params/model");
@@ -676,8 +676,8 @@ const ASSIGN_REASON: &str =
 
 /// Issue #1070 through MCP on `syn-assign-rewrite`: `knx_show_device` marks
 /// the "Chore interval" row with the same words as the CLI. No bus: the
-/// server runs passive on a closed loopback port. (`knx_validate` runs the
-/// project rules without product data, so neither E016/E017 nor W050.)
+/// server runs passive on a closed loopback port. (`knx_validate` names
+/// W050 as `bussard validate` does: `validate_parity.rs`, issue #1112.)
 #[test]
 fn test_mcp_show_device_assign_rewrite_names_the_assign() -> Result<(), String> {
     use std::io::{BufRead as _, BufReader, Write as _};
