@@ -12,7 +12,9 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashOptions, FlashOutcome, FlashPlan, Session, flash};
+use bussard_download::{
+    FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Session, flash,
+};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
 use bussard_testkit::consts::{
@@ -80,7 +82,7 @@ fn last_written_octet(dev: &MockDevice) -> Option<u32> {
                 (data.len() - 2) as u32,
             )
         })
-        .filter(|&(addr, _)| (BASE..BASE + 16).contains(&addr))
+        .filter(|&(addr, len)| len > 0 && (BASE..BASE + 16).contains(&addr))
         .map(|(addr, len)| addr + len - 1 - BASE)
         .max()
 }
@@ -102,15 +104,70 @@ async fn test_flash_write_rel_mem_tail_held_by_the_fill_reads_back() -> TestResu
 #[tokio::test]
 async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() -> TestResult {
     let plan = plan()?;
-    // A device that ignores the fill flag and holds 0x77 everywhere.
-    let faulty = device()?
-        .with_withheld_fill()
-        .with_memory(BASE, &[0x77; 16]);
-    let (outcome, _) = run(faulty, &plan).await?;
+    // A device that ignores the fill flag: it holds the fill everywhere but
+    // at octet 15, the held tail no step writes. Only the read-back of that
+    // octet can find it.
+    let mut held = [0u8; 16];
+    held[15] = 0x77;
+    let faulty = device()?.with_withheld_fill().with_memory(BASE, &held);
+    let (outcome, dev) = run(faulty, &plan).await?;
+    assert_eq!(
+        dev.read_mem(BASE + 15, 1),
+        vec![0x77],
+        "nothing wrote octet 15"
+    );
     let failed = match outcome {
         Ok(outcome) => !outcome.ok(),
         Err(_) => true,
     };
-    assert!(failed, "a device without the fill must not verify");
+    assert!(
+        failed,
+        "a device without the fill at the held tail must not verify"
+    );
+    Ok(())
+}
+
+/// The MCB check of object 4 compares the device's CRC over the whole
+/// allocation with the image, held tail included (issue #1065): the image
+/// is kept whole, so the check passes against a device that filled.
+#[tokio::test]
+async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult {
+    let mut plan = plan()?;
+    let image = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
+                Some(image.clone())
+            }
+            _ => None,
+        })
+        .ok_or("a parameter write")?;
+    assert_eq!(image.len, 15, "the step writes the op's Size");
+    assert_eq!(
+        plan.image_bytes(&image.segment_id).map(<[u8]>::len),
+        Some(16)
+    );
+    let restart = plan
+        .steps
+        .iter()
+        .rposition(|s| matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }))
+        .ok_or("the plan restarts")?;
+    plan.steps.insert(
+        restart,
+        FlashStep::LoadImageProp {
+            obj_idx: 4,
+            prop_id: 27,
+            count: 1,
+            image: Some(image),
+            advisory: false,
+        },
+    );
+    let (outcome, _) = run(device()?.with_mcb_tables(), &plan).await?;
+    let outcome = outcome?;
+    assert!(
+        outcome.ok(),
+        "the MCB check and the read-back pass: {outcome:?}"
+    );
     Ok(())
 }

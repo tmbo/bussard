@@ -424,6 +424,10 @@ struct SystemB<'a> {
     table_references: BTreeMap<u8, u32>,
 }
 
+/// The octets one read-back request of a held tail asks for (issue #1065):
+/// what every device answers in one `A_Memory_Read`.
+const HELD_TAIL_READ: usize = 12;
+
 impl StepExecutor for SystemB<'_> {
     /// `FactoryReset`, `MasterReset` and the terminal `Restart` reboot the
     /// device and reconnect themselves: their own silence is expected, not a
@@ -801,6 +805,26 @@ impl StepExecutor for SystemB<'_> {
                         segment,
                         own.as_ref(),
                     ));
+                }
+                // The octets past the write that the filled allocation holds
+                // (issue #1065: a parameter's last octet past the
+                // `LdCtrlWriteRelMem` Size, kept in the image as the fill):
+                // nothing writes them, so they are read back and compared,
+                // and a device that did not fill fails the flash. The octets
+                // a `<choose>` branch leaves to the device are not these.
+                let end = image.offset.saturating_add(image.len);
+                if image.offset == 0
+                    && end < whole.len()
+                    && plan.kept().iter().all(|k| k.segment != image.segment_id)
+                {
+                    for (i, part) in whole[end..].chunks(HELD_TAIL_READ).enumerate() {
+                        self.written_samples.push(WrittenSample {
+                            address: addr + (end + i * HELD_TAIL_READ) as u32,
+                            bytes: part.to_vec(),
+                            segment: obj.map(|obj| (obj, image.segment_id.clone())),
+                            mask: None,
+                        });
+                    }
                 }
             }
             FlashStep::WriteMem { address, image } => {
