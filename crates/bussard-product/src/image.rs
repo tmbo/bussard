@@ -2714,7 +2714,9 @@ pub fn compose_property_value(
     prop_id: u32,
     base: Vec<u8>,
 ) -> Result<Option<Vec<u8>>> {
-    PropertyParameters::resolve(app, config).compose(object, prop_id, base)
+    Ok(PropertyParameters::resolve(app, config)
+        .compose(object, prop_id, base)?
+        .map(|(value, _)| value))
 }
 
 /// The property-located parameters of a program (`<Parameter><Property
@@ -2757,6 +2759,19 @@ struct ResolvedPropertyParameter<'a> {
     /// and its property is named by index without an `LdCtrlDeclarePropDesc`
     /// (see [`unreached_keeps_base`]). Its `value` still sizes the property.
     keeps_base: bool,
+    /// Whether the configuration reaches it (a value the project can set).
+    reached: bool,
+}
+
+/// The octets one property-located parameter wrote in a composed property
+/// value ([`PropertyParameters::compose`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenOctets {
+    /// The octet range of the property value it wrote.
+    pub range: Range<usize>,
+    /// Whether the configuration reaches the parameter, so the project can
+    /// set its value; an unreached one writes its default.
+    pub reached: bool,
 }
 
 impl<'a> PropertyParameters<'a> {
@@ -2820,8 +2835,8 @@ impl<'a> PropertyParameters<'a> {
                 let loc = param.property.as_ref()?;
                 let object = PropertyObjectRef::of(loc)?;
                 let key = (object, loc.property_id);
-                let keeps_base = !reached.contains_key(param.id.as_str())
-                    && unreached_keeps_base(&declared, key);
+                let is_reached = reached.contains_key(param.id.as_str());
+                let keeps_base = !is_reached && unreached_keeps_base(&declared, key);
                 let (value, source) = match reached.get(param.id.as_str()) {
                     Some(ref_id) => (
                         config.value(app, None, ref_id),
@@ -2846,6 +2861,7 @@ impl<'a> PropertyParameters<'a> {
                     value,
                     source,
                     keeps_base,
+                    reached: is_reached,
                 })
             })
             .collect();
@@ -2871,11 +2887,13 @@ impl<'a> PropertyParameters<'a> {
     ///
     /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
     pub fn values(&self) -> Result<PropertyValues> {
-        self.compose_over(PropertyValues::new(), |_| true)
+        self.compose_over(PropertyValues::new(), |_| true, &mut Vec::new())
     }
 
     /// The value of `object`/`prop_id` composed over `base` (see
-    /// [`compose_property_value`]); `None` when no parameter is placed in it.
+    /// [`compose_property_value`]), with the octet range each parameter that
+    /// places its value wrote (an unreached one that keeps the base writes
+    /// none, issue #1024); `None` when no parameter is placed in it.
     ///
     /// # Errors
     ///
@@ -2885,63 +2903,28 @@ impl<'a> PropertyParameters<'a> {
         object: PropertyObjectRef,
         prop_id: u32,
         base: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<(Vec<u8>, Vec<WrittenOctets>)>> {
         let key = (object, prop_id);
         if !self.places(object, prop_id) {
             return Ok(None);
         }
-        let mut out = self.compose_over(PropertyValues::from([(key, base)]), |k| *k == key)?;
-        Ok(out.remove(&key))
-    }
-
-    /// The octets of `object`/`prop_id` the parameters write, one range per
-    /// parameter that places its value (an unreached one that keeps the
-    /// base writes none). What a write covering only part of the property
-    /// checks before it sends a composed value (issue #1049).
-    ///
-    /// # Errors
-    ///
-    /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
-    pub fn placed_octets(
-        &self,
-        object: PropertyObjectRef,
-        prop_id: u32,
-    ) -> Result<Vec<Range<usize>>> {
-        let app = self.app;
-        let mut out = Vec::new();
-        for p in self
-            .params
-            .iter()
-            .filter(|p| p.key == (object, prop_id) && !p.keeps_base)
-        {
-            let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
-            let placement = encode_value(
-                app,
-                pname,
-                parameter_type_of(app, p.param),
-                p.value.as_deref(),
-                p.source,
-            )?;
-            let mut scratch = Vec::new();
-            out.push(place_checked(
-                app,
-                pname,
-                &mut scratch,
-                p.offset,
-                p.bit_offset,
-                &placement,
-                None,
-            )?);
-        }
-        Ok(out)
+        let mut written = Vec::new();
+        let mut out = self.compose_over(
+            PropertyValues::from([(key, base)]),
+            |k| *k == key,
+            &mut written,
+        )?;
+        Ok(out.remove(&key).map(|value| (value, written)))
     }
 
     /// The property values the parameters compose over `bases`, for the
-    /// properties `wanted` accepts.
+    /// properties `wanted` accepts; `written` gains the octet range each
+    /// placing parameter wrote.
     fn compose_over(
         &self,
         bases: PropertyValues,
         wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
+        written: &mut Vec<WrittenOctets>,
     ) -> Result<PropertyValues> {
         let app = self.app;
         let mut out = bases;
@@ -2974,7 +2957,11 @@ impl<'a> PropertyParameters<'a> {
                 }
                 continue;
             }
-            place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+            let range = place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+            written.push(WrittenOctets {
+                range,
+                reached: p.reached,
+            });
         }
         Ok(out)
     }

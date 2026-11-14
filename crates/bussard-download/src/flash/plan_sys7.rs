@@ -699,7 +699,14 @@ pub(super) fn plan_flash_sys7(
             LoadOp::WriteProp { .. } => {
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
-                if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
+                // A write carrying InlineData to a property declared only
+                // later is lowered as declared too (issue #1049).
+                if let Some(decl) = super::declare::effective_declaration(
+                    &declared,
+                    step_no,
+                    op,
+                    ops.get(i + 1..).unwrap_or_default(),
+                )? {
                     let inline = match op {
                         LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
                         _ => None,
@@ -710,7 +717,7 @@ pub(super) fn plan_flash_sys7(
                     steps.extend(super::declare::lower_declared_write_prop(
                         step_no,
                         op,
-                        decl,
+                        &decl,
                         inline,
                         &property_params,
                         app,
@@ -835,6 +842,9 @@ pub(super) fn plan_flash_sys7(
         }
     }
     let code_segments = sys7_code_segments(&steps, &images, declared, &param_images, &placed);
+    // No parameter placed in a property the procedure writes is left off
+    // the device (issue #1049).
+    super::declare::check_parameter_coverage(&steps, &property_params, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);

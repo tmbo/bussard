@@ -397,7 +397,7 @@ pub(super) fn may_hold(
 /// #947): `Count` elements, one element, or the description read alone.
 ///
 /// A write with `InlineData` carries the parameters `params` places in the
-/// property laid over it ([`super::declare::overlay_inline`], issue #1049).
+/// property laid over it ([`super::declare::overlay_undeclared_inline`], issue #1049).
 ///
 /// `typed_by_list` is the plan's [`FlashPlan::typed_objects_by_list`]: an
 /// object named by type is then written at a listed index on the plain
@@ -407,7 +407,7 @@ pub(super) fn may_hold(
 ///
 /// [`PlanError::UnsupportedWriteProp`] when a parameter is stored in the
 /// property but its value has no source, the refusals of
-/// [`super::declare::overlay_inline`], and those of [`write_prop_step`].
+/// [`super::declare::overlay_undeclared_inline`], and those of [`write_prop_step`].
 pub(super) fn lower_write_prop(
     step: usize,
     op: &LoadOp,
@@ -444,7 +444,7 @@ pub(super) fn lower_write_prop(
         // the one rule of an undeclared InlineData write (issue #1049); on
         // the System 7 and property-only planners without a capture of its
         // own, checked by the read-back of the written property.
-        Some(data) => match super::declare::overlay_inline(
+        Some(data) => super::declare::overlay_undeclared_inline(
             &name,
             super::declare::InlineWrite {
                 target: WriteTarget {
@@ -459,11 +459,7 @@ pub(super) fn lower_write_prop(
             params,
             app,
         )
-        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?
-        {
-            Some(composed) => (composed, true),
-            None => (data.clone(), false),
-        },
+        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?,
         None => match parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id) {
             Some(value) if start_element.unwrap_or(1) <= 1 && !declared(app, object, prop_id) => {
                 match sized_by_description(count, value.len()) {
@@ -639,16 +635,33 @@ fn elements_of_property(
     if start == 1 {
         return Ok(property.to_vec());
     }
-    let elem = super::declare::declared_element_size(app, object, prop_id).ok_or_else(|| {
-        PlanError::UnsupportedWriteProp {
+    let elem = app
+        .load_procedures
+        .iter()
+        .flat_map(|p| p.ops.iter())
+        .find_map(|op| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(declared),
+                prop_type: Some(prop_type),
+                ..
+            } if *declared == prop_id
+                && prop_object(step, *obj_idx, *obj_type, *occurrence).ok() == Some(object) =>
+            {
+                super::declare::pdt_element_size(prop_type)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| PlanError::UnsupportedWriteProp {
             step,
             reason: format!(
                 "the write to {name} starts at element {start} with the value the parameters \
                  compose for the whole property, and no LdCtrlDeclarePropDesc of the procedure \
                  gives the size of its elements; bussard does not guess which octets it sends"
             ),
-        }
-    })?;
+        })?;
     let count = super::declare::undeclared_element_count(count) as usize;
     let from = (start as usize - 1).saturating_mul(elem);
     let len = count.saturating_mul(elem);
@@ -901,6 +914,9 @@ pub(super) fn plan_flash_properties(
             }
         }
     }
+    // No parameter placed in a property the procedure writes is left off
+    // the device (issue #1049).
+    super::declare::check_parameter_coverage(&steps, &params, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);

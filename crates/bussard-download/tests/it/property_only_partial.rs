@@ -1245,3 +1245,42 @@ fn test_parameters_only_refuses_a_refilled_segment_it_does_not_rewrite_and_check
     ));
     Ok(())
 }
+
+#[test]
+fn test_parameters_only_of_unreached_parameters_over_inline_data_has_nothing_to_write() -> TestResult
+{
+    // Issue #1049 with #1024: no declaration names object 10 PID 52 and no
+    // page reaches its parameters, so they keep the InlineData's octets.
+    // The write is then not the parameters' (`from_parameters` false) and
+    // the parameter-only download finds no parameter of the program to
+    // write, rather than counting a template as a parameter property.
+    assert!(APP_XML.contains(DECLARED_WRITE));
+    let xml = APP_XML
+        .replace(
+            DECLARED_WRITE,
+            r#"<LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" InlineData="0102" />"#,
+        )
+        .replace(r#"<ParameterRefRef RefId="M-00FA_A-0002_P-0_R-1" />"#, "")
+        .replace(r#"<ParameterRefRef RefId="M-00FA_A-0002_P-1_R-2" />"#, "");
+    let app = parse_application_program("M-00FA_A-0002", xml.as_bytes())?;
+    let plan = plan_of(&app, &BTreeMap::new())?;
+    let writes: Vec<(Vec<u8>, bool)> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::WriteProp {
+                prop_id: 52,
+                value,
+                from_parameters,
+                ..
+            } => Some((value.clone(), *from_parameters)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, vec![(vec![0x01, 0x02], false)]);
+    assert_eq!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::NoParameterSegment)
+    );
+    Ok(())
+}
