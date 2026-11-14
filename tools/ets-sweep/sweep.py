@@ -609,6 +609,39 @@ def catalog_identity(knxprod: Path, app: str) -> dict:
     return out
 
 
+# An application file larger than this is not read for its translations: its
+# names then come from the start tag only.
+APP_NAMES_MAX_OCTETS = 40_000_000
+
+
+def application_names(knxprod: Path, app: str) -> list[str]:
+    """The names of application `app`: the `ApplicationProgram`'s own `Name`
+    and every translation of it (ETS's catalog shows the one of its UI
+    language, German in the VM). Empty when the file cannot be read."""
+    import zipfile
+
+    names: list[str] = []
+    try:
+        with zipfile.ZipFile(knxprod) as z:
+            member = next((i for i in z.infolist() if i.filename.endswith(f"/{app}.xml")), None)
+            if member is None:
+                return []
+            with z.open(member) as fh:
+                raw = fh.read(None if member.file_size <= APP_NAMES_MAX_OCTETS else 8000)
+    except (OSError, zipfile.BadZipFile):
+        return []
+    text = raw.decode("utf-8", "replace")
+    m = re.search(r"<ApplicationProgram\s[^>]*>", text)
+    n = re.search(r'\bName="([^"]*)"', m.group(0)) if m else None
+    if n:
+        names.append(html.unescape(n.group(1)))
+    for el in re.finditer(rf'<TranslationElement\s+RefId="{re.escape(app)}"\s*>(.*?)</TranslationElement>', text, re.S):
+        t = re.search(r'<Translation\s+AttributeName="Name"\s+Text="([^"]*)"', el.group(1))
+        if t and html.unescape(t.group(1)) not in names:
+            names.append(html.unescape(t.group(1)))
+    return names
+
+
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
@@ -735,7 +768,10 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # What the catalog row should show, recorded against the row (#881).
         identity = catalog_identity(knxprod, app)
         result["catalog_identity"] = identity
+        # The application's names let the driver tell two applications of
+        # one order number with the same version apart (N512, #525).
         add = flow("catalog_add", search=search, version=version, fallback_search=fallback_search,
+                   applications=application_names(knxprod, app),
                    password_wait=12 if secure_enabled(knxprod, app) else 2)
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")

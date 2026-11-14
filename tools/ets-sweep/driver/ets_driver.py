@@ -2366,12 +2366,73 @@ def flow_catalog_rows(req: dict) -> dict:
     return {"rows": catalog_rows()}
 
 
+def application_score(cell: str, names: list[str]) -> float:
+    """How well a catalog row's application cell (OCR, often cut off with
+    '...' and followed by the version) matches one of the application's
+    names (its default and translated `Name`s): the best similarity of the
+    cell's text before any '...' to the same-length start of a name."""
+    import difflib
+
+    head = _canon(re.split(r"\.\.\.|…", cell, maxsplit=1)[0])
+    if not head:
+        return 0.0
+    return max((difflib.SequenceMatcher(None, head, _canon(n)[:len(head)]).ratio() for n in names), default=0.0)
+
+
+def pick_catalog_row(hits: list[dict], order: str, want_version: str, name: str = "",
+                     applications: list[str] | None = None) -> dict | None:
+    """The catalog row to add among the search's `hits`: an imported row
+    with the order number `order` (canonical) and the version `want_version`
+    (digits). Two applications of one order number can show the same
+    version (Siemens N512 `5WG1 512-1AB01`: 9007 and 9083 both 0.1,
+    #525/#1060); then the row whose application cell matches one of
+    `applications` (the job's application names) is taken, and with no
+    clear winner none is (an error beats a capture of the sibling)."""
+    # Imported products first: an online-catalog row would make ETS fetch
+    # product data from the internet instead of our corpus file. ETS shows
+    # an imported product that also sits in its online catalog at the same
+    # version as one online row (MDT SCN-BWM55 4.4, 2026-10-29): take that
+    # row when no local one exists and order number and version match.
+    local = [r for r in hits if not r.get("online")]
+    if not local:
+        same = [r for r in hits if _canon(r["order"]) == order and want_version
+                and _digits(r["version"]) == want_version]
+        if len(same) == 1:
+            return same[0]
+    hits = local
+    # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
+    exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
+    if not exact and name:
+        # A search by product name whose order cell OCR left empty
+        # (ALLinBOX 88 v2, 2026-10-28): the exact name stands in for it.
+        exact = [r for r in hits if not r["order"].strip() and _canon(r["name"]) == _canon(name)]
+    if len(exact) == 1:
+        # The sweep imports one product file at a time, so the only local
+        # row with this order number is the product: its version cell
+        # (often truncated or noisy in OCR) is not checked.
+        return exact[0]
+    match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
+    if len(match) > 1 and applications:
+        scored = sorted(((application_score(r.get("application", ""), applications), i) for i, r in enumerate(match)),
+                        reverse=True)
+        best, runner_up = scored[0][0], scored[1][0]
+        if best >= 0.8 and best - runner_up >= 0.1:
+            return match[scored[0][1]]
+        raise RuntimeError(f"ambiguous catalog rows: {[(r['order'], r['version'], r.get('application')) for r in match]} "
+                           f"for applications {applications}")
+    if match:
+        return match[0]
+    return None
+
+
 @flow("catalog_add")
 def flow_catalog_add(req: dict) -> dict:
     """Search the catalog for `search` (an order number), pick the row whose
     order number matches and whose application version is `version` (as ETS
-    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list
-    and the row added, which carries its manufacturer group header (#881)."""
+    shows it, e.g. "2.3"), and add it to line 1.1; `applications` (the
+    application's names) decides between two rows of one order number and
+    version (`pick_catalog_row`). Returns the device list and the row added,
+    which carries its manufacturer group header (#881)."""
     require_project(req["project"])
     dismiss_password_dialog(req.get("project_password"))
     wait_busy()
@@ -2415,35 +2476,10 @@ def flow_catalog_add(req: dict) -> dict:
 
     order = _canon(search_term(req["search"]))
     want_version = _digits(req.get("version", ""))
+    applications = [a for a in req.get("applications") or [] if a]
 
     def pick(hits: list[dict], name: str = "") -> dict | None:
-        # Imported products first: an online-catalog row would make ETS fetch
-        # product data from the internet instead of our corpus file. ETS shows
-        # an imported product that also sits in its online catalog at the same
-        # version as one online row (MDT SCN-BWM55 4.4, 2026-10-29): take that
-        # row when no local one exists and order number and version match.
-        local = [r for r in hits if not r.get("online")]
-        if not local:
-            same = [r for r in hits if _canon(r["order"]) == order and want_version
-                    and _digits(r["version"]) == want_version]
-            if len(same) == 1:
-                return same[0]
-        hits = local
-        # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
-        exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
-        if not exact and name:
-            # A search by product name whose order cell OCR left empty
-            # (ALLinBOX 88 v2, 2026-10-28): the exact name stands in for it.
-            exact = [r for r in hits if not r["order"].strip() and _canon(r["name"]) == _canon(name)]
-        if len(exact) == 1:
-            # The sweep imports one product file at a time, so the only local
-            # row with this order number is the product: its version cell
-            # (often truncated or noisy in OCR) is not checked.
-            return exact[0]
-        match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
-        if match:
-            return match[0]
-        return None
+        return pick_catalog_row(hits, order, want_version, name, applications)
 
     rows, hits = search(search_term(req["search"]))
     row = pick(hits)
