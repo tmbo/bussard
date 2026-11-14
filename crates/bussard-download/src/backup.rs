@@ -568,25 +568,47 @@ pub fn parameter_backups_dir(model_dir: &Path) -> PathBuf {
 }
 
 /// Writes a [`ParameterBackup`] into `dir` as `<address>-<unix time>.json`,
-/// creating the directory if needed, and returns the file written.
+/// creating the directory if needed, and returns the file written. A second
+/// backup of the device within the same second never replaces the first: it
+/// is written as `<address>-<unix time>-2.json`, and so on (issue #1085).
 pub(crate) fn write_parameter_backup(
     dir: &Path,
     backup: &ParameterBackup,
 ) -> Result<PathBuf, BackupError> {
+    use std::io::Write as _;
     std::fs::create_dir_all(dir).map_err(|source| BackupError::Io {
         path: dir.to_path_buf(),
         source,
     })?;
-    let path = dir.join(device_backup_file_name(
-        &backup.address,
-        backup.unix_timestamp,
-    ));
     let body = serde_json::to_string_pretty(backup).map_err(BackupError::Encode)?;
-    std::fs::write(&path, body).map_err(|source| BackupError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    Ok(path)
+    let first = device_backup_file_name(&backup.address, backup.unix_timestamp);
+    let mut n = 1u32;
+    loop {
+        let path = if n == 1 {
+            dir.join(&first)
+        } else {
+            dir.join(format!(
+                "{}-{}-{n}.json",
+                backup.address, backup.unix_timestamp
+            ))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(body.as_bytes())
+                    .map_err(|source| BackupError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(source) => return Err(BackupError::Io { path, source }),
+        }
+    }
 }
 
 /// Reads a [`ParameterBackup`] back from disk (`bussard restore
@@ -805,6 +827,32 @@ mod tests {
         assert_eq!(back, with);
         assert_eq!(back.properties[0].object, "index 10");
         assert_eq!(back.properties[0].octets(), Some(vec![5, 9]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_parameter_backup_keeps_a_second_backup_of_the_same_second()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1085: two parameter writes within one second each keep
+        // their own backup.
+        let dir = tempfile::tempdir()?;
+        let memory_only = r#"{"address":"1.1.4","mask":"07B0","application":"M-00FA_A-0002",
+            "unix_timestamp":7,"read_time":"t","regions":[]}"#;
+        let first: ParameterBackup = serde_json::from_str(memory_only)?;
+        let second = ParameterBackup {
+            application: "M-00FA_A-0003".to_string(),
+            ..first.clone()
+        };
+        let a = write_parameter_backup(dir.path(), &first)?;
+        let b = write_parameter_backup(dir.path(), &second)?;
+        assert_ne!(a, b);
+        assert_eq!(a.file_name().and_then(|n| n.to_str()), Some("1.1.4-7.json"));
+        assert_eq!(
+            b.file_name().and_then(|n| n.to_str()),
+            Some("1.1.4-7-2.json")
+        );
+        assert_eq!(read_parameter_backup(&a)?, first);
+        assert_eq!(read_parameter_backup(&b)?, second);
         Ok(())
     }
 

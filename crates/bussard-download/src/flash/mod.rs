@@ -134,7 +134,7 @@ pub use knxnet_ip::{
 pub use labels::trace;
 use labels::{LabelCtx, step_label};
 pub use load_records::{LoadControlForm, LoadControlRecord};
-pub use partial::PartialPlanError;
+pub use partial::{PartialPlanError, ProcedureKind};
 pub(crate) use plan::fills_application_program_2;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{add_par_procedure, kept_octets, plan_flash, same_program, select_application};

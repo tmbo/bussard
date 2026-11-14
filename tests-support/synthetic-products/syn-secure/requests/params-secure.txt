@@ -60,6 +60,7 @@ mem-read 0x60fa addr_int=24826 count=6 secured=tool
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 mem-read 0x8000 addr_int=32768 count=2 secured=tool
 mem-read 0x8002 addr_int=32770 count=2 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
 prop-read type17.1/PID53 count=1 index=0 key_material=True secured=tool
 prop-read type17.1/PID61 count=1 index=0 secured=tool
 prop-read type17.1/PID61 count=1 index=1 secured=tool
@@ -69,6 +70,7 @@ secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system
 authorize Authorize_Request key=FFFFFFFF(free-access) secured=tool
 prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1 secured=tool
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1 secured=tool
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
 load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
 alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00 secured=tool
@@ -126,6 +128,7 @@ mem-read 0x6064 addr_int=24676 count=50 secured=tool
 mem-read 0x6096 addr_int=24726 count=50 secured=tool
 mem-read 0x60c8 addr_int=24776 count=50 secured=tool
 mem-read 0x60fa addr_int=24826 count=6 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
 disconnect T_Disconnect
 
 memory image (1 region(s), chunking removed):

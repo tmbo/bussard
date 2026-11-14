@@ -64,6 +64,10 @@ pub struct ReadRequest<'a> {
     /// A property-only load procedure (issue #390): read its properties
     /// when no table reader speaks the device's mask.
     pub properties: Option<&'a bussard_download::FlashPlan>,
+    /// Read the fixed property writes of the parameter-only download even
+    /// when it writes nothing (a restore puts them back; issue #1085,
+    /// [`crate::params::read_state`]).
+    pub fixed_properties: bool,
 }
 
 /// What one read of a device returned. `L` is the live read: a
@@ -209,9 +213,15 @@ pub async fn read_on<Ch: L4Channel>(
     let (params, parameter_time) = match (&live, req.product) {
         (LiveRead::Tables(tables), Some(product)) => {
             let started = Instant::now();
-            let state =
-                crate::params::read_state(l4, product, req.model, target, tables.tables().mask)
-                    .await;
+            let state = crate::params::read_state(
+                l4,
+                product,
+                req.model,
+                target,
+                tables.tables().mask,
+                req.fixed_properties,
+            )
+            .await;
             (Some(state), Some(started.elapsed()))
         }
         _ => (None, None),

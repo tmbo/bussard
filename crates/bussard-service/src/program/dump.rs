@@ -785,9 +785,16 @@ pub fn write_dump(
             "mask": plan.identity.mask_version,
         },
         "write_bytes": plan.total_write_bytes(),
-        // Which of the product's load procedures the plan runs (issue #490):
-        // `par` on a device that already holds the application.
-        "load_procedure": if plan.is_par_procedure() { "par" } else { "full" },
+        // Which load procedure the plan runs (issues #490, #1085): `par` on
+        // a device that already holds the application, and for a
+        // parameter-only download by the mask's `par` procedure.
+        "load_procedure": match plan.procedure_kind() {
+            bussard_download::ProcedureKind::CompleteByPar
+            | bussard_download::ProcedureKind::ParametersByPar => "par",
+            bussard_download::ProcedureKind::Complete
+            | bussard_download::ProcedureKind::Parameters => "full",
+        },
+        "parameters_only": plan.is_parameters_only(),
         // How many load-control records the steps carry (issue #419); its
         // presence tells the oracle the dump lists them at all.
         "load_control_records": load_control_count,

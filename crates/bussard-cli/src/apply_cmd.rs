@@ -468,6 +468,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         // (issue #336).
         flags_cache: program::read::FlagsCache::Forget { dir },
         properties: None,
+        fixed_properties: false,
     };
     let read = runtime.block_on(program::read::read_device(service, &read_options, &request))?;
     let seed = read.seed();

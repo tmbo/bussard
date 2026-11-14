@@ -9,38 +9,41 @@
 //! that shape from the full plan, so the op sequence, the object indices and the
 //! images all come from the same vendor procedure the full flash interprets:
 //!
-//! - **System B** (issue #543): the partial download of Configuration
-//!   Procedures 03_05_03 §3.5.3 on the object that holds the parameter
-//!   segment, as ETS runs the product's `AppliesTo="par"` procedure: `Unload`,
-//!   `StartLoading`, the segment's relative allocation in Mode 0 with no fill
-//!   (it keeps the memory contents and lands at the original base,
-//!   §3.5.1.2), the procedure's property writes on that object (the
-//!   `PID_MCB_TABLE` seed and the program version), each parameter image at
-//!   the base the device reports through `PID_TABLE_REFERENCE` after the
-//!   allocation, `LoadCompleted`, the procedure's MCB checks on that object,
-//!   and the terminal restart. The executor refuses before the `Unload`
-//!   unless the object reads `Loaded`, writes only the differing octets when
-//!   the base is the one read before the download, the whole image when the
-//!   device moved the segment, and nothing when the reference reads zero.
+//! - **System B, spliced into the master template** (issues #1052, #1085):
+//!   the mask's parameter-only procedure itself (KNX 3/5/3 §3.9.3.6,
+//!   `FlashPlan::par_procedure`), lowered as the complete download is,
+//!   with the application's ops whose `AppliesTo` names `par` or that have
+//!   none: the base pointer read before the unload and checked after the
+//!   load, the `MergeId` 2 to 7 blocks (a `MergeId` 4 parameter reset and
+//!   every write after it included), the program version, LoadCompleted
+//!   and the restart. Each parameter `WriteRelMem` is diffed against the
+//!   memory the device holds (below). A fixed code image is not rewritten
+//!   (ETS's download is differential); its MCB check stays. The captures:
+//!   ETS's partial downloads of `M-0009_A-E802-13-7620` (no `par`
+//!   allocation, a parameter reset), `M-0009_A-E804-10-98AD` (a `par`
+//!   allocation, MergeId 7's trailing write, #1038), the synthetic
+//!   `syn-minimal`, `syn-property-param` and `syn-secure` (a memory
+//!   parameter), and the Jung `M-0004_A-20DE-22-C7D8` of the house (a
+//!   memory program with MergeId 7's MCB checks of objects 1 to 4).
+//! - **System B otherwise** (issue #543): a program not spliced into the
+//!   template, or a mask with neither master data nor a built-in `par`
+//!   procedure, gets the partial download of Configuration Procedures
+//!   03_05_03 §3.5.3 cut from the complete one, on the object that holds
+//!   the parameter segment: `Unload`, `StartLoading`, the segment's relative
+//!   allocation in Mode 0 with no fill (it keeps the memory contents and
+//!   lands at the original base, §3.5.1.2), the procedure's property writes
+//!   on that object, each parameter image at the base the device reports
+//!   through `PID_TABLE_REFERENCE` after the allocation, `LoadCompleted`,
+//!   the procedure's MCB checks on that object, and the terminal restart.
 //!   A program whose parameters all live in interface-object properties
-//!   (issue #944, the Hager 07B0 actuators) gets the same bracket on the
-//!   object its `par` allocation names, around every property its parameters
-//!   are placed in (with the property's declaration) instead of a memory
-//!   write. Every property a parameter is placed in is written on whichever
-//!   object it sits, for a program with memory parameters too.
-//! - **System B, parameters in properties only, spliced into the master
-//!   template** (issue #1052): the mask's parameter-only procedure itself
-//!   (KNX 3/5/3 §3.9.3.6, [`FlashPlan::par_procedure`]), lowered as the
-//!   complete download is, with the application's ops whose `AppliesTo`
-//!   names `par` or that have none: the base pointer read before the unload
-//!   and checked after the load, the `MergeId` 2, 4, 6 and 7 blocks (a
-//!   `MergeId` 4 parameter reset and every write after it included), the
-//!   program version, LoadCompleted and the restart. A fixed code image is
-//!   not rewritten (ETS's download is differential); its MCB check stays.
-//!   This takes precedence over the cut above; ETS's partial downloads of
-//!   `M-0009_A-E802-13-7620` (no `par` allocation, a parameter reset) and
-//!   `M-0009_A-E804-10-98AD` (a `par` allocation, MergeId 7's trailing
-//!   write, #1038) are the captures.
+//!   (issue #944) gets the same bracket on the object its `par` allocation
+//!   names, around every property its parameters are placed in.
+//!
+//! On System B the executor refuses before the first `Unload` unless the
+//! object reads `Loaded`, writes only the differing octets when the base is
+//! the one read before the download, the whole image when the device moved
+//! the segment (the cut; the `par` procedure's base pointer check stops
+//! before the write), and nothing when the reference reads zero.
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
@@ -178,6 +181,23 @@ pub enum PartialPlanError {
     },
 }
 
+/// Which load procedure a [`FlashPlan`] runs ([`FlashPlan::procedure_kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcedureKind {
+    /// The complete download, the product's `full` procedure.
+    Complete,
+    /// The complete download onto a device that holds the application,
+    /// with the product's `AppliesTo="par"` allocations (issue #490,
+    /// [`FlashPlan::use_par_procedure`]).
+    CompleteByPar,
+    /// A parameter-only download cut from the complete one (System 7, and a
+    /// System B program without the mask's `par` procedure).
+    Parameters,
+    /// A parameter-only download by the mask's `par` procedure (KNX 3/5/3
+    /// §3.9.3.6, issues #1052, #1085).
+    ParametersByPar,
+}
+
 impl FlashPlan {
     /// Cuts this full plan down to a parameter-only download against the
     /// parameter memory the device holds today (`regions`, read by
@@ -225,11 +245,12 @@ impl FlashPlan {
             };
             return Err(PartialPlanError::UncapturedStep { what });
         }
+        let by_par = self.par_steps.is_some() && !self.is_sys7();
         let steps = if self.is_sys7() {
             self.sys7_parameter_steps(regions)?
         } else if let Some(par) = &self.par_steps {
             // Lowered with its description reads already.
-            self.par_procedure_steps(par)?
+            self.par_procedure_steps(par, regions)?
         } else {
             self.system_b_parameter_steps(regions)?
         };
@@ -237,12 +258,21 @@ impl FlashPlan {
         // the ones its own writes need on its connection (issue #1014; no
         // capture of a parameter-only download shows them, the rule is the
         // full download's).
-        let by_par = self.par_steps.is_some() && !self.is_sys7();
         let steps = if by_par {
             steps
         } else {
             super::describe::describe_untyped_properties(steps)
         };
+        // The octets of a segment without `<Data>` the device keeps follow
+        // the allocations this download sends (issue #1084): the `par`
+        // allocation may keep the memory where the complete one fills it.
+        let kept: Vec<super::KeptOctets> = self
+            .kept
+            .iter()
+            .filter(|k| !k.unoccupied)
+            .cloned()
+            .chain(super::plan::unoccupied_kept(&steps, &self.unoccupied))
+            .collect();
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
             .filter_map(|step| match step {
@@ -270,7 +300,7 @@ impl FlashPlan {
             };
             let placed = self.placed.get(segment);
             let mask = self.segment_mask(segment);
-            let unoccupied = self.unoccupied_octets(segment);
+            let unoccupied = unoccupied_in(&kept, segment);
             let mut skipped = Vec::new();
             for (i, byte) in image.iter_mut().enumerate() {
                 let Some(&held) = current.get(i) else {
@@ -312,30 +342,16 @@ impl FlashPlan {
             par_steps: None,
             from_par_procedure: by_par,
             parameters_only: true,
-            kept: self.kept.clone(),
+            kept,
             unoccupied: self.unoccupied.clone(),
         })
     }
 
     /// Whether an octet of `segment` is one no declared parameter occupies in
     /// a segment without `<Data>` (issue #1084, [`super::KeptOctets::unoccupied`]):
-    /// no download writes it and the model holds no value there. Indexed
-    /// once per segment, so a lookup is constant time.
+    /// no download writes it and the model holds no value there.
     fn unoccupied_octets(&self, segment: &str) -> impl Fn(usize) -> bool + use<> {
-        let mut index: Vec<bool> = Vec::new();
-        for kept in self
-            .kept
-            .iter()
-            .filter(|k| k.unoccupied && k.segment == segment)
-        {
-            for &(start, end) in &kept.ranges {
-                if index.len() < end {
-                    index.resize(end, false);
-                }
-                index[start..end].fill(true);
-            }
-        }
-        move |i| index.get(i).copied().unwrap_or(false)
+        unoccupied_in(&self.kept, segment)
     }
 
     /// The octets of `segment` a parameter placement writes under the
@@ -726,14 +742,13 @@ impl FlashPlan {
         Ok(steps)
     }
 
-    /// Whether this plan carries the mask's parameter-only procedure (issue
-    /// #1052): a System B program spliced into the master template whose
-    /// parameters all live in properties.
-    pub fn takes_par_procedure(&self) -> bool {
+    /// Whether this plan takes the mask's parameter-only procedure (issues
+    /// #1052, #1085): a System B program spliced into the master template
+    /// with parameters, in memory or in properties.
+    pub(crate) fn takes_par_procedure(&self) -> bool {
         self.sys7.is_none()
             && self.spliced_from_template
-            && !self.has_parameter_memory()
-            && !self.parameter_properties().is_empty()
+            && (self.has_parameter_memory() || !self.parameter_properties().is_empty())
     }
 
     /// The parameter-only download by the mask's `par` procedure (module
@@ -743,12 +758,45 @@ impl FlashPlan {
     fn par_procedure_steps(
         &self,
         par: &Result<Vec<FlashStep>, String>,
+        regions: &ParamRegions,
     ) -> Result<Vec<FlashStep>, PartialPlanError> {
         let par = par
             .as_ref()
             .map_err(|reason| PartialPlanError::ParProcedure {
                 reason: reason.clone(),
             })?;
+        // Every parameter segment is written against what the device holds
+        // (issue #1085): its base and content must have been read.
+        let par_segments: BTreeSet<&str> = par
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
+                    Some(image.segment_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some(segment) = par_segments.iter().find(|s| !regions.contains_key(**s)) {
+            return Err(PartialPlanError::UnreadableSegment {
+                segment: (*segment).to_string(),
+            });
+        }
+        // A parameter segment of the complete download the procedure does
+        // not write could not be set (the memory twin of
+        // `ParameterNotInProcedure` below).
+        if let Some(segment) = self.steps.iter().find_map(|s| match s {
+            FlashStep::WriteRelMem { image, .. }
+                if image.kind == ImageKind::Parameters
+                    && !par_segments.contains(image.segment_id.as_str()) =>
+            {
+                Some(image.segment_id.clone())
+            }
+            _ => None,
+        }) {
+            return Err(PartialPlanError::ParameterNotInProcedure {
+                property: format!("parameter segment {segment}"),
+            });
+        }
         for step in par {
             if let FlashStep::MasterReset { erase_code, .. } = step
                 && let Some(lost) = erased_and_not_restored(*erase_code)
@@ -846,13 +894,17 @@ impl FlashPlan {
                 }
             }
         }
+        // A parameter write the procedure repeats (the same part of the same
+        // segment) goes out once: it is diffed against the same baseline.
+        let mut written: BTreeSet<(String, usize, usize)> = BTreeSet::new();
         Ok(par
             .iter()
             .zip(par_bound_of_each(par))
             .filter(|(s, bound)| match s {
-                FlashStep::WriteRelMem { image, .. } => {
-                    image.kind == ImageKind::Parameters || refilled.contains(bound)
+                FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
+                    written.insert((image.segment_id.clone(), image.offset, image.len))
                 }
+                FlashStep::WriteRelMem { .. } => refilled.contains(bound),
                 _ => true,
             })
             .map(|(s, _)| s.clone())
@@ -862,7 +914,7 @@ impl FlashPlan {
     /// The steps of the mask's parameter-only procedure this plan carries
     /// (issue #1052), `None` when it carries none or it could not be
     /// lowered.
-    pub fn par_procedure(&self) -> Option<&[FlashStep]> {
+    pub(crate) fn par_procedure(&self) -> Option<&[FlashStep]> {
         match &self.par_steps {
             Some(Ok(steps)) => Some(steps),
             _ => None,
@@ -907,10 +959,20 @@ impl FlashPlan {
         out
     }
 
-    /// Whether [`FlashPlan::parameters_only`] built this plan from the mask's
-    /// parameter-only procedure (issue #1052).
-    pub fn is_built_from_par_procedure(&self) -> bool {
-        self.from_par_procedure
+    /// Which load procedure this plan runs (issue #1085): the one name for
+    /// what [`FlashPlan::use_par_procedure`] and [`FlashPlan::parameters_only`]
+    /// made of it.
+    pub fn procedure_kind(&self) -> ProcedureKind {
+        match (
+            self.parameters_only,
+            self.from_par_procedure,
+            self.par_procedure,
+        ) {
+            (true, true, _) => ProcedureKind::ParametersByPar,
+            (true, false, _) => ProcedureKind::Parameters,
+            (false, _, true) => ProcedureKind::CompleteByPar,
+            (false, _, false) => ProcedureKind::Complete,
+        }
     }
 
     /// The first property range a parameter of the complete download is
@@ -1093,6 +1155,22 @@ impl FlashPlan {
             .filter(|(_, changed)| !changed.is_empty())
             .collect()
     }
+}
+
+/// Whether an octet of `segment` is unoccupied in `kept` (see
+/// [`FlashPlan::unoccupied_octets`]). Indexed once per segment, so a lookup
+/// is constant time.
+fn unoccupied_in(kept: &[super::KeptOctets], segment: &str) -> impl Fn(usize) -> bool + use<> {
+    let mut index: Vec<bool> = Vec::new();
+    for kept in kept.iter().filter(|k| k.unoccupied && k.segment == segment) {
+        for &(start, end) in &kept.ranges {
+            if index.len() < end {
+                index.resize(end, false);
+            }
+            index[start..end].fill(true);
+        }
+    }
+    move |i| index.get(i).copied().unwrap_or(false)
 }
 
 /// The object each step of `steps` writes into when it is a
