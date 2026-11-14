@@ -74,5 +74,6 @@ mod test_runner_mock;
 mod tiny_project;
 mod validate_invariants_cli;
 mod validate_keyring_cli;
+mod validate_parity;
 mod validate_secure_links_cli;
 mod write_gate;

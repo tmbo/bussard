@@ -208,7 +208,15 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 
     crate::keystore_meta::check_stale_exports(model, dir, &mut diags);
 
-    let models = ProductModels::load(dir);
+    // Only the applications the devices use (issue #1112): a project whose
+    // cache holds many other applications validates as fast as one that
+    // holds none. The models are memoized per process.
+    let apps = model
+        .devices
+        .values()
+        .filter_map(|d| d.device.product.as_ref())
+        .filter_map(|p| p.application_ref.as_deref());
+    let models = ProductModels::load_apps(dir, apps);
     check_parameters(model, &models, dir, &mut diags);
     // Opt-in lints, with the product cache so L002 can total the bus current.
     diags.extend(crate::lint::lint(model, Some(&models)));
