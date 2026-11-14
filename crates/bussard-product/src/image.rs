@@ -2714,7 +2714,9 @@ pub fn compose_property_value(
     prop_id: u32,
     base: Vec<u8>,
 ) -> Result<Option<Vec<u8>>> {
-    PropertyParameters::resolve(app, config).compose(object, prop_id, base)
+    Ok(PropertyParameters::resolve(app, config)
+        .compose(object, prop_id, base)?
+        .map(|(value, _)| value))
 }
 
 /// The property-located parameters of a program (`<Parameter><Property
@@ -2757,6 +2759,20 @@ struct ResolvedPropertyParameter<'a> {
     /// and its property is named by index without an `LdCtrlDeclarePropDesc`
     /// (see [`unreached_keeps_base`]). Its `value` still sizes the property.
     keeps_base: bool,
+    /// The ref the configuration reaches it through, `None` when it is
+    /// unreached (the project cannot set its value).
+    reached_ref: Option<String>,
+}
+
+/// The octets one property-located parameter wrote in a composed property
+/// value ([`PropertyParameters::compose`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenOctets {
+    /// The octet range of the property value it wrote.
+    pub range: Range<usize>,
+    /// The parameter's id (`Parameter/@Id`), as
+    /// [`PropertyParameters::changed_from`] names it.
+    pub id: String,
 }
 
 impl<'a> PropertyParameters<'a> {
@@ -2820,8 +2836,8 @@ impl<'a> PropertyParameters<'a> {
                 let loc = param.property.as_ref()?;
                 let object = PropertyObjectRef::of(loc)?;
                 let key = (object, loc.property_id);
-                let keeps_base = !reached.contains_key(param.id.as_str())
-                    && unreached_keeps_base(&declared, key);
+                let reached_ref = reached.get(param.id.as_str()).map(|r| r.to_string());
+                let keeps_base = reached_ref.is_none() && unreached_keeps_base(&declared, key);
                 let (value, source) = match reached.get(param.id.as_str()) {
                     Some(ref_id) => (
                         config.value(app, None, ref_id),
@@ -2846,6 +2862,7 @@ impl<'a> PropertyParameters<'a> {
                     value,
                     source,
                     keeps_base,
+                    reached_ref,
                 })
             })
             .collect();
@@ -2864,6 +2881,75 @@ impl<'a> PropertyParameters<'a> {
         self.params.iter().any(|p| p.key == (object, prop_id))
     }
 
+    /// The property-located parameters whose placement differs from the one
+    /// `defaults` (the same program resolved with no value set) gives: a
+    /// value the project changed, directly or through a calculation or an
+    /// `<Assign>`. Keyed by parameter id, each with its name for a message:
+    /// `param@<ref> "<text>"` (the device-file key) when the configuration
+    /// reaches it, else its id. What a planner asks before it refuses a
+    /// write it cannot place with certainty: at the defaults nothing has
+    /// changed (issue #1049).
+    pub fn changed_from(&self, defaults: &PropertyParameters<'_>) -> BTreeMap<String, String> {
+        let at_default: HashMap<&str, &ResolvedPropertyParameter<'_>> = defaults
+            .params
+            .iter()
+            .map(|p| (p.param.id.as_str(), p))
+            .collect();
+        let mut out = BTreeMap::new();
+        for p in &self.params {
+            // The octets each would write, so an override spelled otherwise
+            // than the default (`1.0`, `01`, an enumeration's text) that
+            // encodes to the same octets is not a change.
+            let same = at_default.get(p.param.id.as_str()).is_some_and(|d| {
+                d.keeps_base == p.keeps_base
+                    && d.key == p.key
+                    && (p.keeps_base || self.encoded(d) == self.encoded(p))
+            });
+            if !same {
+                let text = p
+                    .param
+                    .text
+                    .as_deref()
+                    .or(p.param.name.as_deref())
+                    .unwrap_or_default();
+                let name = match &p.reached_ref {
+                    Some(r) => format!("param@{r} \"{text}\""),
+                    None => format!("{} \"{text}\"", p.param.id),
+                };
+                out.insert(p.param.id.clone(), name);
+            }
+        }
+        out
+    }
+
+    /// The octets `p` places, laid at its offset (a bit field over zeros),
+    /// and the range they take; `None` when its value does not encode.
+    fn encoded(&self, p: &ResolvedPropertyParameter<'_>) -> Option<(Range<usize>, Vec<u8>)> {
+        let app = self.app;
+        let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
+        let placement = encode_value(
+            app,
+            pname,
+            parameter_type_of(app, p.param),
+            p.value.as_deref(),
+            p.source,
+        )
+        .ok()?;
+        let mut image = Vec::new();
+        let range = place_checked(
+            app,
+            pname,
+            &mut image,
+            p.offset,
+            p.bit_offset,
+            &placement,
+            None,
+        )
+        .ok()?;
+        let octets = image.get(range.clone())?.to_vec();
+        Some((range, octets))
+    }
+
     /// The value of every property the parameters live in, composed over
     /// nothing (see [`compute_property_values`]).
     ///
@@ -2871,11 +2957,13 @@ impl<'a> PropertyParameters<'a> {
     ///
     /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
     pub fn values(&self) -> Result<PropertyValues> {
-        self.compose_over(PropertyValues::new(), |_| true)
+        self.compose_over(PropertyValues::new(), |_| true, &mut Vec::new())
     }
 
     /// The value of `object`/`prop_id` composed over `base` (see
-    /// [`compose_property_value`]); `None` when no parameter is placed in it.
+    /// [`compose_property_value`]), with the octet range each parameter that
+    /// places its value wrote (an unreached one that keeps the base writes
+    /// none, issue #1024); `None` when no parameter is placed in it.
     ///
     /// # Errors
     ///
@@ -2885,21 +2973,28 @@ impl<'a> PropertyParameters<'a> {
         object: PropertyObjectRef,
         prop_id: u32,
         base: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<(Vec<u8>, Vec<WrittenOctets>)>> {
         let key = (object, prop_id);
         if !self.places(object, prop_id) {
             return Ok(None);
         }
-        let mut out = self.compose_over(PropertyValues::from([(key, base)]), |k| *k == key)?;
-        Ok(out.remove(&key))
+        let mut written = Vec::new();
+        let mut out = self.compose_over(
+            PropertyValues::from([(key, base)]),
+            |k| *k == key,
+            &mut written,
+        )?;
+        Ok(out.remove(&key).map(|value| (value, written)))
     }
 
     /// The property values the parameters compose over `bases`, for the
-    /// properties `wanted` accepts.
+    /// properties `wanted` accepts; `written` gains the octet range each
+    /// placing parameter wrote.
     fn compose_over(
         &self,
         bases: PropertyValues,
         wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
+        written: &mut Vec<WrittenOctets>,
     ) -> Result<PropertyValues> {
         let app = self.app;
         let mut out = bases;
@@ -2932,7 +3027,11 @@ impl<'a> PropertyParameters<'a> {
                 }
                 continue;
             }
-            place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+            let range = place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+            written.push(WrittenOctets {
+                range,
+                id: p.param.id.clone(),
+            });
         }
         Ok(out)
     }

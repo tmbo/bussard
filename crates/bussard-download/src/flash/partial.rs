@@ -1026,13 +1026,16 @@ impl FlashPlan {
     }
 
     /// The first property range a parameter of the complete download is
-    /// written to that the parameter-only procedure `par` does not write, in
-    /// words (`object 10 PID 52, elements 1 to 2`); `None` when it writes
-    /// every one.
+    /// written to that the parameter-only procedure `par` does not write
+    /// with the parameters' value, in words (`object 10 PID 52, elements 1
+    /// to 2`); `None` when it writes every one. A `par` write of the
+    /// `InlineData` as it is (not `from_parameters`) does not carry them, so
+    /// it does not count (issue #1049).
     fn parameter_elements_outside(&self, par: &[FlashStep]) -> Option<String> {
         let covered: BTreeSet<(super::PropObject, u32, u32)> = par
             .iter()
             .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
             .flat_map(|w| {
                 (0..u32::from(w.count.max(1)))
                     .map(move |i| (w.object, w.prop_id, u32::from(w.start_element) + i))
@@ -1371,6 +1374,40 @@ mod tests {
         assert_eq!(partial.baseline_address(segment), Some(0x4006));
         assert_eq!(partial.changed_octets(), 1);
         assert_eq!(partial.baseline(segment), Some(&[7u8][..]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parameter_elements_outside_needs_the_parameters_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1049: a parameter-only procedure that writes the property
+        // with its InlineData as it is does not carry the parameters the
+        // complete download composes there.
+        let app = fabricated_app();
+        let mut full = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let write = |from_parameters: bool| FlashStep::WriteProp {
+            object: super::super::PropObject::Index(9),
+            prop_id: 208,
+            value: vec![0x01, 0x02],
+            start_element: 1,
+            count: 2,
+            verify: false,
+            from_parameters,
+        };
+        full.steps.push(write(true));
+        assert_eq!(
+            full.parameter_elements_outside(&[write(false)]).as_deref(),
+            Some("object 9 PID 208, elements 1 to 2")
+        );
+        assert_eq!(full.parameter_elements_outside(&[write(true)]), None);
         Ok(())
     }
 

@@ -1172,6 +1172,12 @@ pub enum PlanError {
     /// its device file's `[knxnet]` table.
     #[error("{0}")]
     KnxnetIpUnsourced(String),
+
+    /// A parameter placed in an interface-object property cannot be
+    /// downloaded as the project sets it (issue #1049): no write of the
+    /// load procedure covers its octets, or its value does not compose.
+    #[error("cannot flash: {0}")]
+    PropertyParameter(String),
 }
 
 /// Identity of the application being flashed, for the pre-flight display and the
