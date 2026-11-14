@@ -72,6 +72,7 @@ next to it, and zips it on demand.
 | [`syn-secure-property`](syn-secure-property/product.toml) | `NEST-WARDEN` | 07B0 | Data Secure capable, a parameter placed in a property | #1054, #1041, #669 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
+| [`syn-text-unmapped`](syn-text-unmapped/product.toml) | `NEST-WARM` | 07B0 | TypeText default with a character no Latin code page holds, no TextParameterEncoding | #1065, #416 |
 | [`syn-trailing-writeprop`](syn-trailing-writeprop/product.toml) | `NEST-LATCH` | 07B0 | property-only with a `par` allocation, AppliesTo-less WriteProp first and last | #1038, #944, #1054 |
 | [`syn-union-bitfields`](syn-union-bitfields/product.toml) | `NEST-BITS` | 07B0 | 16-bit union of two types, sub-octet parameters packed by BitOffset | #604 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
@@ -404,6 +405,7 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 | `syn-trailing-writeprop` | the #1054 VM session | `capture.py syn-trailing-writeprop`, then `--variant partial` |
 | `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
 | `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
+| `syn-text-unmapped` | the #1065 VM session | `capture.py syn-text-unmapped` |
 | `syn-bcu2-0021` | the first BCU 2 VM session (#525); bussard refuses BCU 2 | `capture.py syn-bcu2-0021` |
 
 A secure product (`[application.security]`) is captured the way
