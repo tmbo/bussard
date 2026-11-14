@@ -1246,56 +1246,33 @@ fn plan_flash_as(
                 match inline_data {
                     Some(value) if !value.is_empty() => {
                         // The parameters placed in the property are laid
-                        // over the InlineData as on the declared arm, and
-                        // the step says the value is theirs (issue #669),
-                        // so a parameter change rewrites it. ETS does so
-                        // for a write its procedure declares only after it
-                        // (issue #1049: `M-0009_A-E802-13-7620` object 9
-                        // PID 208, "Emission" set to 01 over the template's
-                        // 02), and for the PID 13 placeholder (the one rule,
-                        // `maybe_substitute_app_id`, issue #964). A
-                        // parameter that may be stored in the property
-                        // under another name of the object (an index
-                        // against a type) leaves a concrete InlineData as it
-                        // is, the shape ETS wrote for the Siemens dimmer's
-                        // typed write (issue #948); only the placeholder
-                        // refuses it.
-                        let refuse = |reason| PlanError::UnsupportedWriteProp {
-                            step: step_no,
-                            reason,
-                        };
-                        let keep_template = !placeholder
-                            && super::declare::has_unresolved_placement(app, object, prop_id);
-                        let composed = if keep_template
-                            || !super::declare::is_placed(
-                                &name,
-                                object,
-                                prop_id,
-                                &property_params,
-                                app,
-                            )
-                            .map_err(refuse)?
-                        {
-                            None
-                        } else {
-                            let from = super::declare::undeclared_inline_from(
-                                &name,
-                                *start_element,
-                                *count,
-                                value.len(),
-                            )
-                            .map_err(refuse)?;
-                            super::declare::placed_value(
-                                &name,
-                                object,
-                                prop_id,
-                                &property_params,
-                                app,
-                                &value,
-                                from,
-                            )
-                            .map_err(refuse)?
-                        };
+                        // over the InlineData (the one rule of an undeclared
+                        // InlineData write, `overlay_inline`, issue #1049),
+                        // and the step says the value is theirs (issue
+                        // #669), so a parameter change rewrites it; the PID
+                        // 13 placeholder takes them over the application id
+                        // (`maybe_substitute_app_id`, issue #964).
+                        let composed = super::declare::overlay_inline(
+                            &name,
+                            super::declare::InlineWrite {
+                                target: super::plan_props::WriteTarget {
+                                    object,
+                                    prop_id,
+                                    start_element: *start_element,
+                                    count: *count,
+                                },
+                                inline: &value,
+                                placeholder,
+                            },
+                            &property_params,
+                            app,
+                        )
+                        .map_err(|reason| {
+                            PlanError::UnsupportedWriteProp {
+                                step: step_no,
+                                reason,
+                            }
+                        })?;
                         let (value, from_parameters) = match composed {
                             Some(composed) => (composed, true),
                             None => (value, false),
@@ -1348,6 +1325,7 @@ fn plan_flash_as(
                             step_no,
                             op,
                             values,
+                            &property_params,
                             app,
                             typed_objects_by_list,
                         )?);
@@ -5509,26 +5487,147 @@ mod tests {
         Ok(())
     }
 
+    /// A `u8` parameter `P-<n>` with default `value`, placed at `offset` of
+    /// object 9 PID 208 (`ObjectIndex="9"`), or of type 9 when `by_type`.
+    fn placed_u8(n: u32, value: u8, offset: u32, by_type: bool) -> String {
+        let object = if by_type {
+            r#"ObjectType="9""#
+        } else {
+            r#"ObjectIndex="9""#
+        };
+        format!(
+            r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-{n}" Name="p{n}" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="{value}"><Property {object} PropertyId="208" Offset="{offset}" BitOffset="0" /></Parameter>"#
+        )
+    }
+
+    /// The values a plan writes to a property, or the reason it is refused.
+    type PlannedOrRefused = Result<Vec<Vec<u8>>, String>;
+
+    /// The values the plan of `ops` over `params` (each shown) writes to
+    /// PID 208, or its `UnsupportedWriteProp` reason.
+    fn pid_208_writes(
+        ops: &str,
+        params: &[String],
+    ) -> Result<PlannedOrRefused, Box<dyn std::error::Error>> {
+        let shown: Vec<u32> = (1..=params.len() as u32).collect();
+        let app = ops_app_showing(
+            &format!(r#"{ops}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+            &params.concat(),
+            &shown,
+            false,
+        )?;
+        Ok(match plan_ops(&app) {
+            Ok(plan) => Ok(writes_to(&plan, 208)
+                .into_iter()
+                .filter_map(|s| match s {
+                    FlashStep::WriteProp { value, .. } => Some(value),
+                    _ => None,
+                })
+                .collect()),
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => Err(reason),
+            Err(other) => return Err(other.into()),
+        })
+    }
+
     #[test]
     fn test_plan_flash_lays_placed_parameters_over_undeclared_inline_data_from_start_element()
     -> TestResult {
         // Issue #1049: an undeclared InlineData write from `StartElement`
         // sends `Count` elements of `len / Count` octets; the parameters
-        // placed in that extent are laid over it at their own offsets, and
-        // one placed outside it changes nothing.
-        let params = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="in" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="7"><Property ObjectIndex="9" PropertyId="208" Offset="5" BitOffset="0" /></Parameter>
-            <Parameter Id="M-00FA_A-2500-10-51CB_P-2" Name="out" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="9"><Property ObjectIndex="9" PropertyId="208" Offset="0" BitOffset="0" /></Parameter>"#;
-        let ops = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" /><LdCtrlLoadCompleted LsmIdx="4" />"#;
-        let plan = plan_ops(&ops_app_showing(ops, params, &[1, 2], false)?)?;
-        let writes: Vec<Vec<u8>> = writes_to(&plan, 208)
-            .into_iter()
-            .filter_map(|s| match s {
-                FlashStep::WriteProp { value, .. } => Some(value),
-                _ => None,
-            })
-            .collect();
+        // placed in that extent are laid over it at their own offsets.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" />"#;
         // Elements 3 and 4 of two octets: octets 4 to 7, P-1 at octet 5.
-        assert_eq!(writes, vec![vec![0x11, 0x07, 0x22, 0x22]]);
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 7, 5, false)])?,
+            Ok(vec![vec![0x11, 0x07, 0x22, 0x22]])
+        );
+        // A parameter outside the extent would be dropped while the step
+        // says the value is the parameters': refused.
+        let reason = pid_208_writes(
+            write,
+            &[placed_u8(1, 7, 5, false), placed_u8(2, 9, 0, false)],
+        )?
+        .err()
+        .ok_or("a parameter outside the write is refused")?;
+        assert!(reason.contains("outside the octets 4 to 7"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_sizes_an_undeclared_inline_write_by_a_later_declaration() -> TestResult {
+        // Issue #1049: E802 declares object 9 PID 208 after the write; a
+        // later declaration gives the element size. Two `PDT_UNSIGNED_INT`
+        // elements from element 2 are octets 2 to 5, P-1 at octet 3.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="2" Count="2" InlineData="11112222" />"#;
+        let declare = |pdt: &str| {
+            format!(
+                r#"<LdCtrlDeclarePropDesc ObjIdx="9" PropId="208" PropType="{pdt}" MaxElements="8" Writable="true" />"#
+            )
+        };
+        assert_eq!(
+            pid_208_writes(
+                &format!("{write}{}", declare("PDT_UNSIGNED_INT")),
+                &[placed_u8(1, 7, 3, false)]
+            )?,
+            Ok(vec![vec![0x11, 0x07, 0x22, 0x22]])
+        );
+        // InlineData that is not Count elements of the declared size.
+        let reason = pid_208_writes(
+            &format!("{write}{}", declare("PDT_UNSIGNED_CHAR")),
+            &[placed_u8(1, 7, 3, false)],
+        )?
+        .err()
+        .ok_or("a write that does not fit the declared size is refused")?;
+        assert!(
+            reason.contains("not 2 elements of the 1 octet(s)"),
+            "{reason}"
+        );
+        // Without a declaration, InlineData that is not whole elements.
+        let reason = pid_208_writes(
+            r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="2" Count="2" InlineData="112222" />"#,
+            &[placed_u8(1, 7, 3, false)],
+        )?
+        .err()
+        .ok_or("a write of partial elements is refused")?;
+        assert!(
+            reason.contains("not a whole number of octets per element"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_an_undeclared_inline_write_past_the_element_index() -> TestResult {
+        // Issue #1049: the element bound is checked before the composition
+        // sizes a buffer from `StartElement`.
+        let reason = pid_208_writes(
+            r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="4294967295" Count="1" InlineData="11" />"#,
+            &[placed_u8(1, 7, 0, false)],
+        )?
+        .err()
+        .ok_or("a write past the element index is refused")?;
+        assert!(reason.contains("past the 12-bit element index"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_an_undeclared_inline_write_with_a_mixed_placement() -> TestResult {
+        // Issue #1049 (the #964 rule): a parameter placed under the write's
+        // own object beside one that may be stored there under its type
+        // would be a partial write: refused. With only the unresolved one,
+        // the InlineData goes out as it is (the #948 shape).
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1122" />"#;
+        let reason = pid_208_writes(
+            write,
+            &[placed_u8(1, 7, 0, false), placed_u8(2, 9, 1, true)],
+        )?
+        .err()
+        .ok_or("a mixed placement is refused")?;
+        assert!(reason.contains("names the object by type"), "{reason}");
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 9, 1, true)])?,
+            Ok(vec![vec![0x11, 0x22]])
+        );
         Ok(())
     }
 

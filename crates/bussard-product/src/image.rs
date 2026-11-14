@@ -2894,6 +2894,48 @@ impl<'a> PropertyParameters<'a> {
         Ok(out.remove(&key))
     }
 
+    /// The octets of `object`/`prop_id` the parameters write, one range per
+    /// parameter that places its value (an unreached one that keeps the
+    /// base writes none). What a write covering only part of the property
+    /// checks before it sends a composed value (issue #1049).
+    ///
+    /// # Errors
+    ///
+    /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
+    pub fn placed_octets(
+        &self,
+        object: PropertyObjectRef,
+        prop_id: u32,
+    ) -> Result<Vec<Range<usize>>> {
+        let app = self.app;
+        let mut out = Vec::new();
+        for p in self
+            .params
+            .iter()
+            .filter(|p| p.key == (object, prop_id) && !p.keeps_base)
+        {
+            let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
+            let placement = encode_value(
+                app,
+                pname,
+                parameter_type_of(app, p.param),
+                p.value.as_deref(),
+                p.source,
+            )?;
+            let mut scratch = Vec::new();
+            out.push(place_checked(
+                app,
+                pname,
+                &mut scratch,
+                p.offset,
+                p.bit_offset,
+                &placement,
+                None,
+            )?);
+        }
+        Ok(out)
+    }
+
     /// The property values the parameters compose over `bases`, for the
     /// properties `wanted` accepts.
     fn compose_over(

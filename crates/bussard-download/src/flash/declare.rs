@@ -43,7 +43,7 @@
 //!   property sends nothing, not even a description read
 //!   (`M-0008_A-F060-10-5848`, the declared object 4 PID 201: no frame for it).
 
-use super::plan_props::{check_addressable, may_hold, prop_object};
+use super::plan_props::{WriteTarget, check_addressable, may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
 use bussard_product::application::{ApplicationProgram, LoadOp};
 use bussard_product::{PropertyObjectRef, PropertyParameters};
@@ -402,76 +402,159 @@ pub(super) fn compose_over(
     Ok(value)
 }
 
-/// Whether a parameter may be stored in `object`/`prop_id` under a name
-/// bussard does not resolve to `object` (an index against a type, see
-/// [`lower_declared_write_prop`]).
-pub(super) fn has_unresolved_placement(
+/// The element size the procedure's `LdCtrlDeclarePropDesc` of
+/// `object`/`prop_id` gives, wherever in the procedures it stands (before or
+/// after the write that asks), `None` without one or for a datatype without
+/// a fixed size.
+pub(super) fn declared_element_size(
     app: &ApplicationProgram,
     object: PropObject,
     prop_id: u32,
-) -> bool {
-    placements(app, object, prop_id).1
+) -> Option<usize> {
+    app.load_procedures
+        .iter()
+        .flat_map(|p| p.ops.iter())
+        .enumerate()
+        .find_map(|(i, op)| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(declared),
+                prop_type: Some(prop_type),
+                ..
+            } if *declared == prop_id
+                && prop_object(i, *obj_idx, *obj_type, *occurrence).ok() == Some(object) =>
+            {
+                pdt_element_size(prop_type)
+            }
+            _ => None,
+        })
 }
 
-/// The octet of the property an undeclared `LdCtrlWriteProp` with
-/// `InlineData` of `len` octets starts at: element `StartElement` of
-/// `len / Count` octets ([`undeclared_element_count`] elements), 0 from
-/// element 1. Where the parameters placed in the property are laid over the
-/// InlineData (issue #1049).
+/// An `LdCtrlWriteProp` with a concrete `InlineData` to a property its
+/// procedure has not declared at that point: where it writes, its
+/// `InlineData`, and whether that is the PID 13 application-id placeholder
+/// (after the planner's substitution).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InlineWrite<'a> {
+    /// The object, PID, `StartElement` and `Count` of the op.
+    pub(super) target: WriteTarget,
+    /// The `InlineData`, never empty.
+    pub(super) inline: &'a [u8],
+    /// Whether the op is the PID 13 placeholder.
+    pub(super) placeholder: bool,
+}
+
+/// What an undeclared `LdCtrlWriteProp` with `InlineData` sends: the
+/// parameters placed in the property laid over the `InlineData`, `None`
+/// when no parameter is placed in it and the `InlineData` goes out as it is.
+/// The one rule of the System B, System 7 and property-only planners (issue
+/// #1049).
+///
+/// ETS lays the parameter values over the template: the
+/// `M-0009_A-E802-13-7620` procedure writes object 9 PID 208 one op before it
+/// declares it, and ETS wrote "Emission" (`P-676`, octet 83) as the set 01
+/// over the template's 02 (ETS sweep params row, 2026-11-14). The System 7
+/// and property-only uses follow the same rule without a capture of their
+/// own; the read-back of every written property checks them.
+///
+/// The write covers `Count` elements from `StartElement`, of the size a
+/// declaration of the property gives (also one later in the procedure, as
+/// in E802), else of `len / Count` octets.
 ///
 /// # Errors
 ///
-/// The reason, naming `name`, when the write starts past element 1 and its
-/// InlineData is not a whole number of elements, so the element size and
-/// the octets it covers are unknown.
-pub(super) fn undeclared_inline_from(
+/// The reason, naming `name`, when a parameter is placed in the property and
+/// - another may be stored there under a name bussard does not resolve to the
+///   write's object (an index against a type): composing only the resolved
+///   ones would be a partial write (issue #964); the placeholder refuses
+///   such a placement even without a resolved one;
+/// - the write reaches past the 12-bit element index;
+/// - the `InlineData` is not `Count` whole elements (of the declared size,
+///   or of any size without a declaration);
+/// - a parameter writes octets outside the write's extent, which the write
+///   would drop while its step says the value is the parameters';
+/// - a value cannot be composed.
+pub(super) fn overlay_inline(
     name: &str,
-    start_element: Option<u32>,
-    count: Option<u32>,
-    len: usize,
-) -> Result<usize, String> {
-    let start = start_element.unwrap_or(1).max(1);
-    if start == 1 {
-        return Ok(0);
-    }
-    let elements = undeclared_element_count(count) as usize;
-    if !len.is_multiple_of(elements) {
-        return Err(format!(
-            "the write to {name} starts at element {start} with {len} octets of InlineData for \
-             {elements} element(s), not a whole number of octets per element; bussard does not \
-             know which octets of the property the parameters placed in it fall on"
-        ));
-    }
-    Ok((start as usize - 1).saturating_mul(len / elements))
-}
-
-/// The value the parameters placed in `object`/`prop_id` compose over
-/// `template`, the octets a write sends from octet `from` of the property
-/// ([`compose_over`]), `None` when no parameter is placed in the property
-/// under a name of `object`.
-///
-/// # Errors
-///
-/// The reason, naming `name`, when a parameter may be stored in the property
-/// under a name bussard does not resolve to `object` (see
-/// [`lower_declared_write_prop`]), or its value cannot be composed.
-pub(super) fn placed_value(
-    name: &str,
-    object: PropObject,
-    prop_id: u32,
+    write: InlineWrite<'_>,
     params: &PropertyParameters<'_>,
     app: &ApplicationProgram,
-    template: &[u8],
-    from: usize,
 ) -> Result<Option<Vec<u8>>, String> {
+    let InlineWrite {
+        target,
+        inline,
+        placeholder,
+    } = write;
+    let WriteTarget {
+        object,
+        prop_id,
+        start_element,
+        count,
+    } = target;
     let (names, unresolved) = placements(app, object, prop_id);
-    if unresolved {
+    let placed = names.iter().any(|n| params.places(*n, prop_id));
+    if unresolved && (placed || placeholder) {
         return Err(unresolved_reason(name));
     }
-    if !names.iter().any(|n| params.places(*n, prop_id)) {
+    if !placed {
+        // Nothing the parameters decide, or only a placement bussard does
+        // not resolve to this object: the InlineData as it is (the Siemens
+        // typed write, issue #948).
         return Ok(None);
     }
-    compose_over(name, &names, prop_id, params, template, from).map(Some)
+    let start = start_element.unwrap_or(1).max(1);
+    let elements = undeclared_element_count(count);
+    let last = u64::from(start) + u64::from(elements) - 1;
+    if last > u64::from(MAX_ELEMENT_INDEX) {
+        return Err(format!(
+            "the write to {name} reaches element {last}, past the 12-bit element index"
+        ));
+    }
+    let len = inline.len();
+    let elements = elements as usize;
+    let elem = match declared_element_size(app, object, prop_id) {
+        Some(size) if size.saturating_mul(elements) == len => size,
+        Some(size) => {
+            return Err(format!(
+                "the write to {name} carries {len} octets of InlineData for Count {elements}, \
+                 not {elements} elements of the {size} octet(s) the property is declared with; \
+                 bussard does not know which octets the parameters placed in it fall on"
+            ));
+        }
+        None if len.is_multiple_of(elements) => len / elements,
+        None => {
+            return Err(format!(
+                "the write to {name} carries {len} octets of InlineData for Count {elements}, \
+                 not a whole number of octets per element, and no LdCtrlDeclarePropDesc gives \
+                 the element size; bussard does not know which octets the parameters placed \
+                 in it fall on"
+            ));
+        }
+    };
+    // Bounded by the extent check: at most 4094 elements before the write.
+    let from = (start as usize - 1).saturating_mul(elem);
+    let end = from.saturating_add(len);
+    for n in &names {
+        let ranges = params
+            .placed_octets(*n, prop_id)
+            .map_err(|e| format!("composing the value of {name} from the parameters: {e}"))?;
+        if let Some(r) = ranges
+            .iter()
+            .find(|r| !r.is_empty() && (r.start < from || r.end > end))
+        {
+            return Err(format!(
+                "a parameter placed in {name} writes octets {} to {}, outside the octets {from} \
+                 to {} this write sends, so the write would drop its value; bussard does not \
+                 send the property without it",
+                r.start,
+                r.end - 1,
+                end.saturating_sub(1)
+            ));
+        }
+    }
+    compose_over(name, &names, prop_id, params, inline, from).map(Some)
 }
 
 /// Whether a parameter is placed in `object`/`prop_id` under a name of
