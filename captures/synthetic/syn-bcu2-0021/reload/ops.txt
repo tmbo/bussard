@@ -1,0 +1,46 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-bcu2-0021/reload/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 72 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  mem-read 0x0115 addr_int=277 count=1
+   5  authorize Authorize_Request key=FFFFFFFF(free-access)
+   6  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   7  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+   8  prop-read obj0/PID_17 count=1 index=1
+   9  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+  10  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+  11  load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+  12  load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  13  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x0116 seg_size=32 access=0x32 mem_type=0x03 mem_attr=0x80
+  14  prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+  15  prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
+  16  mem-write 0x0116 addr_int=278 len=1 sha=4bf5122f extended=False
+  17  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x0116 pei_type=0 app_id=00fa288010
+  18  load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  19  load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  20  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x0136 seg_size=32 access=0x32 mem_type=0x03 mem_attr=0x80
+  21  mem-write 0x0136 addr_int=310 len=5 sha=58222bed extended=False
+  22  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x0136 pei_type=0 app_id=00fa288010
+  23  load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  24  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  25  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x00c8 seg_size=24 access=0x32 mem_type=0x01 mem_attr=0x00
+  26  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x0156 seg_size=32 access=0x32 mem_type=0x03 mem_attr=0x80
+  27  mem-write 0x0156 addr_int=342 len=12 sha=546a4097 extended=False
+  28  mem-write 0x0162 addr_int=354 len=12 sha=8688d249 extended=False
+  29  mem-write 0x016e addr_int=366 len=8 sha=12a3ae44 extended=False
+  30  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x0176 seg_size=16 access=0x32 mem_type=0x03 mem_attr=0x80
+  31  mem-write 0x0176 addr_int=374 len=12 sha=cf104a4e extended=False
+  32  mem-write 0x0182 addr_int=386 len=4 sha=ad95131b extended=False
+  33  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x0156 pei_type=0 app_id=00fa288010
+  34  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskPtr ld_ctrl_data=0000000000000000
+  35  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskCtrl1 ld_ctrl_data=0000000000000000
+  36  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskCtrl2 ld_ctrl_data=0000015600c800c8
+  37  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  38  disconnect T_Disconnect
+
+memory image (3 region(s), chunking removed):
+    0x000116..0x000117 len=1 sha=4bf5122f
+    0x000136..0x00013b len=5 sha=58222bed
+    0x000156..0x000186 len=48 sha=fd6ca567
