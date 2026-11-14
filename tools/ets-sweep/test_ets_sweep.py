@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import sys
@@ -1883,15 +1884,27 @@ class TestCaptureRecapture(unittest.TestCase):
         self.assertEqual(capture.row_options(verdicts), "loadctl=identical props=differs")
 
     def test_write_rows_reproduces_the_committed_rows(self):
+        # manifest.json is the source of truth; rows.txt is generated from it
+        # (#1119). A pin flipped in rows.txt alone fails here.
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "rows.txt"
             saved = capture.ROWS
             capture.ROWS = out
             try:
-                capture.write_rows(capture.load_manifest())
+                capture.write_rows(capture.load_manifest(), keep_hand_set=False)
             finally:
                 capture.ROWS = saved
-            self.assertEqual(out.read_text(), saved.read_text())
+            want, have = out.read_text(), saved.read_text()
+            if want != have:
+                diff = "".join(difflib.unified_diff(
+                    have.splitlines(keepends=True), want.splitlines(keepends=True),
+                    "captures/synthetic/rows.txt (committed)", "generated from manifest.json"))
+                self.fail(
+                    "captures/synthetic/rows.txt is generated from captures/synthetic/manifest.json "
+                    "and differs from it. Make the change in the manifest entry (its `oracle` verdicts, "
+                    "`row_options` or `note`), then run\n"
+                    "    python3 tools/ets-sweep/synthetic/capture.py --write-rows\n"
+                    "and commit both files.\n" + diff)
 
     def test_seq_verdict_from_regions(self):
         self.assertEqual(capture.seq_verdict("par=ok(3)  loadctl=ok(17)  seq=ok(23)"), "identical")

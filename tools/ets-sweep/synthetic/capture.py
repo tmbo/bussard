@@ -6,6 +6,7 @@
 
     uv run tools/ets-sweep/synthetic/capture.py <product> [--no-ets] [--sim-build SHA]
     uv run tools/ets-sweep/synthetic/capture.py <product> --variant <name> [--sim-build SHA]
+    python3 tools/ets-sweep/synthetic/capture.py --write-rows   # rows.txt from manifest.json only
 
 For `tests-support/synthetic-products/<product>/` it runs the whole flow:
 
@@ -638,8 +639,12 @@ def kept_options(row: str, previous: list[str], verdicts: dict) -> str:
     return "|".join(fields)
 
 
-def write_rows(entries: list[dict]) -> None:
-    previous = row_options_of(ROWS.read_text()) if ROWS.exists() else {}
+def write_rows(entries: list[dict], keep_hand_set: bool = True) -> None:
+    """Writes `rows.txt` from the manifest `entries`. A capture keeps the
+    hand-set options of the rows it rewrites (`kept_options`); with
+    `keep_hand_set` false (`--write-rows`) the file is the manifest's alone,
+    which is what the offline test compares the committed file with."""
+    previous = row_options_of(ROWS.read_text()) if keep_hand_set and ROWS.exists() else {}
     head = (
         "# Offline oracle rows of the synthetic captures (epic #596), for\n"
         "#   BUSSARD_KEYRING_PASSWORD='SyntheticKeyring1!' \\\n"
@@ -1359,7 +1364,9 @@ def capture_variant(product: str, variant: str, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("product")
+    ap.add_argument("product", nargs="?")
+    ap.add_argument("--write-rows", action="store_true",
+                    help="only rewrite captures/synthetic/rows.txt from manifest.json (no VM, no ETS)")
     ap.add_argument("--no-ets", action="store_true", help="reuse the sweep's run directory")
     ap.add_argument("--sim-build", help="the commit knx-sim.exe in the VM was built from")
     ap.add_argument("--ets-version", help="with --no-ets: the ETS version of the reused capture")
@@ -1367,6 +1374,12 @@ def main() -> int:
     ap.add_argument("--variant", default=VARIANT, choices=[VARIANT, *VARIANTS],
                     help="a run variant instead of the defaults download (see VARIANTS)")
     args = ap.parse_args()
+    if args.write_rows:
+        write_rows(load_manifest(), keep_hand_set=False)
+        print(f"wrote {ROWS.relative_to(REPO)} from {MANIFEST.relative_to(REPO)}")
+        return 0
+    if not args.product:
+        ap.error("a product is required unless --write-rows is given")
     if args.variant != VARIANT:
         return capture_variant(args.product, args.variant, args)
     product = args.product

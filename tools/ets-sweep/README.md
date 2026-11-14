@@ -234,7 +234,9 @@ manifest is also kept as `history/manifest-<stamp>.json`. `benign.json`
 `benign`. An application whose capture is newer than its oracle row is
 `pending`.
 
-Offline tests of the Mac-side pieces: `uv run tools/ets-sweep/test_ets_sweep.py`.
+Offline tests of the Mac-side pieces: `uv run tools/ets-sweep/test_ets_sweep.py`
+(CI runs them with plain `python3`; paramiko and pyyaml are needed only to reach
+the VM).
 
 ### Committed evidence (#1097)
 
