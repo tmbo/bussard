@@ -21,8 +21,8 @@ mod model;
 mod reader;
 
 pub use model::{
-    FactoryProperty, LdCtrl, LoadProcedure, LoadableObject, ProductData, RelativeSegment,
-    SecurityCapacity, TypedProperty,
+    AbsSegmentStep, AbsoluteSegment, FactoryProperty, LdCtrl, LoadProcedure, LoadableObject,
+    ProductData, RelativeSegment, SecurityCapacity, TypedProperty,
 };
 pub(crate) use reader::pdt_size;
 pub use reader::{ProdError, program_manufacturer, read_knxprod, read_knxprod_bytes};
