@@ -317,3 +317,97 @@ fn test_apply_writes_a_changed_property_parameter_and_restore_puts_it_back() -> 
     assert_eq!(dev.memory_writes, flashed.memory_writes, "{stderr}");
     Ok(())
 }
+
+/// Issue #1071: the property-only application with every op but the
+/// property write taken out of its procedure (no reset, no allocation, no
+/// load control): the shape of the mask 0021 program (#390), on a 07B0
+/// device.
+fn bare_property_app_xml() -> Result<String, Box<dyn Error>> {
+    let start = PROPERTY_APP_XML
+        .find("<LoadProcedure>")
+        .ok_or("no LoadProcedure in the app")?;
+    let end = PROPERTY_APP_XML
+        .find("</LoadProcedure>")
+        .ok_or("no LoadProcedure end in the app")?;
+    Ok(format!(
+        "{}<LoadProcedure>\n<LdCtrlConnect />\n<LdCtrlWriteProp AppliesTo=\"full,par\" \
+         ObjIdx=\"10\" PropId=\"52\" Count=\"2\" Verify=\"false\" />\n<LdCtrlRestart />\n\
+         <LdCtrlDisconnect />\n{}",
+        &PROPERTY_APP_XML[..start],
+        &PROPERTY_APP_XML[end..]
+    ))
+}
+
+/// Issue #1071: a 07B0 device whose application's procedure only writes
+/// properties is not taken for a mask 0021 property-only device: `bussard
+/// flash` and `bussard plan` refuse it naming the shape, and `knx_plan_device`
+/// returns no property-only plan without a digest: either a plan with a
+/// `plan_digest` or the same refusal. Nothing is written.
+#[test]
+fn test_property_only_shape_on_07b0_is_refused_not_planned_as_0021() -> TestResult {
+    let xml = bare_property_app_xml()?;
+    let Some(bench) =
+        Bench::start_with_app("prop-only-07b0", MockDevice::running([5, 9]), "", &xml)?
+    else {
+        return Ok(());
+    };
+    pin_product(&bench)?;
+    write_device(&bench, "\"lvl@P-1_R-2\" = 11")?;
+    const SHAPE: &str = "only writes interface-object properties";
+
+    let out = bench.bussard(&["flash", "1.1.4", "--dry-run"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(SHAPE) && stderr.contains("mask 0021"),
+        "{stderr}"
+    );
+
+    // The plan writes the links and says why the parameters are not
+    // compared, in the same words.
+    let plan = plan_json(&bench)?;
+    assert!(plan.get("property_procedure").is_none(), "{plan}");
+    assert!(
+        plan["parameters"]["note"]
+            .as_str()
+            .is_some_and(|s| s.contains(SHAPE)),
+        "{plan}"
+    );
+
+    let model = bench.tmp.join("knx");
+    let mut server = crate::mcp_stdio_client::McpServer::start_without_keyring(
+        &model,
+        bench.port,
+        &[
+            ("BUSSARD_MGMT_TIMEOUT_MS", "300"),
+            ("BUSSARD_ADDRESS_PROBE_MS", "200"),
+        ],
+        &["--allow-programming", "--no-model-edits"],
+    )
+    .map_err(|e| e.to_string())?;
+    let mcp = server
+        .call_when_connected(
+            "knx_plan_device",
+            serde_json::json!({"address": "1.1.4"}),
+            50,
+        )
+        .map_err(|e| e.to_string())?;
+    assert_eq!(mcp["ok"], true, "{mcp}");
+    assert!(mcp.get("property_procedure").is_none(), "{mcp}");
+    assert!(
+        mcp["parameters"]["note"]
+            .as_str()
+            .is_some_and(|s| s.contains(SHAPE)),
+        "{mcp}"
+    );
+    // A plan that writes carries the digest its write takes.
+    assert!(
+        mcp["noop"] == true || mcp["plan_digest"].is_string(),
+        "{mcp}"
+    );
+    assert!(bench.device().memory_writes.is_empty());
+    Ok(())
+}

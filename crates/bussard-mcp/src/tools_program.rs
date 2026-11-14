@@ -2984,4 +2984,45 @@ mod tests {
         assert_eq!(digest("1.1.4")?.len(), 64);
         Ok(())
     }
+
+    /// What each plan variant's write takes (issue #1071). The match is
+    /// exhaustive: a new variant does not compile until it states whether
+    /// its plan carries a digest.
+    fn digest_contract(answer: &PlanAnswer) -> &'static str {
+        match answer {
+            // `remember_plan` for every plan that writes (`plan_body`).
+            PlanAnswer::Device(_) => "a plan_digest when it writes",
+            // `plan_interface_body`, the same.
+            PlanAnswer::Interface(_) => "a plan_digest when it writes",
+            // Mask 0021 only since #1071: `bussard flash` writes it, and the
+            // plan says so in its next step.
+            PlanAnswer::Property(_) => "no plan_digest: the CLI writes it",
+        }
+    }
+
+    /// Issue #1071: the only plan without a digest is the mask 0021
+    /// property-only plan, and it tells the assistant who writes it.
+    #[test]
+    fn test_plan_answer_property_plan_names_its_writer() -> Result<(), String> {
+        let target = parse_address("1.1.4")?;
+        let row = bussard_service::property_plan::PropertyRow {
+            property: "object type 11 PID 205".to_string(),
+            planned: "01".to_string(),
+            device: Some("00".to_string()),
+            error: None,
+        };
+        let answer =
+            PlanAnswer::Property(PropertyPlan::new(target, 0x0021, "M-00FA_A-0001", &[row]));
+        assert_eq!(
+            digest_contract(&answer),
+            "no plan_digest: the CLI writes it"
+        );
+        assert!(answer.plan_digest().is_none());
+        let PlanAnswer::Property(plan) = &answer else {
+            return Err("not a property plan".to_string());
+        };
+        let next = bussard_service::report::Report::next_step(plan).unwrap_or_default();
+        assert!(next.contains("`bussard flash 1.1.4`"), "{next}");
+        Ok(())
+    }
 }

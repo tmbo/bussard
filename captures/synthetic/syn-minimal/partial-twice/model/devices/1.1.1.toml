@@ -1,0 +1,7 @@
+# The device of the partial-twice variant of syn-minimal (capture.py).
+address = "1.1.1"
+name = "syn-minimal"
+
+[parameters]
+delay-s = 500
+operating-mode = "automatic"

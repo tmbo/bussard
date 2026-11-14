@@ -68,6 +68,8 @@ impl Device {
         // status byte is at `status_addr + (lsm_index - 1)`.
         let bytes = if let Some(status) = self.sys7_status_bytes(addr, n) {
             status
+        } else if let Some(bytes) = self.bcu2_memory_read(addr, n) {
+            bytes
         } else {
             self.memory.read(u32::from(addr), n)
         };
@@ -87,6 +89,9 @@ impl Device {
         tool: IndividualAddress,
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
+        if self.is_bcu2() {
+            return self.on_bcu2_memory_write(tool, apdu);
+        }
         if self.access_level != 0 {
             return Err(DeviceError::Unauthorized {
                 level: self.access_level,

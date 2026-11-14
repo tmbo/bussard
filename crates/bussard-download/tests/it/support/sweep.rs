@@ -552,6 +552,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
         PlanError::UnknownObjectSize { .. } => "UnknownObjectSize".to_string(),
         PlanError::KnxnetIpUnsourced(_) => "KnxnetIpUnsourced".to_string(),
         PlanError::ModuleProcedure(_) => "ModuleProcedure".to_string(),
+        PlanError::PropertyOnlyShape { .. } => "PropertyOnlyShape".to_string(),
     }
 }
 

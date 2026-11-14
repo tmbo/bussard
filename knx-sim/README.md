@@ -29,6 +29,11 @@ architecture.
   the object-0/PID78 preflight, and System 7 wire strictness (standard frame
   only, ≤12 memory octets — the trap for a tool wrongly sending 63-byte chunks).
   See `DESIGN.md` and `dev/system7-spec.md`.
+- A strict **System 2** (BCU 2, masks 0020 / 0021 / 0025) device: three
+  property-driven LSMs over absolute memory, the BCU 2 memory map and system
+  table (0100h to 0116h), four access levels, and the records of KNX 3/5/2
+  §3.31.3 checked against both (bussard issue #525). What it does not model
+  is listed in `DESIGN.md` ("System 2").
 - Product-derived device identity: the properties and memory an application's
   own `LdCtrlCompareProp`/`LdCtrlCompareMem` preflights expect (hardware type,
   order info, hardware ids) are seeded from the product, because a real device

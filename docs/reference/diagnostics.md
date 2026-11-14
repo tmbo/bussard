@@ -1,6 +1,6 @@
 # Diagnostics
 
-Every code `bussard validate` and the `knx_validate` MCP tool report, with its severity. For reading a validation report and deciding what to fix first.
+Every code `bussard validate` and the `knx_validate` MCP tool report, with its severity. Both run the same rules through one function; the report's `checked` lists the rule families that ran. For reading a validation report and deciding what to fix first.
 
 `bussard validate` runs strict parsing first (see [Errors](files/errors.md)), then the rule passes below. `validate --json` prints `{"schema", "diagnostics": [...]}`.
 

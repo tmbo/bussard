@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-2880-10-0000" ApplicationNumber="10368" ApplicationVersion="16" ProgramType="ApplicationProgram" MaskVersion="MV-0021" Name="Wren switch" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false" MinEtsVersion="6.0" NonRegRelevantDataVersion="0">
+          <Static>
+            <Code>
+              <AbsoluteSegment Id="M-00FA_A-2880-10-0000_AS-0116" Name="address-table" MemoryType="EEPROM" Address="278" Size="32" />
+              <AbsoluteSegment Id="M-00FA_A-2880-10-0000_AS-0136" Name="association-table" MemoryType="EEPROM" Address="310" Size="32" />
+              <AbsoluteSegment Id="M-00FA_A-2880-10-0000_AS-00C8" Name="ram" MemoryType="RAM" Address="200" Size="24" />
+              <AbsoluteSegment Id="M-00FA_A-2880-10-0000_AS-0156" Name="application" MemoryType="EEPROM" Address="342" Size="32">
+                <Data>AsjKFwDLTwD///////////////////////////////8=</Data>
+              </AbsoluteSegment>
+              <AbsoluteSegment Id="M-00FA_A-2880-10-0000_AS-0176" Name="parameters" MemoryType="EEPROM" Address="374" Size="16">
+                <Data>/////////////////////w==</Data>
+              </AbsoluteSegment>
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-2880-10-0000_PT-Mode" Name="Mode">
+                <TypeRestriction Base="Value" SizeInBit="8">
+                  <Enumeration Text="off" Value="0" Id="M-00FA_A-2880-10-0000_PT-Mode_EN-0" />
+                  <Enumeration Text="on" Value="1" Id="M-00FA_A-2880-10-0000_PT-Mode_EN-1" />
+                </TypeRestriction>
+              </ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-2880-10-0000_P-1" Name="mode" ParameterType="M-00FA_A-2880-10-0000_PT-Mode" Text="Operating mode" Value="1">
+                <Memory CodeSegment="M-00FA_A-2880-10-0000_AS-0176" Offset="0" BitOffset="0" />
+              </Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-2880-10-0000_P-1_R-1" RefId="M-00FA_A-2880-10-0000_P-1" />
+            </ParameterRefs>
+            <ComObjectTable CodeSegment="M-00FA_A-2880-10-0000_AS-0156" Offset="0">
+              <ComObject Id="M-00FA_A-2880-10-0000_O-0" Name="switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" Priority="Low" />
+              <ComObject Id="M-00FA_A-2880-10-0000_O-1" Name="status" Text="Status" Number="1" FunctionText="On/Off status" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" Priority="Low" />
+            </ComObjectTable>
+            <ComObjectRefs>
+              <ComObjectRef Id="M-00FA_A-2880-10-0000_O-0_R-1" RefId="M-00FA_A-2880-10-0000_O-0" />
+              <ComObjectRef Id="M-00FA_A-2880-10-0000_O-1_R-2" RefId="M-00FA_A-2880-10-0000_O-1" />
+            </ComObjectRefs>
+            <AddressTable CodeSegment="M-00FA_A-2880-10-0000_AS-0116" Offset="0" MaxEntries="15" />
+            <AssociationTable CodeSegment="M-00FA_A-2880-10-0000_AS-0136" Offset="0" MaxEntries="15" />
+            <LoadProcedures>
+              <LoadProcedure>
+                <LdCtrlConnect />
+                <LdCtrlUnload LsmIdx="1" />
+                <LdCtrlUnload LsmIdx="2" />
+                <LdCtrlUnload LsmIdx="3" />
+                <LdCtrlLoad LsmIdx="1" />
+                <LdCtrlAbsSegment LsmIdx="1" SegType="0" Address="278" Size="32" Access="50" MemType="3" SegFlags="128" />
+                <LdCtrlTaskSegment LsmIdx="1" Address="278" />
+                <LdCtrlLoadCompleted LsmIdx="1" />
+                <LdCtrlLoad LsmIdx="2" />
+                <LdCtrlAbsSegment LsmIdx="2" SegType="0" Address="310" Size="32" Access="50" MemType="3" SegFlags="128" />
+                <LdCtrlTaskSegment LsmIdx="2" Address="310" />
+                <LdCtrlLoadCompleted LsmIdx="2" />
+                <LdCtrlLoad LsmIdx="3" />
+                <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="200" Size="24" Access="50" MemType="1" SegFlags="0" />
+                <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="342" Size="32" Access="50" MemType="3" SegFlags="128" />
+                <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="374" Size="16" Access="50" MemType="3" SegFlags="128" />
+                <LdCtrlTaskSegment LsmIdx="3" Address="342" />
+                <LdCtrlTaskPtr LsmIdx="3" InitPtr="0" SavePtr="0" SerialPtr="0" />
+                <LdCtrlTaskCtrl1 LsmIdx="3" Address="0" Count="0" />
+                <LdCtrlTaskCtrl2 LsmIdx="3" Callback="0" Address="342" Seg0="200" Seg1="200" />
+                <LdCtrlLoadCompleted LsmIdx="3" />
+                <LdCtrlDisconnect />
+              </LoadProcedure>
+            </LoadProcedures>
+            <Options Comparable="true" Reconstructable="true" />
+          </Static>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-00FA_A-2880-10-0000_PB-1" Name="general" Text="General">
+                <ParameterRefRef RefId="M-00FA_A-2880-10-0000_P-1_R-1" />
+                <ComObjectRefRef RefId="M-00FA_A-2880-10-0000_O-0_R-1" />
+                <ComObjectRefRef RefId="M-00FA_A-2880-10-0000_O-1_R-2" />
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

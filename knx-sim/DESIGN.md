@@ -245,6 +245,116 @@ drives the canonical MDT `M-0083_A-000E` op sequence (encoded as raw TPDUs by th
 test) to `Loaded` on all three LSMs, for *both* `LsmAccess` variants, and asserts
 the strictness refusals.
 
+## System 2 devices (BCU 2, masks 0020 / 0021 / 0025)
+
+A product on mask `MV-0020`, `MV-0021` or `MV-0025` builds a BCU 2
+(`Profile::System2`, `device/bcu2.rs`, bussard issue #525). A 0021 product
+whose procedure only touches properties still builds the property-only device
+of #390. The model follows the KNX Standard 3.0.0 and the mask's own resource
+list in `knx_master.xml` (`MaskVersion/HawkConfigurationData/Resources`, which
+is how ETS addresses each resource); the clauses are cited by document,
+section and page.
+
+**Descriptor and system memory.** `A_DeviceDescriptor_Read` type 0 answers the
+mask. A fresh device holds (KNX 9/4/1 §5.1.2.12, pp. 43-47): mask type 00h
+and the mask version at 004Eh-004Fh, OptionReg FFh at 0100h, the product
+manufacturer at 0101h (also object 0 PID 12), this application's id
+(manufacturer, number, version) at 0103h and object 3 PID 13, its PEI type at
+0109h, RunError FFh (no error) at 010Dh, and the address table length 1 with
+the own address at 0116h. 0117h follows an address change. The system status
+at 0060h answers the programming mode in bit 0 and takes it on a write (the
+mask's `ProgrammingMode` resource).
+
+**Interface objects** (Profiles Annex A.2.2 to A.2.6; 9/4/1 §5.1.2.13):
+
+| object | type | properties the sim serves |
+|---|---|---|
+| 0 device | 0 | 1, 12 manufacturer, 14 device control (bit 2 Verify Mode, mandatory, Profiles §4.2 row 3), 15 order info, 16 PEI type (the product's `PeiType`), 54 programming mode, and what the product's compares and writes name |
+| 1 address table | 1 | 1, 5 load control, 7 = 0116h on 0020/0021 (fixed, 3/5/1 §4.16.4 p. 226); on 0025 set by the record |
+| 2 association table | 2 | 1, 5, 7 from the Segment Control Record (3/5/1 §4.17.4 pp. 247-248), also 0111h |
+| 3 application | 3 | 1, 5, 6 run state (read only), 7 group object table from Task Control Record 2 (also 0112h), 13 application id, 16 required PEI type |
+
+There is no object 4 or higher: the mask's `FirstAppObjectIdx` is 4 and the
+application interface objects a Task Control Record 1 announces are not
+served.
+
+**Load state machines.** Realisation Type 1, property based: Profiles §4.2
+row 7 (p. 37) makes it mandatory on BCU 2 and rules out the memory-mapped
+Type 2 (Realisation Type 2 applies to the tables, not the LSMs). The 10-octet
+records are those of KNX 3/5/2 §3.31.3 (pp. 138-141) on PID 5 of objects 1
+to 3; Annex A.2.4.1 Table 7 lists the sub-controls a BCU 2 takes. The device
+reuses the System 7 machines (a TaskSegment before each LoadCompleted where
+the product's procedure sends one) and adds:
+
+| record | effect |
+|---|---|
+| `03 00` absolute code/data allocation | must lie in one region of its memory type and not overlap another LSM's segment; the segment opens for memory writes with its access attributes. Otherwise the LSM goes to Error |
+| `03 01` stack allocation | refused, Error (not required on BCU 2, Table 7) |
+| `03 02` Segment Control Record | allocates nothing. LSM 3: the id to 0103h-0107h and object 3 PID 13, the PEI type to 0109h and object 3 PID 16. LSM 2: the association table pointer. LSM 1: ignored on 0020/0021, the table pointer on 0025 |
+| `03 03` TaskPtr, `03 04` TaskCtrl1, `03 05` TaskCtrl2 | LSM 3 only (3/5/2 §3.31.1 table, p. 134); TaskCtrl2 sets the group object table pointer |
+| `03 0A`, `03 0B` relative allocation | refused, Error |
+
+The memory regions (9/4/1 §5.1.2.12; Profiles §4.2.9 and §4.2.10): page 0
+RAM 00BDh-00DFh (type 1), RAM 2 0972h-09BBh (type 2, UserRAM2 and the PEI
+buffers an application may use), EEPROM 0100h-046Fh (type 3, the mask's
+880-octet `MemorySegment`), plus every range the product's own procedure
+allocates (a device of that hardware has memory there: three Busch-Jaeger
+0021 programs reach 07A4h, the 0025 programs allocate above 1C00h).
+
+**Access levels** (9/4/1 §5.1.2.14, p. 54): four levels. `A_Authorize` grants
+the level of the matching key, else 3 (free access); all keys are FFFFFFFFh on
+a fresh device (§5.1.2.6.1). PID 5 of objects 1 and 2 needs level 1, every
+other property write level 0, a memory write the segment's write level (the
+low nibble of the record's access attributes, 3/5/2 §3.31.3.4).
+
+**Memory services.** Tables, parameters and the system table arrive by
+`A_Memory_Write` on standard frames of at most 12 octets (no
+`PID_MAX_APDU_LENGTH`, a 15-octet APDU), inside a segment whose LSM is
+Loading. On 0020/0021 a write over 0101h-0102h is refused: the product
+manufacturer is never overwritten (9/4/1 §5.1.2.12.5.1, p. 46). RunError and
+the system status take a one-octet write outside any segment. With Verify
+Mode set every write is echoed as an `A_Memory_Response`.
+
+**Restart and run state.** A basic restart closes the connection; LSM states
+and memory stay (EEPROM). The Master Reset (optional, Profiles §4.2 row 11c)
+runs as a basic restart without an answer (`master_reset: basic`). Object 3
+PID 6 reads Running (1) when the three LSMs are Loaded, RunError is FFh and
+the required PEI type equals the connected one (9/4/1 §5.1.2.6.3, p. 41),
+else Halted (0).
+
+**Choices an ETS capture must confirm** (the sweep and `syn-bcu2-0021`):
+
+- which octets ETS writes after an allocation: the corpus calibration writes
+  the octets the code segment's `<Mask>` defines (the address table mask
+  leaves out the own address, the system table mask leaves out 0101h-0109h,
+  010Dh and 0111h-0115h), in runs of at most 12;
+- the Segment Control Record ETS sends: the program's own id or the id the
+  image declares (some 0025 images name a sibling program), and zeros on
+  the table LSMs (Cookbook 2/3/1 §3);
+- that controls on LSM 5 (`AbsCObjSeg`, Cookbook 2/3/1 §2.3) never reach the
+  bus;
+- that ETS reads object 0 PID 12 and object 3 PID 13 (and perhaps 0115h,
+  the mask's `ManagementStyle`, which the sim answers from memory) and
+  writes Verify Mode before the download;
+- that an Unload keeps the segments (a partial download, `M-0004_A-9019`,
+  writes LSM 3 without allocating);
+- the Master Reset answer.
+
+**Not modelled** (refused, or absent with the message saying so): group
+communication on the Realisation Type 2 tables (the device stays silent on
+the group side), application interface objects, `A_Key_Write`, the
+memory-mapped LSM, stack and relative allocation, a BCU 1 application in
+compatibility mode (the mask's own procedure writes the system table without
+an allocation), checksum control and MCBs, the RAM clear of Profiles §4.2.9,
+the user program and PEI.
+
+**Calibration.** No ETS capture of a BCU 2 download exists yet.
+`tests/bcu2_corpus.rs` runs each corpus BCU 2 program's own load procedure
+through a test-only executor and checks Loaded and the declared image: 90 of
+94 load (3 on 0020, 63 on 0021, 24 on 0025), 3 are property-only (#390), and
+`M-0004_A-9019` is refused as expected (it writes without an allocation). It
+skips without the corpus cache; the same executor runs `syn-bcu2-0021` in CI.
+
 ## KNX Data Secure device model
 
 The secure device (`src/secure/`, `src/device/data_secure.rs`,
@@ -279,7 +389,8 @@ lenient reading. The rules it enforces and where they come from (KNX Standard
   peer; there is no multi-peer mirroring. Group-telegram runtime behavior —
   broadcast, device replies, write-echo confirmation, and scripted stimulus — is
   implemented and fully visible to that one client.
-- System B and System 7 management models and the flash-relevant `LdCtrl*` ops.
+- System B, System 7 and System 2 (BCU 2) management models and the
+  flash-relevant `LdCtrl*` ops.
   System 7 second-phase ops (`TaskCtrl1`, Zennio `CompareMem`, the post-restart
   LSM-5 dance) are refused cleanly with a named reason (M2).
 - Only one device per config is exercised end-to-end, though the bus already

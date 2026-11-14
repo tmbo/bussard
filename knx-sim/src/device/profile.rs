@@ -1,4 +1,4 @@
-//! Per-device mask profile: System B vs System 7 behaviour.
+//! Per-device mask profile: System B, System 7 and System 2 (BCU 2) behaviour.
 //!
 //! A simulated device models a specific KNX device generation (mask). System B
 //! (mask `0x07B0`) and System 7 (masks `0x0700` / `0x0701` / `0x0705`) differ in how the
@@ -134,6 +134,13 @@ pub enum Profile {
     /// System 7 (mask 0x0705 / 0x0701): three parallel absolute memory-mapped
     /// LSMs.
     System7(Sys7Profile),
+    /// System 2, BCU 2 (mask 0x0020 / 0x0021 / 0x0025, bussard issue #525):
+    /// three property-driven LSMs (Realisation Type 1) over absolute memory
+    /// with the BCU 2 system area. See `device/bcu2.rs` and `DESIGN.md`.
+    System2 {
+        /// The mask version reported via `A_DeviceDescriptor_Read` type 0.
+        mask: u16,
+    },
 }
 
 impl Profile {
@@ -142,7 +149,7 @@ impl Profile {
     /// DD0 sees the right generation.
     pub fn mask(&self) -> u16 {
         match self {
-            Profile::SystemB { mask } => *mask,
+            Profile::SystemB { mask } | Profile::System2 { mask } => *mask,
             Profile::System7(p) => p.mask,
         }
     }
@@ -156,8 +163,13 @@ impl Profile {
     pub fn system7(&self) -> Option<&Sys7Profile> {
         match self {
             Profile::System7(p) => Some(p),
-            Profile::SystemB { .. } => None,
+            Profile::SystemB { .. } | Profile::System2 { .. } => None,
         }
+    }
+
+    /// True if this is a System 2 (BCU 2) profile.
+    pub fn is_system2(&self) -> bool {
+        matches!(self, Profile::System2 { .. })
     }
 }
 
@@ -180,7 +192,7 @@ pub fn parse_mask(mask_version: &str) -> Option<u16> {
 
 /// The mask family a raw 16-bit mask belongs to (spec section 1).
 ///
-/// Only the two families the sim models are distinguished; every other mask is
+/// Only the families the sim models are distinguished; every other mask is
 /// classified `Other` and the sim refuses to build a device for it (a real
 /// simulator would need that generation's model).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +205,10 @@ pub enum MaskFamily {
     SystemB,
     /// System 7 (mask 0x0700 / 0x0701 / 0x0705).
     System7,
+    /// System 2, BCU 2 (mask 0x0020 / 0x0021 / 0x0025; KNX 6 Profiles §2,
+    /// "System 2"). A mask 0021 product whose procedure only touches
+    /// properties still builds the property-only device (bussard issue #390).
+    System2,
     /// An unmodelled family.
     Other,
 }
@@ -202,6 +218,7 @@ pub fn mask_family(mask: u16) -> MaskFamily {
     match mask {
         0x07B0 | 0x57B0 => MaskFamily::SystemB,
         0x0700 | 0x0701 | 0x0705 => MaskFamily::System7,
+        0x0020 | 0x0021 | 0x0025 => MaskFamily::System2,
         _ => MaskFamily::Other,
     }
 }
@@ -263,6 +280,9 @@ mod tests {
         assert_eq!(mask_family(0x0701), MaskFamily::System7);
         assert_eq!(mask_family(0x0700), MaskFamily::System7);
         assert_eq!(mask_family(0x0012), MaskFamily::Other);
+        assert_eq!(mask_family(0x0020), MaskFamily::System2);
+        assert_eq!(mask_family(0x0021), MaskFamily::System2);
+        assert_eq!(mask_family(0x0025), MaskFamily::System2);
     }
 
     #[test]

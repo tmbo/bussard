@@ -327,6 +327,14 @@ impl Sys7LoadStateMachine {
         }
     }
 
+    /// Puts the machine into Error: the device refused a load control it
+    /// accepted by state (a BCU 2 allocation outside its memory map, bussard
+    /// issue #525). Only an Unload leaves Error (Resources Table 94).
+    pub fn fail(&mut self) {
+        self.state = LoadState::Error;
+        self.task_committed = false;
+    }
+
     /// An LSM whose `LoadCompleted` needs no committed task-segment
     /// descriptor: the product's load procedure loads it without an
     /// `LdCtrlTaskSegment`. ETS runs a vendor procedure verbatim, so the

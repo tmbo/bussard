@@ -164,7 +164,7 @@ $ bussard validate
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Print (schema 2, the object `knx_validate` returns with `severity: "info"`) `{"schema", "ok", "diagnostics": [...], "counts", "shown", "note"}`; each diagnostic has `code`, `severity`, `message` and `location`. |
+| `--json` | off | Print (schema 2, the object `knx_validate` returns with `severity: "info"`) `{"schema", "ok", "diagnostics": [...], "counts", "shown", "note", "checked"}`; each diagnostic has `code`, `severity`, `message` and `location`, and `device` and `parameter` when it names them. `checked` lists the rule families that ran. |
 
 Behaviour:
 

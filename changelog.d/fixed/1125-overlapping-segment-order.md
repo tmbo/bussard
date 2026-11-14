@@ -1,0 +1,1 @@
+- Offline oracle operation order: a memory write that lies in two overlapping System B segments now counts for the smallest segment that holds all of it. knx-sim places object 1 at 0xA000 inside a large object 3 at 0x8000, and the order comparison took ETS's write of object 1 for one to object 3 (`M-0085_A-00A5`, `M-008E_A-C030`, #1125).
