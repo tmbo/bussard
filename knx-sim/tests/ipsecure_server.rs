@@ -102,6 +102,9 @@ fn synthetic_system_b_product() -> ProductData {
         property_only: false,
         security_capacity: Default::default(),
         factory_properties: Vec::new(),
+        pei_type: None,
+        abs_segment_steps: Vec::new(),
+        absolute_segments: Vec::new(),
     }
 }
 
