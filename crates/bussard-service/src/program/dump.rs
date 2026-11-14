@@ -918,6 +918,7 @@ mod tests {
                <LoadProcedures>
                 <LoadProcedure>
                  <LdCtrlWriteProp ObjType="40960" PropId="69" Count="25" InlineData="{data}" />
+                 <LdCtrlLoadCompleted LsmIdx="4" />
                 </LoadProcedure>
                </LoadProcedures>
               </Static>
