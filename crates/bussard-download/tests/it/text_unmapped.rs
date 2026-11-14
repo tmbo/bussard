@@ -1,14 +1,13 @@
-//! A text default with a character no candidate code page holds, in a
-//! program that declares no `TextParameterEncoding`, is written with `?`
-//! for that character (issue #1065).
+//! A text default of a program that declares no `TextParameterEncoding` is
+//! written in Windows-1252 with Windows' best fit, `?` per UTF-16 code unit
+//! for the rest (issue #1065).
 //!
-//! ETS 6 wrote `3F 00 00` for the default `℃` of the KNX Smart Touch S3
-//! `M-0085_A-0098-12-75FF`. The synthetic `syn-text-unmapped` carries the
-//! 14-octet default "Temp ℃" at octet 3 of its parameter segment, and one
-//! probe per character class for the capture that settles the rule. Until
-//! that capture, the probes whose octet depends on the code page refuse the
-//! defaults; the tests set them to ASCII. The flash ends with the read-back,
-//! and the device holds the octets the plan wrote.
+//! The synthetic `syn-text-unmapped` carries "Temp ℃" at octet 3 of its
+//! parameter segment and one probe per character class from octet 17 on.
+//! ETS 6.4.1 downloaded it (`captures/synthetic/syn-text-unmapped/defaults`,
+//! VM session 6, 2026-11-14); the plan's parameter image is the segment ETS
+//! wrote, octet for octet. The flash ends with the read-back, and the device
+//! holds the octets the plan wrote.
 
 use std::collections::BTreeMap;
 
@@ -29,30 +28,33 @@ const BASE: u32 = 0x6000;
 /// "Temp ?" in the 14-octet field, NUL-padded.
 const TEXT: &[u8; 14] = b"Temp ?\0\0\0\0\0\0\0\0";
 
-/// The probes (parameters 12 to 20) whose character has an octet in one
-/// candidate code page but not in another, or lies beyond U+FFFF: refused
-/// until the capture shows what ETS writes.
-const UNSETTLED_PROBES: std::ops::RangeInclusive<u32> = 12..=20;
-
-/// The plan of `syn-text-unmapped`, the unsettled probes set to ASCII.
+/// The plan of `syn-text-unmapped` at its defaults.
 fn plan() -> TestResult<FlashPlan> {
     let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
     let app = product.applications.first().ok_or("one application")?;
-    let overrides: BTreeMap<String, String> = UNSETTLED_PROBES
-        .map(|n| (format!("P-{n}_R-{n}"), "AxZ".to_string()))
-        .collect();
-    plan_synthetic_07b0(&product, app, &overrides)
+    plan_synthetic_07b0(&product, app, &BTreeMap::new())
 }
 
-#[test]
-fn test_plan_flash_unsettled_probe_refuses_at_the_defaults() -> TestResult {
-    let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
-    let app = product.applications.first().ok_or("one application")?;
-    let err = plan_synthetic_07b0(&product, app, &BTreeMap::new())
-        .err()
-        .ok_or("the defaults planned")?;
-    assert!(err.to_string().contains("issue #416"), "{err}");
-    Ok(())
+/// The parameter segment ETS wrote at 0x6000 in the capture.
+fn captured_segment() -> TestResult<Vec<u8>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../captures/synthetic/syn-text-unmapped/defaults/image.json");
+    let image: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let hex = image["regions"]
+        .as_array()
+        .ok_or("regions")?
+        .iter()
+        .find(|r| r["start"].as_u64() == Some(0x6000))
+        .and_then(|r| r["hex"].as_str())
+        .ok_or("the region at 0x6000")?;
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            hex.get(i..i + 2)
+                .ok_or_else(|| "odd hex".into())
+                .and_then(|h| u8::from_str_radix(h, 16).map_err(Into::into))
+        })
+        .collect()
 }
 
 /// The parameter image the plan writes to object 4.
@@ -77,6 +79,8 @@ fn parameter_image(plan: &FlashPlan) -> TestResult<Vec<u8>> {
 fn test_plan_flash_unmapped_text_character_is_a_question_mark() -> TestResult {
     let image = parameter_image(&plan()?)?;
     assert_eq!(image.get(3..17), Some(&TEXT[..]));
+    // Every probe as ETS wrote it: the whole segment equals the capture.
+    assert_eq!(image, captured_segment()?);
     Ok(())
 }
 

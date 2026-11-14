@@ -403,8 +403,9 @@ pub fn text_substitution(kind: &ParamKind, value: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "text {value:?} holds {list}, which no code page the program may use has: the download \
-         writes `?` for each, as ETS does, and the device reads back with `?`"
+        "text {value:?} holds {list}, which the program's code page does not hold: the download \
+         writes a look-alike (Windows best fit) or `?` for each, as ETS does, and the device \
+         reads the replacement back"
     ))
 }
 
@@ -1635,17 +1636,18 @@ mod tests {
         );
         let utf8 = parameter_value_error(&kind(Some("utf-8")), "Scènario");
         assert!(utf8.is_some_and(|e| e.contains("9 octets")));
-        // No declaration: ISO 8859-1, as ETS writes it (issue #416).
+        // No declaration: Windows-1252 with best fit, as ETS writes it
+        // (issues #416, #1065): every character is accepted.
         assert_eq!(parameter_value_error(&kind(None), "Scènario"), None);
-        let euro = parameter_value_error(&kind(None), "5€");
-        assert!(euro.is_some_and(|e| e.contains("#416")));
+        assert_eq!(parameter_value_error(&kind(None), "5€"), None);
         let unknown = parameter_value_error(&kind(Some("shift_jis")), "Scènario");
         assert!(unknown.is_some_and(|e| e.contains("#401")));
         assert_eq!(parameter_value_error(&kind(None), "Scene"), None);
     }
 
-    /// Issue #1065: a character no candidate code page holds is written as
-    /// `?`; the value is accepted (no E017) and named lossy (W051).
+    /// Issue #1065: a character Windows-1252 does not hold is written as its
+    /// best fit or `?`; the value is accepted (no E017) and named lossy
+    /// (W051).
     #[test]
     fn test_text_substitution_names_the_replaced_characters() {
         let kind = |encoding: Option<&str>| ParamKind::Text {

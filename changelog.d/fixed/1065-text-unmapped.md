@@ -1,7 +1,7 @@
-- A text parameter of a program without `TextParameterEncoding` whose value holds
-  a character none of ISO 8859-1, Windows-1252 and ISO 8859-15 has (such as `℃`)
-  is written with `?` for it, as ETS writes it, instead of refusing the program
-  (#1065, the KNX Smart Touch S3 `A-0098-12-75FF`).
+- A text parameter of a program without `TextParameterEncoding` is written as
+  ETS 6 writes it: Windows-1252, Windows' best-fit look-alike for a character
+  1252 lacks (`Ł` as `L`), and `?` for the rest (two for an emoji). The euro
+  sign, `œ` and every other character are no longer refused (#1065, the KNX
+  Smart Touch S3 `A-0098-12-75FF`, captured on `syn-text-unmapped`).
 - `validate` warns with W051, and `plan` and `flash` print a note, when a text
-  value holds characters the program's code page has no octet for and that the
-  download writes as `?` (#1065).
+  value holds characters the download writes as a look-alike or `?` (#1065).

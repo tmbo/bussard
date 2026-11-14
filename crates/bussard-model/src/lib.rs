@@ -19,6 +19,7 @@ pub mod change;
 pub mod checklist;
 pub mod codec;
 pub mod color_codec;
+mod cp1252_best_fit;
 pub mod declare;
 pub mod device_view;
 pub mod discover;

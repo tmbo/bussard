@@ -446,11 +446,14 @@ after 2 seconds.
   (VBScript), a Jung LED dimmer (JavaScript) and the synthetic product that
   changes a calculation's input.
 - **Text parameters.** A text parameter is written in the code page its
-  program declares. A program that declares none is written in ISO 8859-1, as
-  ETS does; a character whose octet differs between ISO 8859-1,
-  Windows-1252 and ISO 8859-15 (the euro sign, for example) or lies beyond
-  U+00FF is refused there. A declared code page bussard does not know takes
-  ASCII only.
+  program declares. A program that declares none is written as ETS 6 writes
+  it: in Windows-1252, a character Windows-1252 lacks as Windows' best-fit
+  look-alike (`Ł` as `L`, `≤` as `=`), and anything else as `?` (two for an
+  emoji). `validate` names such a value (W051), and `plan` and `flash` print
+  a note. ETS may follow the Windows code page of the PC it runs on; the
+  captures are from a Western-European install (code page 1252), and bussard
+  always writes 1252. A declared code page bussard does not know takes ASCII
+  only.
 - **System 1 and System 2.** BCU1 and BCU2 devices are identified and
   described, but not programmed, except the property-only applications on
   `0021` above.

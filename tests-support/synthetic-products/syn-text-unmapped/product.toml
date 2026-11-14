@@ -3,13 +3,13 @@
 
 [doc]
 purpose = """
-syn-text-undeclared with the 14-octet text default "Temp ℃": no
-TextParameterEncoding, and `℃` (U+2103) has no octet in ISO 8859-1,
-Windows-1252 or ISO 8859-15. ETS 6 wrote `?` for it in the KNX Smart Touch
-S3 (`M-0085_A-0098-12-75FF`, `3F 00 00`). One 8-octet probe parameter per
-character class (best-fit candidates, CJK, Cyrillic, Greek, Windows-1252-only,
-ISO 8859-15-only, one astral character), each between the ASCII guards A and
-Z, so one capture shows what ETS writes for each class (#1065)."""
+syn-text-undeclared with the 14-octet text default "Temp ℃" and one 8-octet
+probe per character class, each between the ASCII guards A and Z, in a
+program without TextParameterEncoding (#1065). ETS 6.4.1 wrote Windows-1252
+with Windows' best fit (captures/synthetic/syn-text-unmapped/defaults,
+2026-11-14): `?` for ℃, CJK and Cyrillic, `L` `A` `A` `=` `O` for Ł Ā Ａ ≤ Ω,
+99 96 93 85 80 9C A4 BD for ™ – “ … € œ ¤ ½, `3F 3F` for the emoji;
+bussard writes the same since."""
 construct = "TypeText default with a character no Latin code page holds, no TextParameterEncoding"
 issues = [1065, 416]
 
