@@ -463,7 +463,8 @@ def cmd_statediff(args) -> int:
             return None
 
     base = [o for o in (ops_of(p) for p in args.base or []) if o is not None]
-    report = statediff.compare_states(base, ops_of(args.ets), ops_of(args.bussard), args.device or "")
+    report = statediff.compare_states(base, ops_of(args.ets), ops_of(args.bussard), args.device or "",
+                                      end_state=args.end_state)
     if args.json:
         print(json.dumps(report, indent=2))
     else:
@@ -592,6 +593,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ets", required=True, help="ETS's capture of the step")
     p.add_argument("--bussard", required=True, help="bussard's capture of the same step")
     p.add_argument("--device", required=True, help="the target individual address, e.g. 1.1.1")
+    p.add_argument("--end-state", action="store_true",
+                   help="judge a full download over a device holding the base image: final "
+                   "property values and load states, the executed operations reported "
+                   "(bussard issue #1127)")
     p.add_argument("--json", action="store_true")
     _keyring_arg(p)
     p.set_defaults(func=cmd_statediff)

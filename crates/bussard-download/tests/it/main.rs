@@ -26,6 +26,7 @@ mod param_readback_roundtrip;
 mod partial_segment;
 mod property_only_partial;
 mod property_procedure;
+mod resident_check;
 mod support;
 mod sweep_fixtures;
 mod syn_property_param;
