@@ -553,6 +553,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
         PlanError::KnxnetIpUnsourced(_) => "KnxnetIpUnsourced".to_string(),
         PlanError::ModuleProcedure(_) => "ModuleProcedure".to_string(),
         PlanError::PropertyOnlyShape { .. } => "PropertyOnlyShape".to_string(),
+        PlanError::PropertyParameter(_) => "PropertyParameter".to_string(),
     }
 }
 

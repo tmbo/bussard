@@ -385,6 +385,9 @@ pub(super) fn plan_flash_sys7(
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
     // The parameters placed in properties, resolved once (issue #945).
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
+    // The parameters set away from their defaults: only their placement can
+    // refuse a write (issue #1049).
+    let changed = super::declare::Changed::new(app, &property_params, overrides, memo);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -699,34 +702,67 @@ pub(super) fn plan_flash_sys7(
             LoadOp::WriteProp { .. } => {
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
-                if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
-                    let inline = match op {
-                        LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
-                        _ => None,
-                    };
-                    // A write with neither `InlineData` nor a parameter placed
-                    // in the property sends nothing, as ETS on the Hager
-                    // STXE530's object 6 PID 52 (`M-0009_A-20BB-10-0991`).
-                    steps.extend(super::declare::lower_declared_write_prop(
-                        step_no,
-                        op,
-                        decl,
-                        inline,
-                        &property_params,
-                        app,
-                        false,
-                    )?);
-                } else {
-                    // A property write with its Count and Verify (issue #390):
-                    // the 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the
-                    // MDT 0705 label properties their parameters compose.
-                    steps.push(super::plan_props::lower_write_prop(
-                        step_no,
-                        op,
-                        &property_values,
-                        app,
-                        false,
-                    )?);
+                // A write carrying InlineData to a property declared only
+                // later is lowered as declared too (issue #1049).
+                let decl = super::declare::effective_declaration(
+                    &declared,
+                    step_no,
+                    op,
+                    ops.get(i + 1..).unwrap_or_default(),
+                )?;
+                // A write with neither `InlineData` nor a parameter placed in
+                // the property sends nothing, as ETS on the Hager STXE530's
+                // object 6 PID 52 (`M-0009_A-20BB-10-0991`). One before its
+                // declaration that the declared lowering refuses plans as
+                // before (undeclared) while its property holds defaults
+                // (`settle_declared_later`, the System B rule).
+                let settled = match &decl {
+                    Some(decl) => {
+                        let inline = match op {
+                            LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
+                            _ => None,
+                        };
+                        let prop = match op {
+                            LoadOp::WriteProp {
+                                prop_id: Some(p), ..
+                            } => *p,
+                            _ => decl.prop_id,
+                        };
+                        super::declare::settle_declared_later(
+                            super::declare::lower_declared_write_prop(
+                                step_no,
+                                op,
+                                decl,
+                                inline,
+                                &property_params,
+                                app,
+                                false,
+                            ),
+                            super::declare::declaration_for(&declared, step_no, op).is_some(),
+                            decl.object,
+                            prop,
+                            &changed,
+                        )?
+                    }
+                    None => None,
+                };
+                match settled {
+                    Some(lowered) => steps.extend(lowered),
+                    None => {
+                        // A property write with its Count and Verify (issue
+                        // #390): the 0701 programs' `ObjIdx=3 PropId=204
+                        // Count=2` and the MDT 0705 label properties their
+                        // parameters compose.
+                        steps.push(super::plan_props::lower_write_prop(
+                            step_no,
+                            op,
+                            &property_values,
+                            &property_params,
+                            &changed,
+                            app,
+                            false,
+                        )?);
+                    }
                 }
             }
             LoadOp::LoadImageProp {
@@ -834,6 +870,9 @@ pub(super) fn plan_flash_sys7(
         }
     }
     let code_segments = sys7_code_segments(&steps, &images, declared, &param_images, &placed);
+    // No parameter placed in a property the procedure writes is left off
+    // the device (issue #1049).
+    super::declare::check_parameter_coverage(&steps, &property_params, &changed, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);

@@ -2841,6 +2841,83 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual(deletes, [])
 
 
+class TestDriverDropdown1049(unittest.TestCase):
+    """Hager 207E's two dropdown failures (#1049, VM session 6): a popup that
+    vanished during the wait for the list, and a pick near the top of a long
+    list that did not take."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    @staticmethod
+    def rect(top: int, bottom: int, left: int = 1600, right: int = 2200):
+        return mock.Mock(top=top, bottom=bottom, left=left, right=right)
+
+    def test_listing_popup_skips_a_vanished_popup(self):
+        gone = mock.MagicMock()
+        gone.descendants.side_effect = RuntimeError("InvalidWindowHandle('Handle 18351684 is not a vaild window handle')")
+        listing = mock.MagicMock()
+        listing.descendants.return_value = [object()]
+        with mock.patch.object(self.d, "ets_popups", return_value=[gone, listing]):
+            self.assertIs(self.d.listing_popup(), listing)
+        with mock.patch.object(self.d, "ets_popups", return_value=[gone]):
+            self.assertIsNone(self.d.listing_popup())
+
+    def test_click_list_item_visible_item_is_clicked(self):
+        pop, it = mock.MagicMock(), mock.MagicMock()
+        pop.rectangle.return_value = self.rect(700, 1300)
+        it.rectangle.return_value = self.rect(760, 790)
+        self.assertEqual(self.d.click_list_item(pop, it), "click")
+        it.click_input.assert_called_once()
+        it.iface_scroll_item.ScrollIntoView.assert_not_called()
+
+    def test_click_list_item_scrolls_an_item_above_the_view(self):
+        pop, it = mock.MagicMock(), mock.MagicMock()
+        pop.rectangle.return_value = self.rect(700, 1300)
+        it.rectangle.side_effect = [self.rect(400, 430), self.rect(710, 740)]
+        with mock.patch.object(self.d.time, "sleep"):
+            self.assertEqual(self.d.click_list_item(pop, it), "click")
+        it.iface_scroll_item.ScrollIntoView.assert_called_once()
+        it.click_input.assert_called_once()
+
+    def test_click_list_item_selects_an_item_that_stays_hidden(self):
+        pop, it = mock.MagicMock(), mock.MagicMock()
+        pop.rectangle.return_value = self.rect(700, 1300)
+        it.rectangle.return_value = self.rect(400, 430)
+        with mock.patch.object(self.d.time, "sleep"), mock.patch.object(self.d, "keys") as keys:
+            self.assertEqual(self.d.click_list_item(pop, it), "select")
+        it.click_input.assert_not_called()
+        it.select.assert_called_once()
+        keys.assert_called_once_with("{ENTER}")
+
+    def test_click_list_item_without_selection_pattern_uses_the_keyboard(self):
+        # 207E rerun, VM session 7: "2 Lux" stayed hidden and Select raised
+        # NoPatternInterfaceError.
+        pop = mock.MagicMock()
+        pop.rectangle.return_value = self.rect(700, 1300)
+        items = [mock.MagicMock() for _ in range(4)]
+        it = items[2]
+        it.rectangle.return_value = self.rect(400, 430)
+        it.select.side_effect = RuntimeError("NoPatternInterfaceError")
+        pop.descendants.return_value = items
+        with mock.patch.object(self.d.time, "sleep"), mock.patch.object(self.d, "keys") as keys:
+            self.assertEqual(self.d.click_list_item(pop, it), "keys")
+        self.assertEqual([c.args[0] for c in keys.call_args_list], ["{HOME}{DOWN}{DOWN}", "{ENTER}"])
+
+    def test_desktop_windows_enumerates_again_after_a_vanished_window(self):
+        calls = {"n": 0}
+
+        def windows():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("InvalidWindowHandle('Handle 55904166 is not a vaild window handle')")
+            return ["w"]
+        with mock.patch.object(self.d.time, "sleep"):
+            self.assertEqual(self.d.desktop_windows(windows), ["w"])
+        self.assertEqual(calls["n"], 2)
+
+
 class TestDriverCatalogPick(unittest.TestCase):
     """Two applications of one order number at the same version: the row is
     picked by its application cell, not taken first (N512, #525/#1060)."""

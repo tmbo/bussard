@@ -349,9 +349,20 @@ with no refusal once the region merge below was in):
 - Controls on LSM 5 never reach the bus. ETS adds no restart and no Master
   Reset; a procedure's `LdCtrlRestart` is a basic restart.
 
-**Still open:** whether an Unload keeps the segments (a partial download,
-`M-0004_A-9019`, writes LSM 3 without allocating), and the Master Reset
-answer (no capture sent one).
+**Unload and reload (VM session 7, `syn-bcu2-0021` `unload`, `reload`,
+`unload-reload`).** ETS's "Entladen" of the application is: connect,
+descriptor, `PID_MAX_APDU_LENGTH`, the 0115h read, `A_Authorize`, Unload of
+LSM 1, 2 and 3 (PID 5), a read of 0060h, disconnect; no restart, no Master
+Reset. A download over a loaded device and a download after the unload are
+request for request the fresh download: the procedure's own Unload of LSM 1
+to 3, then every allocation again. So no ETS full download depends on
+whether an Unload keeps the segments.
+
+**Still open:** whether an Unload keeps the segments matters only to a
+partial download that writes LSM 3 without allocating (`M-0004_A-9019`);
+and the Master Reset answer: ETS sent none in any BCU 2 capture (fresh,
+reload, after an unload), and no corpus BCU 2 procedure has
+`LdCtrlMasterReset`.
 
 **Not modelled** (refused, or absent with the message saying so): group
 communication on the Realisation Type 2 tables (the device stays silent on

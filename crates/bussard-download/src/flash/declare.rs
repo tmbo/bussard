@@ -43,10 +43,11 @@
 //!   property sends nothing, not even a description read
 //!   (`M-0008_A-F060-10-5848`, the declared object 4 PID 201: no frame for it).
 
-use super::plan_props::{check_addressable, may_hold, prop_object};
+use super::plan_props::{WriteTarget, check_addressable, may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
 use bussard_product::application::{ApplicationProgram, LoadOp};
 use bussard_product::{PropertyObjectRef, PropertyParameters};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The highest element index the plain property services address (a 12-bit
 /// start index).
@@ -342,16 +343,19 @@ fn same_object(loc: &bussard_product::application::PropertyLocation, object: Pro
 }
 
 /// The parameters of `app` that decide `object`/`prop_id`: the names they
-/// give the object ([`same_object`]), and whether another parameter
+/// give the object ([`same_object`]), and the ids of the parameters that
 /// [`may_hold`] the property under a name bussard does not resolve.
 fn placements(
     app: &ApplicationProgram,
     object: PropObject,
     prop_id: u32,
-) -> (Vec<PropertyObjectRef>, bool) {
+) -> (Vec<PropertyObjectRef>, Vec<&str>) {
     let mut names: Vec<PropertyObjectRef> = Vec::new();
-    let mut unresolved = false;
-    for loc in app.parameters.values().filter_map(|p| p.property.as_ref()) {
+    let mut unresolved: Vec<&str> = Vec::new();
+    for p in app.parameters.values() {
+        let Some(loc) = p.property.as_ref() else {
+            continue;
+        };
         if !may_hold(loc, object, prop_id) {
             continue;
         }
@@ -361,7 +365,7 @@ fn placements(
                     names.push(name);
                 }
             }
-            _ => unresolved = true,
+            _ => unresolved.push(p.id.as_str()),
         }
     }
     (names, unresolved)
@@ -372,8 +376,14 @@ fn placements(
 /// (element `StartElement`): the base vector from element 1 (zeros before
 /// `from`, then the template), each name's parameters laid over it, and the
 /// slice of the write's extent, `template.len()` octets. The one composition
-/// of a declared write on System B and System 7 (issue #946), and of a PID 13
-/// placeholder a parameter supplies (issue #964).
+/// of a property write with parameters placed in it, declared or not, on
+/// System B, System 7 and the property-only planner (issues #946, #964,
+/// #1049).
+///
+/// The flag says whether a parameter writes an octet of the extent: only
+/// then is the value the parameters' (`from_parameters`). An unreached
+/// parameter that keeps the base (issue #1024), or one placed in another
+/// part of the property, contributes nothing to this write.
 ///
 /// # Errors
 ///
@@ -385,48 +395,456 @@ pub(super) fn compose_over(
     params: &PropertyParameters<'_>,
     template: &[u8],
     from: usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, bool), String> {
     let len = template.len();
+    let end = from.saturating_add(len);
     let mut composed = vec![0u8; from];
     composed.extend_from_slice(template);
+    let mut contributes = false;
     for n in names {
-        if let Some(next) = params
+        if let Some((next, written)) = params
             .compose(*n, prop_id, composed.clone())
             .map_err(|e| format!("composing the value of {name} from the parameters: {e}"))?
         {
             composed = next;
+            contributes |= written
+                .iter()
+                .any(|w| !w.range.is_empty() && w.range.start < end && w.range.end > from);
         }
     }
     let mut value: Vec<u8> = composed.into_iter().skip(from).take(len).collect();
     value.resize(len, 0);
-    Ok(value)
+    Ok((value, contributes))
 }
 
-/// The value the parameters placed in `object`/`prop_id` compose over
-/// `template` from element 1 ([`compose_over`]), `None` when no parameter is
-/// placed in the property under a name of `object`.
+/// The declaration a write `op` follows (issue #938): the latest one the
+/// procedure made before it ([`declaration_for`]), else, for a write that
+/// carries `InlineData`, the first one of its property the procedure makes
+/// after it (`later`, the ops that follow in the same effective procedure).
+/// `M-0009_A-E802-13-7620` writes object 9 PID 208 one op before it declares
+/// it, and ETS lays the parameters over that write as over a declared one
+/// (issue #1049), so such a write is lowered as declared, and the order of
+/// the two ops does not change the plan.
 ///
 /// # Errors
 ///
-/// The reason, naming `name`, when a parameter may be stored in the property
-/// under a name bussard does not resolve to `object` (see
-/// [`lower_declared_write_prop`]), or its value cannot be composed.
-pub(super) fn placed_value(
-    name: &str,
-    object: PropObject,
-    prop_id: u32,
-    params: &PropertyParameters<'_>,
-    app: &ApplicationProgram,
-    template: &[u8],
-) -> Result<Option<Vec<u8>>, String> {
-    let (names, unresolved) = placements(app, object, prop_id);
-    if unresolved {
-        return Err(unresolved_reason(name));
+/// [`PlanError::UnsupportedOp`] when the later declaration does not lower
+/// ([`lower_declare_prop`]); it would refuse the procedure at its own step.
+pub(super) fn effective_declaration(
+    declared: &[PropDecl],
+    step: usize,
+    op: &LoadOp,
+    later: &[LoadOp],
+) -> Result<Option<PropDecl>, PlanError> {
+    if let Some(decl) = declaration_for(declared, step, op) {
+        return Ok(Some(decl.clone()));
     }
-    if !names.iter().any(|n| params.places(*n, prop_id)) {
+    let LoadOp::WriteProp {
+        obj_idx,
+        obj_type,
+        occurrence,
+        prop_id: Some(prop_id),
+        inline_data: Some(inline),
+        ..
+    } = op
+    else {
+        return Ok(None);
+    };
+    if inline.is_empty() {
         return Ok(None);
     }
-    compose_over(name, &names, prop_id, params, template, 0).map(Some)
+    let Ok(object) = prop_object(step, *obj_idx, *obj_type, *occurrence) else {
+        return Ok(None);
+    };
+    for (k, next) in later.iter().enumerate() {
+        let at = step + 1 + k;
+        if let LoadOp::DeclarePropDesc {
+            obj_idx,
+            obj_type,
+            occurrence,
+            prop_id: Some(declared_id),
+            ..
+        } = next
+            && *declared_id == *prop_id
+            && prop_object(at, *obj_idx, *obj_type, *occurrence).ok() == Some(object)
+        {
+            return lower_declare_prop(at, next).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// The declaration the write `op` at index `at` of the op sequence `ops`
+/// follows: [`effective_declaration`] over the declarations of its property
+/// before it and the ops after it. The parameter-only download lowers a
+/// write against the complete download's sequence with this, at the index
+/// its [`super::plan::OpTag`] finds there, so a `par` filter that drops the
+/// declaration does not change how the write is lowered (issue #1049).
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedOp`] when a declaration of the write's property
+/// does not lower ([`lower_declare_prop`]).
+pub(super) fn declaration_at(
+    ops: &[LoadOp],
+    at: usize,
+    op: &LoadOp,
+) -> Result<Option<PropDecl>, PlanError> {
+    let LoadOp::WriteProp {
+        obj_idx,
+        obj_type,
+        occurrence,
+        prop_id: Some(prop_id),
+        ..
+    } = op
+    else {
+        return Ok(None);
+    };
+    let Ok(object) = prop_object(at + 1, *obj_idx, *obj_type, *occurrence) else {
+        return Ok(None);
+    };
+    // Only the declarations of the write's own property are lowered, so an
+    // unrelated one cannot fail the lookup.
+    let mut declared: Vec<PropDecl> = Vec::new();
+    for (i, o) in ops.get(..at).unwrap_or_default().iter().enumerate() {
+        if let LoadOp::DeclarePropDesc {
+            obj_idx,
+            obj_type,
+            occurrence,
+            prop_id: Some(declared_id),
+            ..
+        } = o
+            && declared_id == prop_id
+            && prop_object(i + 1, *obj_idx, *obj_type, *occurrence).ok() == Some(object)
+        {
+            declared.push(lower_declare_prop(i + 1, o)?);
+        }
+    }
+    effective_declaration(&declared, at + 1, op, ops.get(at + 1..).unwrap_or_default())
+}
+
+/// What a write lowered against its declaration (`lowered`) gives: its
+/// step, or `None` for the caller to lower it as undeclared. A write before
+/// its declaration (`declared_before` false) that the declared lowering
+/// refuses plans as main did, undeclared, while every parameter that may be
+/// stored in `object`/`prop_id` holds its default; with a changed one the
+/// refusal stands and names it (issue #1049). The one rule of the System B
+/// and System 7 planners.
+///
+/// # Errors
+///
+/// The declared lowering's refusal of a write after its declaration, and a
+/// [`PlanError::PropertyParameter`] naming the changed parameter otherwise.
+pub(super) fn settle_declared_later(
+    lowered: Result<Option<FlashStep>, PlanError>,
+    declared_before: bool,
+    object: PropObject,
+    prop_id: u32,
+    changed: &Changed<'_, '_>,
+) -> Result<Option<Option<FlashStep>>, PlanError> {
+    match lowered {
+        Ok(step) => Ok(Some(step)),
+        Err(e) if declared_before => Err(e),
+        Err(e) => match changed.in_property(object, prop_id) {
+            Some(who) => Err(PlanError::PropertyParameter(format!(
+                "the parameter {who} is set away from its default and placed in {object} PID \
+                 {prop_id}, which the procedure declares only after this write, and the write \
+                 cannot be lowered against that declaration ({e}); with the parameter at its \
+                 default the write plans as before"
+            ))),
+            None => Ok(None),
+        },
+    }
+}
+
+/// An `LdCtrlWriteProp` with a concrete `InlineData` to a property its
+/// procedure does not declare: where it writes, its `InlineData`, and
+/// whether that is the PID 13 application-id placeholder (after the
+/// planner's substitution).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InlineWrite<'a> {
+    /// The object, PID, `StartElement` and `Count` of the op.
+    pub(super) target: WriteTarget,
+    /// The `InlineData`, never empty.
+    pub(super) inline: &'a [u8],
+    /// Whether the op is the PID 13 placeholder.
+    pub(super) placeholder: bool,
+}
+
+/// What an `LdCtrlWriteProp` with `InlineData` to a property the procedure
+/// never declares sends ([`effective_declaration`] found none), and whether
+/// a parameter contributes an octet (`from_parameters`). The rule of the
+/// System B, System 7 and property-only planners alike (issue #1049):
+///
+/// - from element 1 the write starts at octet 0 whatever its element size,
+///   so the parameters placed in the property are laid over the
+///   `InlineData` by the one composition ([`compose_over`]);
+/// - past element 1 the octets it covers are unknown without a declaration,
+///   so it sends the `InlineData` as it is; a changed parameter no write of
+///   known extent covers is refused by [`check_parameter_coverage`];
+/// - a parameter placed under a name bussard does not resolve to the
+///   write's object (an index against a type) leaves the `InlineData` as it
+///   is while it holds its default (the Siemens typed write, issue #948).
+///
+/// `changed` holds the parameters set away from their defaults.
+///
+/// # Errors
+///
+/// The reason, naming `name`, when a parameter placed under an unresolved
+/// name holds a changed value (bussard cannot tell whether this write
+/// carries it), when the PID 13 placeholder has such a placement at all
+/// (issue #964), or when a value cannot be composed.
+pub(super) fn overlay_undeclared_inline(
+    name: &str,
+    write: InlineWrite<'_>,
+    params: &PropertyParameters<'_>,
+    changed: &Changed<'_, '_>,
+    app: &ApplicationProgram,
+) -> Result<(Vec<u8>, bool), String> {
+    let InlineWrite {
+        target,
+        inline,
+        placeholder,
+    } = write;
+    let (names, unresolved) = placements(app, target.object, target.prop_id);
+    if let Some(who) = (!unresolved.is_empty())
+        .then(|| changed.get())
+        .and_then(|c| unresolved.iter().find_map(|id| c.get(*id)))
+    {
+        return Err(format!(
+            "the parameter {who} is set away from its default and may be stored in {name}, \
+             but it names the object by type where the load procedure names it by index (or \
+             the other way round); bussard cannot tell whether this write carries its value, \
+             so set it back to its default"
+        ));
+    }
+    if placeholder && !unresolved.is_empty() {
+        return Err(unresolved_reason(name));
+    }
+    if target.start_element.unwrap_or(1).max(1) > 1 || names.is_empty() {
+        return Ok((inline.to_vec(), false));
+    }
+    compose_over(name, &names, target.prop_id, params, inline, 0)
+}
+
+/// The property-located parameters a plan places differently from the
+/// program's defaults ([`PropertyParameters::changed_from`]), computed once
+/// on first use: only a write bussard cannot place with certainty, or the
+/// coverage check, asks (issue #1049). Empty without an override.
+pub(super) struct Changed<'p, 'a> {
+    /// The program, its property parameters under the plan's configuration,
+    /// the plan's parameter values and the Dynamic evaluator the defaults
+    /// come from; `None` for a lowering outside a plan (nothing changed).
+    source: Option<ChangedSource<'p, 'a>>,
+    /// The parameters, once computed.
+    cell: std::cell::OnceCell<BTreeMap<String, String>>,
+}
+
+/// What [`Changed`] computes from.
+type ChangedSource<'p, 'a> = (
+    &'a ApplicationProgram,
+    &'p PropertyParameters<'a>,
+    &'p BTreeMap<String, String>,
+    &'p bussard_product::dynamic::DynamicMemo<'a, ApplicationProgram>,
+);
+
+impl<'p, 'a> Changed<'p, 'a> {
+    /// The holder for `params`, resolved under `overrides`.
+    pub(super) fn new(
+        app: &'a ApplicationProgram,
+        params: &'p PropertyParameters<'a>,
+        overrides: &'p BTreeMap<String, String>,
+        memo: &'p bussard_product::dynamic::DynamicMemo<'a, ApplicationProgram>,
+    ) -> Self {
+        Self {
+            source: Some((app, params, overrides, memo)),
+            cell: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// A holder with nothing changed.
+    #[cfg(test)]
+    pub(super) fn none() -> Self {
+        Self {
+            source: None,
+            cell: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The changed parameters, by id, each with its name for a message.
+    pub(super) fn get(&self) -> &BTreeMap<String, String> {
+        self.cell.get_or_init(|| match self.source {
+            Some((app, params, overrides, memo)) if !overrides.is_empty() && !params.is_empty() => {
+                let defaults = memo.evaluate_for(app, &BTreeMap::new());
+                params.changed_from(&PropertyParameters::resolve(app, &defaults))
+            }
+            _ => BTreeMap::new(),
+        })
+    }
+
+    /// The name of a changed parameter that may be stored in
+    /// `object`/`prop_id` (under any name of the object), `None` when every
+    /// parameter there holds its default.
+    pub(super) fn in_property(&self, object: PropObject, prop_id: u32) -> Option<&str> {
+        let changed = self.get();
+        let (app, ..) = self.source?;
+        if changed.is_empty() {
+            return None;
+        }
+        app.parameters
+            .values()
+            .filter(|p| {
+                p.property
+                    .as_ref()
+                    .is_some_and(|loc| may_hold(loc, object, prop_id))
+            })
+            .find_map(|p| changed.get(&p.id).map(String::as_str))
+    }
+}
+
+/// An interface object and a property id.
+type PropertyKey = (PropObject, u32);
+
+/// The octets `[start, end)` of a property one write covers.
+type OctetSpan = (usize, usize);
+
+/// Refuses a plan that leaves a changed parameter off the device (issue
+/// #1049): every octet a property-located parameter set away from its
+/// default writes must lie in the known extent of a write of the plan to
+/// its property (also a held one). It starts from the changed parameters,
+/// so one in a property the plan never writes (only a description read, a
+/// declared write that sends nothing, a write in a branch not taken) is
+/// refused too. A property written in several chunks is covered by all of
+/// them together. An extent is known when the write starts at element 1
+/// (octet 0, its value's length) or the plan declares the property (its
+/// elements' size); past element 1 without a declaration it would be a
+/// guess and covers nothing. A parameter at its default is not checked: the
+/// plan stays as before, and ETS also leaves such octets unwritten (octet
+/// 267 of type 40960 PID 69 of `M-0008_A-C02A-21-B6D8-O007C`, whose writes
+/// cover elements 1 to 25 and 176 to 200; ETS sweep capture).
+///
+/// # Errors
+///
+/// [`PlanError::PropertyParameter`] naming the parameter, the property and
+/// the octet no write covers.
+pub(super) fn check_parameter_coverage(
+    steps: &[FlashStep],
+    params: &PropertyParameters<'_>,
+    changed: &Changed<'_, '_>,
+    app: &ApplicationProgram,
+) -> Result<(), PlanError> {
+    let changed = changed.get();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let declared: BTreeSet<PropertyKey> = steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::DeclareProp {
+                object, prop_id, ..
+            } => Some((*object, *prop_id)),
+            _ => None,
+        })
+        .collect();
+    // The known extents of each written property, once.
+    let mut extents: BTreeMap<PropertyKey, Vec<OctetSpan>> = BTreeMap::new();
+    for w in steps.iter().filter_map(FlashStep::property_write) {
+        let key = (w.object, w.prop_id);
+        let start = usize::from(w.start_element.max(1));
+        let count = usize::from(w.count.max(1));
+        let from = if start == 1 {
+            0
+        } else if declared.contains(&key) && w.value.len().is_multiple_of(count) {
+            (start - 1).saturating_mul(w.value.len() / count)
+        } else {
+            continue;
+        };
+        extents
+            .entry(key)
+            .or_default()
+            .push((from, from.saturating_add(w.value.len())));
+    }
+    // The octets each changed parameter writes, composed once per name.
+    let mut composed: Vec<(
+        (PropertyObjectRef, u32),
+        Vec<bussard_product::WrittenOctets>,
+    )> = Vec::new();
+    for (id, who) in changed {
+        let Some(loc) = app.parameters.get(id).and_then(|p| p.property.as_ref()) else {
+            continue;
+        };
+        let refuse = |what: String| {
+            PlanError::PropertyParameter(format!(
+                "the parameter {who} is placed in {what}, and no write of the load procedure \
+                 covers it with a known extent, so its value cannot be downloaded; set it \
+                 back to its default"
+            ))
+        };
+        // Every property parameter names its object
+        // (`PropertyParameters::resolve` keeps only those).
+        let Some(name) = PropertyObjectRef::of(loc) else {
+            continue;
+        };
+        let key = (name, loc.property_id);
+        if !composed.iter().any(|(k, _)| *k == key) {
+            let written = params
+                .compose(name, loc.property_id, Vec::new())
+                .map_err(|e| {
+                    PlanError::PropertyParameter(format!(
+                        "composing the value of PID {} from the parameters: {e}",
+                        loc.property_id
+                    ))
+                })?
+                .map(|(_, w)| w)
+                .unwrap_or_default();
+            composed.push((key, written));
+        }
+        let written = composed
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, w)| w.as_slice())
+            .unwrap_or_default();
+        // The written properties this parameter's object/PID may be.
+        let covering: Vec<&OctetSpan> = extents
+            .iter()
+            .filter(|((object, prop_id), _)| {
+                *prop_id == loc.property_id && same_object(loc, *object)
+            })
+            .flat_map(|(_, spans)| spans.iter())
+            .collect();
+        for w in written
+            .iter()
+            .filter(|w| w.id == *id && !w.range.is_empty())
+        {
+            if let Some(octet) = w
+                .range
+                .clone()
+                .find(|o| !covering.iter().any(|(a, b)| a <= o && o < b))
+            {
+                return Err(refuse(format!(
+                    "{} PID {} at octet {octet}",
+                    describe_name(name),
+                    loc.property_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A parameter's object name in words (`object 9`, `object type 40960`).
+fn describe_name(name: PropertyObjectRef) -> String {
+    match name {
+        PropertyObjectRef::Index(index) => format!("object {index}"),
+        PropertyObjectRef::Type {
+            object_type,
+            occurrence: 0,
+        } => format!("object type {object_type}"),
+        PropertyObjectRef::Type {
+            object_type,
+            occurrence,
+        } => format!("object type {object_type}.{occurrence}"),
+    }
 }
 
 /// Whether a parameter is placed in `object`/`prop_id` under a name of
@@ -445,7 +863,7 @@ pub(super) fn is_placed(
     app: &ApplicationProgram,
 ) -> Result<bool, String> {
     let (names, unresolved) = placements(app, object, prop_id);
-    if unresolved {
+    if !unresolved.is_empty() {
         return Err(unresolved_reason(name));
     }
     Ok(names.iter().any(|n| params.places(*n, prop_id)))
@@ -555,6 +973,7 @@ pub(super) fn lower_declared_write_prop(
     let from = ((start - 1) as usize).saturating_mul(elem);
     let len = (count as usize).saturating_mul(elem);
     let (names, unresolved) = placements(app, decl.object, prop_id);
+    let unresolved = !unresolved.is_empty();
     // Any placement under a name bussard does not resolve is refused, also
     // beside one it does: composing only the resolved ones would leave the
     // other parameter's bits out of the value (issue #964).
@@ -565,9 +984,7 @@ pub(super) fn lower_declared_write_prop(
     let template =
         inline_template(&name, inline.unwrap_or_default(), len, elem, placed).map_err(refuse)?;
     let (value, from_parameters) = if placed {
-        let value =
-            compose_over(&name, &names, prop_id, params, &template, from).map_err(refuse)?;
-        (value, true)
+        compose_over(&name, &names, prop_id, params, &template, from).map_err(refuse)?
     } else if inline.is_some() {
         (template, false)
     } else {
@@ -591,6 +1008,28 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn test_declaration_at_ignores_another_property_s_declaration() -> TestResult {
+        // Issue #1049: only the write's own property's declarations are
+        // lowered; one of another property that does not lower does not
+        // fail the lookup.
+        let bad = LoadOp::DeclarePropDesc {
+            obj_idx: Some(10),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(56),
+            prop_type: Some("PDT_NOT_A_TYPE".to_string()),
+            max_elements: Some(1),
+            writable: Some(true),
+            read_access: Some(0),
+            write_access: Some(0),
+        };
+        assert!(lower_declare_prop(1, &bad).is_err());
+        let write = write(Some(vec![0x11]), Some(1));
+        assert!(declaration_at(&[bad, write.clone()], 1, &write)?.is_none());
+        Ok(())
+    }
 
     fn declare(prop_type: &str, max_elements: u32) -> LoadOp {
         LoadOp::DeclarePropDesc {
@@ -1130,7 +1569,7 @@ mod tests {
             .evaluate_for(&app, &std::collections::BTreeMap::new());
         let params = PropertyParameters::resolve(&app, &config);
         let names = [PropertyObjectRef::Index(10)];
-        let value = compose_over("x", &names, 55, &params, &[0xAA, 0xBB, 0xCC], 2)?;
+        let (value, _) = compose_over("x", &names, 55, &params, &[0xAA, 0xBB, 0xCC], 2)?;
         assert_eq!(value, vec![0xAA, 0x22, 0xCC]);
         Ok(())
     }
