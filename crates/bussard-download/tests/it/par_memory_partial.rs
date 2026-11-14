@@ -20,8 +20,8 @@ use bussard_mgmt::load::WriteError;
 use bussard_product::application::{ApplicationProgram, LoadOp, parse_application_program};
 use bussard_product::master::MasterTemplate;
 use bussard_testkit::consts::{
-    A_MEMORY_WRITE, LS_LOADED, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE,
-    OT_DEVICE, OT_GROUP_OBJECT_TABLE,
+    A_MEMORY_WRITE, A_PROPERTY_VALUE_WRITE, LS_LOADED, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM,
+    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
 };
 use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -445,32 +445,6 @@ fn test_parameters_only_memory_program_refuses_before_anything_is_sent() -> Test
         Err(PartialPlanError::NoParAllocation)
     ));
 
-    // A `par` allocation that refills the segment, with no MCB check of
-    // the rewritten image.
-    let app = app_with(
-        ALLOCATION,
-        r#"<LdCtrlRelSegment LsmIdx="4" Size="256" Mode="1" Fill="255" />"#,
-    )?;
-    let full = plan_of(&app, &delay(20))?;
-    assert!(matches!(
-        full.parameters_only(&defaults_regions(&app)?),
-        Err(PartialPlanError::RefilledSegmentUnwritten {
-            object: 4,
-            rewritten: true,
-            ..
-        })
-    ));
-
-    // A master reset erasing more than the parameters.
-    let app = app_with(
-        WRITE,
-        &format!(r#"<LdCtrlMasterReset EraseCode="2" ChannelNumber="0" />{WRITE}"#),
-    )?;
-    let full = plan_of(&app, &delay(20))?;
-    assert!(matches!(
-        full.parameters_only(&defaults_regions(&app)?),
-        Err(PartialPlanError::ResetLosesState { erase_code: 2, .. })
-    ));
     Ok(())
 }
 
@@ -601,5 +575,180 @@ fn test_parameters_only_keeps_object_5_when_application_program_2_has_full_ops_o
             size: 16
         })
     ));
+    Ok(())
+}
+
+/// `syn-minimal` with its allocation refilling the segment (`Mode="1"
+/// Fill="255"`, the `syn-secure-fill` shape) and no MCB check.
+fn refilling_app() -> TestResult<ApplicationProgram> {
+    app_with(
+        ALLOCATION,
+        r#"<LdCtrlRelSegment LsmIdx="4" Size="256" Mode="1" Fill="255" />"#,
+    )
+}
+
+#[tokio::test]
+async fn test_flash_parameters_only_memory_program_with_a_refilling_allocation_keeps_the_cut()
+-> TestResult {
+    // Review of #1139, findings 1 and 2: no capture shows ETS's partial
+    // download of a memory program whose `par` allocation refills the
+    // segment, so it keeps the cut: Mode 0, the changed octets, noted as
+    // unconfirmed. The device refills on a Mode 1 allocation.
+    let app = refilling_app()?;
+    let full = plan_of(&app, &delay(20))?;
+    let partial = full.parameters_only(&regions_as_planned(&plan_of(&app, &BTreeMap::new())?))?;
+    assert_eq!(partial.procedure_kind(), ProcedureKind::Parameters);
+    assert!(!partial.par_procedure_unconfirmed().is_empty());
+    assert!(partial.steps.iter().all(|s| !matches!(
+        s,
+        FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()
+    )));
+
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    open!(gw, bus, session);
+    flash_defaults(&gw, &mut session, &app).await?;
+    let partial = full.parameters_only(&read_parameter_regions(session.l4(), &full, &[]).await)?;
+    let outcome = run(&mut session, &partial).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    read_back(&mut session, &full, &partial).await?;
+    let _ = session.into_disconnect().await;
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(writes_into(&dev, BASE, BASE + 256), vec![(BASE + 1, 2)]);
+    assert_eq!(
+        dev.read_mem(BASE, 3),
+        vec![1, 0, 20],
+        "mode kept, delay written"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_memory_program_with_an_erasing_reset_keeps_the_cut() -> TestResult {
+    // Review of #1139: `syn-master-reset-code4`'s reset (erase code 4, no
+    // `AppliesTo`) has no captured parameter-only form; the memory program
+    // keeps the cut, which sends no reset, as before.
+    let app = app_with(
+        WRITE,
+        &format!(r#"<LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />{WRITE}"#),
+    )?;
+    let full = plan_of(&app, &delay(20))?;
+    let partial = full.parameters_only(&regions_as_planned(&plan_of(&app, &BTreeMap::new())?))?;
+    assert_eq!(partial.procedure_kind(), ProcedureKind::Parameters);
+    assert!(!partial.par_procedure_unconfirmed().is_empty());
+    assert!(
+        !partial
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::MasterReset { .. })),
+        "{:?}",
+        partial.steps
+    );
+    assert_eq!(partial.changed_octets(), 2);
+    Ok(())
+}
+
+/// The device behind a parameter-only download that, once armed, places
+/// object 4's segment at `moved` on the `armed_at`-th allocation record.
+fn moving_device(
+    armed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    armed_at: usize,
+    moved: u32,
+) -> TestResult<MockDevice> {
+    use std::sync::atomic::Ordering;
+    Ok(
+        device()?.with_hook(move |dev: &mut MockDevice, apci: u16, data: &[u8]| {
+            // A_PropertyValue_Write obj 4 PID 5 carrying a `LdCtrlRelSegment`
+            // record (`[event 3, 0x0B, ...]`).
+            if apci != A_PROPERTY_VALUE_WRITE
+                || data.first() != Some(&4)
+                || data.get(1) != Some(&5)
+                || data.get(5) != Some(&0x0B)
+            {
+                return None;
+            }
+            let seen = armed.load(Ordering::SeqCst);
+            if seen == 0 {
+                return None;
+            }
+            armed.store(seen + 1, Ordering::SeqCst);
+            if seen == armed_at {
+                dev.segment_bases.insert(4, moved);
+            }
+            None
+        }),
+    )
+}
+
+#[tokio::test]
+async fn test_flash_parameters_only_memory_program_completes_when_the_base_moves() -> TestResult {
+    // Review of #1139, finding 5: a base that moves on the Mode 0
+    // re-allocation does not leave object 4 loading; the whole image goes to
+    // the new base, the load completes, and the result says so.
+    let app = app()?;
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let moved = 0x7000;
+    let gw = MockGateway::builder()
+        .device(moving_device(armed.clone(), 1, moved)?)
+        .start()
+        .await?;
+    open!(gw, bus, session);
+    flash_defaults(&gw, &mut session, &app).await?;
+    let full = plan_of(&app, &delay(20))?;
+    let partial = full.parameters_only(&read_parameter_regions(session.l4(), &full, &[]).await)?;
+    armed.store(1, std::sync::atomic::Ordering::SeqCst);
+    let outcome = run(&mut session, &partial).await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let warnings = format!("{:?}", outcome.warnings);
+    assert!(warnings.contains("moved"), "{warnings}");
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(dev.load_state(4), LS_LOADED);
+    assert_eq!(
+        dev.read_mem(moved, 3),
+        vec![1, 0, 20],
+        "the whole image at the new base"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_parameters_only_checks_the_base_a_master_reset_moved() -> TestResult {
+    // Review of #1139, finding 3: after `syn-master-reset`'s reset (erase
+    // code 1, allowed in the `par` procedure) the re-allocation's base is the
+    // one the check compares, not the one read before the reset.
+    let app = app_with(
+        ALLOCATION,
+        &format!(r#"{ALLOCATION}<LdCtrlMasterReset EraseCode="1" ChannelNumber="0" />"#),
+    )?;
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let moved = 0x7000;
+    let gw = MockGateway::builder()
+        .device(moving_device(armed.clone(), 2, moved)?)
+        .start()
+        .await?;
+    open!(gw, bus, session);
+    flash_defaults(&gw, &mut session, &app).await?;
+    let full = plan_of(&app, &delay(20))?;
+    let partial = full.parameters_only(&read_parameter_regions(session.l4(), &full, &[]).await)?;
+    assert!(
+        partial
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::MasterReset { erase_code: 1, .. })),
+        "{:?}",
+        partial.steps
+    );
+    armed.store(1, std::sync::atomic::Ordering::SeqCst);
+    let outcome = run(&mut session, &partial).await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let warnings = format!("{:?}", outcome.warnings);
+    assert!(
+        warnings.contains("base pointer of object 4 moved"),
+        "{warnings}"
+    );
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(dev.load_state(4), LS_LOADED);
+    assert_eq!(dev.read_mem(moved, 3), vec![1, 0, 20]);
     Ok(())
 }

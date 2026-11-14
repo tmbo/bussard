@@ -538,7 +538,6 @@ pub async fn read_secured(
                         Some(with_device),
                         target,
                         live.tables().mask,
-                        false,
                     )
                     .await,
                 ),

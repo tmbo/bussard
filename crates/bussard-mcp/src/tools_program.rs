@@ -947,7 +947,6 @@ impl BussardMcp {
                     desired: &desired,
                     group_keys: material.group_keys.as_ref(),
                 },
-                fixed_properties: false,
             },
         )
         .await?;
@@ -1576,7 +1575,6 @@ impl BussardMcp {
                 product: product.source.as_ref(),
                 tunnel: &tunnel,
                 flags_cache: FlagsCache::Forget { dir: &dir },
-                fixed_properties: false,
             },
         )
         .await?;
@@ -2565,9 +2563,6 @@ struct Read<'a> {
     tunnel: &'a [IndividualAddress],
     /// The PID 61 cache.
     flags_cache: FlagsCache<'a>,
-    /// Read the parameter-only download's fixed property writes whatever
-    /// it writes ([`ReadRequest::fixed_properties`], a restore).
-    fixed_properties: bool,
 }
 
 /// Checks the source address (once per tunnel instance, issue #341), then
@@ -2599,7 +2594,6 @@ async fn read_device(
         secured: read.tool_key.is_some(),
         flags_cache: read.flags_cache,
         properties: None,
-        fixed_properties: read.fixed_properties,
     };
     let device = program::read::read_device(service, &options, &request)
         .await
@@ -2653,7 +2647,6 @@ pub(crate) async fn read_for_reconstruct(
             product,
             tunnel: &[],
             flags_cache: FlagsCache::Off,
-            fixed_properties: false,
         },
     )
     .await?;

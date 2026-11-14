@@ -378,25 +378,6 @@ pub async fn read_checked_properties<Ch: L4Channel>(
     read_properties(l4, plan.checked_properties(), Some(app)).await
 }
 
-/// [`read_checked_properties`] for one side of the checked list (issue
-/// #1085): the properties the parameters compose (`fixed == false`), which
-/// every parameter read compares, or the fixed writes (`fixed == true`,
-/// [`ParamProperty::fixed`]), which only a write needs, for its backup and
-/// its read-back. A read-only `bussard plan` reads the first alone.
-pub async fn read_checked_properties_where<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-    app: &ApplicationProgram,
-    fixed: bool,
-) -> Vec<ParamProperty> {
-    let side: Vec<ParamProperty> = plan
-        .checked_properties()
-        .into_iter()
-        .filter(|p| p.fixed == fixed)
-        .collect();
-    read_properties(l4, side, Some(app)).await
-}
-
 /// The read-back of a parameter write (issue #1052): reads every property
 /// the written plan `partial` writes ([`FlashPlan::checked_properties`] of
 /// it, so a restore compares the backup's values) and returns the number of

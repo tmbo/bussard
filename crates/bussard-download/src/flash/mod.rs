@@ -1300,6 +1300,10 @@ pub struct FlashPlan {
     /// Whether [`FlashPlan::parameters_only`] built this parameter-only plan
     /// from the mask's `par` procedure (issue #1052).
     from_par_procedure: bool,
+    /// Why [`FlashPlan::parameters_only`] kept the cut for a memory program
+    /// that carries the mask's `par` procedure (issue #1085), for the plan
+    /// note; `None` otherwise.
+    par_fallback: Option<&'static str>,
     /// Whether [`FlashPlan::parameters_only`] cut this plan down to a
     /// parameter-only download (see [`FlashPlan::is_parameters_only`]).
     parameters_only: bool,

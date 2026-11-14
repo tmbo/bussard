@@ -94,7 +94,7 @@ pub use param_plan::{
 };
 pub use param_props::{
     ParamProperty, PropertyRange, changed_parameter_properties, changed_properties, held_after,
-    masked_equal, read_back_properties, read_checked_properties, read_checked_properties_where,
+    masked_equal, read_back_properties, read_checked_properties,
 };
 pub use plan::{ObjectGa, PlanReport, plan};
 pub use preflight::{

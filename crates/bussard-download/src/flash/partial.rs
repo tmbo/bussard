@@ -207,11 +207,20 @@ impl FlashPlan {
     /// procedure writes no parameter image, or when a parameter segment was not
     /// read back.
     pub fn parameters_only(&self, regions: &ParamRegions) -> Result<FlashPlan, PartialPlanError> {
+        // A program with parameter memory keeps the cut of the complete
+        // download where the mask's `par` procedure has a step no capture
+        // shows for it (issue #1085): a refilling allocation or a master
+        // reset that erases more than the parameters. The cut is what
+        // bussard sent before; it is noted as unconfirmed.
+        let fallback = match self.par_procedure() {
+            Some(par) if !self.is_sys7() => self.memory_par_unconfirmed(par),
+            _ => None,
+        };
         // The steps that will run: the mask's parameter-only procedure's
         // where the plan carries it (issue #1052), else the complete
         // download's the cut is taken from.
         let runs: &[FlashStep] = match self.par_procedure() {
-            Some(par) if !self.is_sys7() => par,
+            Some(par) if !self.is_sys7() && fallback.is_none() => par,
             _ => &self.steps,
         };
         for step in runs {
@@ -245,10 +254,10 @@ impl FlashPlan {
             };
             return Err(PartialPlanError::UncapturedStep { what });
         }
-        let by_par = self.par_steps.is_some() && !self.is_sys7();
+        let by_par = self.par_steps.is_some() && !self.is_sys7() && fallback.is_none();
         let steps = if self.is_sys7() {
             self.sys7_parameter_steps(regions)?
-        } else if let Some(par) = &self.par_steps {
+        } else if let Some(par) = self.par_steps.as_ref().filter(|_| by_par) {
             // Lowered with its description reads already.
             self.par_procedure_steps(par, regions)?
         } else {
@@ -341,6 +350,7 @@ impl FlashPlan {
             par_procedure: false,
             par_steps: None,
             from_par_procedure: by_par,
+            par_fallback: fallback,
             parameters_only: true,
             kept,
             unoccupied: self.unoccupied.clone(),
@@ -930,6 +940,7 @@ impl FlashPlan {
     pub fn par_procedure_unconfirmed(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
         if !self.from_par_procedure {
+            out.extend(self.par_fallback);
             return out;
         }
         let steps = &self.steps;
@@ -972,6 +983,37 @@ impl FlashPlan {
             (true, false, _) => ProcedureKind::Parameters,
             (false, _, true) => ProcedureKind::CompleteByPar,
             (false, _, false) => ProcedureKind::Complete,
+        }
+    }
+
+    /// Why the mask's `par` procedure `par` is not run for this program
+    /// with parameter memory (issue #1085), in words for the plan note;
+    /// `None` when it is run. No ETS capture shows a parameter-only download
+    /// of a memory program whose `par` procedure refills a segment or
+    /// master-resets with an erase code other than 1 or 5
+    /// (`syn-secure-fill`, `syn-relseg-fill` and `syn-master-reset-code4`
+    /// have none), so such a program keeps the cut bussard sent before.
+    fn memory_par_unconfirmed(&self, par: &[FlashStep]) -> Option<&'static str> {
+        if !self.has_parameter_memory() {
+            return None;
+        }
+        let refills = par.iter().any(
+            |s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()),
+        );
+        let resets = par.iter().any(|s| {
+            matches!(s, FlashStep::MasterReset { erase_code, .. }
+                if erased_and_not_restored(*erase_code).is_some())
+        });
+        match (refills, resets) {
+            (true, _) => Some(
+                "the parameter-only download keeps the segment's memory (Mode 0) and writes the \
+                 changed octets, where the device's parameter-only procedure refills the segment",
+            ),
+            (false, true) => Some(
+                "the parameter-only download leaves out the device's master reset that erases \
+                 more than the parameters",
+            ),
+            (false, false) => None,
         }
     }
 

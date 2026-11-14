@@ -417,9 +417,9 @@ pub fn plan_flash(
 }
 
 /// Adds to `plan` (a [`plan_flash`] of the same inputs) the lowering of the
-/// mask's parameter-only procedure `par_ops` (issue #1052): what
+/// mask's parameter-only procedure `par_ops` (issues #1052, #1085): what
 /// [`FlashPlan::parameters_only`] then runs for a System B program spliced
-/// into the master template whose parameters all live in properties. The
+/// into the master template, with parameters in memory or in properties. The
 /// application's blocks are filtered to the ops whose `AppliesTo` includes
 /// `par` (KNX 3/5/3 §3.9.3.6; the E802 and E804 sweep captures). A no-op for
 /// any other plan, and without `par_ops` (a mask whose master data and
@@ -1579,6 +1579,7 @@ fn plan_flash_as(
         par_procedure: false,
         par_steps: None,
         from_par_procedure: false,
+        par_fallback: None,
         parameters_only: false,
         kept,
         unoccupied,
@@ -1898,18 +1899,28 @@ pub(super) fn assemble_ops(
                 let full = |lp: &LoadProcedure, i: usize| {
                     !(lp.lists_partial_downloads() && lp.is_partial_only(i))
                 };
-                let mut full_blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
-                for p in non_empty.iter().chain(companion_blocks.iter()) {
-                    if let Some(id) = p
-                        .merge_id
+                let ap2_id = |p: &LoadProcedure| {
+                    p.merge_id
                         .as_deref()
                         .and_then(|m| m.parse::<u32>().ok())
                         .filter(|id| AP2_MERGE_IDS.contains(id))
-                    {
+                };
+                let mut full_blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+                for p in &non_empty {
+                    if let Some(id) = ap2_id(p) {
                         full_blocks
                             .entry(id)
                             .or_default()
                             .extend(taken_ops(app, p, config, &full)?);
+                    }
+                }
+                // The complete download takes a companion block whole.
+                for p in &companion_blocks {
+                    if let Some(id) = ap2_id(p) {
+                        full_blocks
+                            .entry(id)
+                            .or_default()
+                            .extend(p.ops.iter().cloned());
                     }
                 }
                 loads_application_program_2(&full_blocks)

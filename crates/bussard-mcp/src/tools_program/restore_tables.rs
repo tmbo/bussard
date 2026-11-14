@@ -307,7 +307,6 @@ impl BussardMcp {
                 product: None,
                 tunnel: &[],
                 flags_cache: FlagsCache::Off,
-                fixed_properties: false,
             },
         )
         .await?;

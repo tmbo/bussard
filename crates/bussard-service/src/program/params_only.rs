@@ -80,7 +80,11 @@ pub fn parameter_write_note(partial: &FlashPlan) -> String {
             out.push_str("; ");
         }
         out.push_str(
-            "done by the device's parameter-only procedure, not confirmed by an ETS capture: ",
+            if partial.procedure_kind() == bussard_download::ProcedureKind::ParametersByPar {
+                "done by the device's parameter-only procedure, not confirmed by an ETS capture: "
+            } else {
+                "not confirmed by an ETS capture: "
+            },
         );
         out.push_str(&unconfirmed.join("; "));
     }
@@ -780,6 +784,35 @@ mod tests {
             }
         }
         assert!(super::super::apply::check_backup_covers(&ParamRegions::new(), &[read]).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_check_backup_covers_accepts_an_unread_fixed_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review of #1139, finding 4: the program version the `par`
+        // procedure writes is a constant; a device that does not answer its
+        // read does not block a parameter write a restore could undo.
+        let regions = ParamRegions::from([(
+            "RS-1".to_string(),
+            bussard_download::ParamRegion {
+                segment_id: "RS-1".to_string(),
+                address: 0x6000,
+                bytes: vec![0],
+            },
+        )]);
+        let fixed = bussard_download::ParamProperty {
+            object: bussard_download::PropObject::Index(4),
+            prop_id: 13,
+            start_element: 1,
+            count: 1,
+            model: vec![0; 5],
+            device: None,
+            parameters: Vec::new(),
+            fixed: true,
+            mask: None,
+        };
+        assert!(super::super::apply::check_backup_covers(&regions, &[fixed]).is_ok());
         Ok(())
     }
 

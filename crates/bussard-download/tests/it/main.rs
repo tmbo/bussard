@@ -22,6 +22,7 @@ mod golden_tables;
 mod knxnet_ip_mock;
 mod module_procedures;
 mod no_group_objects_mock;
+mod par_memory_partial;
 mod param_readback_roundtrip;
 mod partial_segment;
 mod property_only_partial;
@@ -37,7 +38,6 @@ mod typed_load_control_mock;
 mod verify_mode_system_b;
 // The fixture applications and the random value sets of bussard-prod's
 // evaluator conformance test, shared with the view acceptance test.
-mod par_memory_partial;
 #[path = "../../../bussard-product/tests/it/value_sets.rs"]
 mod value_sets;
 mod view_acceptance;

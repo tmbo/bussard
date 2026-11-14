@@ -268,7 +268,6 @@ fn run_parameters(
         secured: false,
         flags_cache: bussard_service::program::read::FlagsCache::Off,
         properties: None,
-        fixed_properties: true,
     };
     let read = runtime.block_on(bussard_service::program::read::read_device(
         service,

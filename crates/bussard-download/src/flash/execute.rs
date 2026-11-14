@@ -421,11 +421,6 @@ struct SystemB<'a> {
     // The base pointer each object reported before the parameter-only
     // download unloaded it (issue #1052, [`FlashStep::ReadTableReference`]).
     table_references: BTreeMap<u8, u32>,
-    // The base pointer an allocation read off an object, until the
-    // parameter-only procedure's check after the load takes it as its
-    // read (issue #1085): ETS reads it once there (E804 op 30, the
-    // `syn-minimal/partial` op 18).
-    allocated_references: BTreeMap<u8, u32>,
 }
 
 impl StepExecutor for SystemB<'_> {
@@ -591,7 +586,6 @@ impl StepExecutor for SystemB<'_> {
                         .await?;
                 self.segment_base = Some(alloc.address);
                 self.segment_bases.insert(obj, alloc.address);
-                self.allocated_references.insert(obj, alloc.address);
                 self.segment_fills.insert(obj, *fill);
                 self.last_alloc_size = Some(*size);
                 self.last_alloc_fill = *fill;
@@ -1480,14 +1474,41 @@ impl StepExecutor for SystemB<'_> {
                 if let Some(obj) =
                     resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
                 {
-                    let actual = match self.allocated_references.remove(&obj) {
-                        Some(read) => read,
+                    // The base the latest allocation of the object read
+                    // (a master reset's re-allocation included) is the
+                    // check's read: ETS reads PID 7 once there (E804 op 30,
+                    // `syn-minimal/partial` op 18). Without an allocation
+                    // the device is read.
+                    let actual = match self.segment_bases.get(&obj) {
+                        Some(&read) => read,
                         None => {
                             super::session::read_table_reference_resumable(session, obj).await?
                         }
                     };
                     let expected = self.table_references.get(&obj).copied();
-                    if Some(actual) != expected {
+                    // A parameter image written into the object follows:
+                    // its write finds the moved base and writes the whole
+                    // image there with a warning, as the cut did (issue
+                    // #1085; no capture shows ETS's answer to a moved base),
+                    // so the device is not left loading.
+                    let rewritten = plan.steps.iter().any(|s| {
+                        matches!(s, FlashStep::WriteRelMem { image, target, .. }
+                            if image.kind == ImageKind::Parameters
+                                && plan.baseline.contains_key(&image.segment_id)
+                                && resolve_object_target_opt(
+                                    *target,
+                                    object_table,
+                                    app_obj,
+                                    plan.spliced_from_template,
+                                ) == Some(obj))
+                    });
+                    if Some(actual) != expected && rewritten {
+                        self.warnings.push(format!(
+                            "the base pointer of object {obj} moved from {} to {actual:#X} \
+                             between the unload and the load of the parameter-only download",
+                            expected.map_or("an unread value".to_string(), |e| format!("{e:#X}"))
+                        ));
+                    } else if Some(actual) != expected {
                         return Err(WriteError::PropCompareMismatch {
                             address: session.l4().target(),
                             object_index: obj,
@@ -1632,7 +1653,6 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         verified: None,
         partial_checked,
         table_references: BTreeMap::new(),
-        allocated_references: BTreeMap::new(),
     };
     let threshold = reconnect_exchange_threshold(plan);
     run_steps(session, plan, threshold, &mut progress, &mut exec).await?;
