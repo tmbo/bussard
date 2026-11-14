@@ -358,22 +358,32 @@ pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
     object_size.and_then(object_size_code).unwrap_or(0)
 }
 
-/// The com-objects (and refs) of `app` whose declared `ObjectSize` has no
-/// value field type code (see [`object_size_code`]), as `(id, size)` pairs
+/// The com-object refs of `app` whose effective `ObjectSize` has no value
+/// field type code (see [`object_size_code`]), as `(ref id, size)` pairs
 /// sorted by id. A System B flash plan refuses the application when this is
 /// not empty.
+///
+/// The effective size is the one every descriptor builder writes: the ref's
+/// `ObjectSize`, else its com-object's (a `ComObjectRef` attribute overrides
+/// the `ComObject` one). So a com-object whose own size has no code is not
+/// refused when each of its refs states a size that has one: no descriptor
+/// ever takes the object's own size (issue #1065: the Jung
+/// `M-0004_A-1111-11-A356-O000A` object 7 declares `LegacyVarData` and its
+/// only ref `14 Bytes`). A com-object no ref names gets no descriptor.
 pub(crate) fn unknown_object_sizes(
     app: &bussard_product::ApplicationProgram,
 ) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = app
-        .com_objects
+        .com_object_refs
         .values()
-        .filter_map(|o| Some((o.id.as_str(), o.object_size.as_deref()?)))
-        .chain(
-            app.com_object_refs
-                .values()
-                .filter_map(|r| Some((r.id.as_str(), r.object_size.as_deref()?))),
-        )
+        .filter_map(|r| {
+            let base = app.com_objects.get(&r.ref_id);
+            let size = r
+                .object_size
+                .as_deref()
+                .or(base.and_then(|b| b.object_size.as_deref()))?;
+            Some((r.id.as_str(), size))
+        })
         .filter(|(_, size)| object_size_code(size).is_none())
         .map(|(id, size)| (id.to_string(), size.to_string()))
         .collect();
@@ -968,6 +978,51 @@ mod tests {
         ] {
             assert_eq!(object_size_code(size), None, "{size}");
         }
+    }
+
+    /// A com-object size without a code counts only where a descriptor takes
+    /// it: through a ref that states no size of its own (issue #1065).
+    #[test]
+    fn test_unknown_object_sizes_takes_the_ref_size_over_the_object_size() {
+        let mut app = bussard_product::ApplicationProgram {
+            id: "M-0004_A-1".to_string(),
+            ..Default::default()
+        };
+        let object = |id: &str, size: &str| bussard_product::ComObject {
+            id: id.to_string(),
+            object_size: Some(size.to_string()),
+            ..Default::default()
+        };
+        let cref = |id: &str, of: &str, size: Option<&str>| bussard_product::ComObjectRef {
+            id: id.to_string(),
+            ref_id: of.to_string(),
+            object_size: size.map(str::to_string),
+            ..Default::default()
+        };
+        // Object 7: `LegacyVarData`, its only ref `14 Bytes` (the Jung shape).
+        app.com_objects
+            .insert("O-7".into(), object("O-7", "LegacyVarData"));
+        app.com_object_refs
+            .insert("O-7_R-5".into(), cref("O-7_R-5", "O-7", Some("14 Bytes")));
+        // Object 8: no ref at all, so never in a table.
+        app.com_objects
+            .insert("O-8".into(), object("O-8", "LegacyVarData"));
+        assert!(unknown_object_sizes(&app).is_empty());
+
+        // A ref without a size of its own takes the object's: refused.
+        app.com_object_refs
+            .insert("O-7_R-6".into(), cref("O-7_R-6", "O-7", None));
+        // A ref's own size without a code: refused.
+        app.com_objects.insert("O-9".into(), object("O-9", "1 Bit"));
+        app.com_object_refs
+            .insert("O-9_R-1".into(), cref("O-9_R-1", "O-9", Some("249 Bytes")));
+        assert_eq!(
+            unknown_object_sizes(&app),
+            vec![
+                ("O-7_R-6".to_string(), "LegacyVarData".to_string()),
+                ("O-9_R-1".to_string(), "249 Bytes".to_string()),
+            ]
+        );
     }
 
     #[test]
