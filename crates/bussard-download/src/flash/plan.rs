@@ -1202,7 +1202,7 @@ fn plan_flash_as(
                     step: step_no,
                     reason,
                 })?;
-                steps.extend(super::declare::lower_declared_write_prop(
+                let mut lowered = super::declare::lower_declared_write_prop(
                     step_no,
                     op,
                     &decl,
@@ -1210,7 +1210,19 @@ fn plan_flash_as(
                     &property_params,
                     app,
                     typed_objects_by_list,
-                )?);
+                )?;
+                // A write that comes before its declaration keeps the
+                // undeclared System B arm's `Verify` rule (not honoured,
+                // issue #390); only its composition follows the later
+                // declaration (issue #1049). No capture shows ETS reading
+                // such a write back: the one in hand, E802's object 9 write,
+                // carries `Verify="false"`.
+                if !declared_target
+                    && let Some(FlashStep::WriteProp { verify, .. }) = lowered.as_mut()
+                {
+                    *verify = false;
+                }
+                steps.extend(lowered);
             }
 
             LoadOp::WriteProp {
@@ -1264,15 +1276,16 @@ fn plan_flash_as(
                         // #669), so a parameter change rewrites it; the PID
                         // 13 placeholder takes them over the application id
                         // (`maybe_substitute_app_id`, issue #964).
+                        let target = super::plan_props::WriteTarget {
+                            object,
+                            prop_id,
+                            start_element: *start_element,
+                            count: *count,
+                        };
                         let (value, from_parameters) = super::declare::overlay_undeclared_inline(
                             &name,
                             super::declare::InlineWrite {
-                                target: super::plan_props::WriteTarget {
-                                    object,
-                                    prop_id,
-                                    start_element: *start_element,
-                                    count: *count,
-                                },
+                                target,
                                 inline: &value,
                                 placeholder,
                             },
@@ -1289,20 +1302,13 @@ fn plan_flash_as(
                         // services' reach, issue #964) refuses a shape the executor
                         // cannot address rather than dropping the value at execute
                         // time. Without `Count` it is one element; with it, `Count`
-                        // elements in requests of at most 15, as ETS writes the
-                        // undeclared `ObjIdx="9" PropId="208" Count="124"` with
-                        // 124 octets of InlineData of `M-0009_A-E802-13-7620`
-                        // (`count=15 index=1` to `count=4 index=121`, ops 46 to
-                        // 54), where the old one-element shape sent 124 octets
-                        // in one request.
+                        // elements in requests of at most 15 (the executor's split,
+                        // issue #947). A write its procedure declares later takes
+                        // the declared arm above (issue #1049), so the
+                        // `M-0009_A-E802-13-7620` object 9 write no longer comes here.
                         steps.push(super::plan_props::write_prop_step(
                             step_no,
-                            super::plan_props::WriteTarget {
-                                object,
-                                prop_id,
-                                start_element: *start_element,
-                                count: *count,
-                            },
+                            target,
                             value,
                             from_parameters,
                             // `Verify` is not honoured on this arm: the master
@@ -5503,6 +5509,7 @@ mod tests {
                 })
                 .collect()),
             Err(PlanError::UnsupportedWriteProp { reason, .. }) => Err(reason),
+            Err(refused @ PlanError::PropertyParameter(_)) => Err(refused.to_string()),
             Err(other) => return Err(other.into()),
         })
     }
@@ -5740,7 +5747,67 @@ mod tests {
             &[1, 2],
             &[],
         )?)?;
-        assert!(reason.contains("writes octet 3"), "{reason}");
+        assert_eq!(
+            reason,
+            "cannot flash: the parameter param@P-2_R-2 \"p2\" is placed in object \
+             9 PID 208 at octet 3, and no write of the load procedure covers that octet, so its \
+             value cannot be downloaded; set it back to its default"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_ignores_an_unreached_parameter_on_an_undeclared_write() -> TestResult {
+        // Issue #1049 with #1024: an unreached parameter in a property no
+        // declaration names composes nothing, so a write past element 1, or
+        // one beside a placement by type, goes out as plain InlineData.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" />"#;
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 7, 5, OBJ9)], &[], &[])?,
+            Ok(vec![(vec![0x11, 0x11, 0x22, 0x22], false, 3, 2)])
+        );
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1122" />"#;
+        assert_eq!(
+            pid_208_writes(
+                write,
+                &[
+                    placed_u8(1, 7, 0, OBJ9),
+                    placed_u8(2, 9, 1, r#"ObjectType="60001""#)
+                ],
+                &[2],
+                &[],
+            )?,
+            Ok(vec![(vec![0x11, 0x22], false, 1, 2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_does_not_verify_a_write_before_its_declaration() -> TestResult {
+        // Issue #1049: a `Verify="true"` write that precedes its declaration
+        // keeps the undeclared System B arm's rule (#390, not honoured);
+        // after the declaration the declared arm honours it.
+        let declare = declare_208("PDT_UNSIGNED_CHAR", 2);
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" Verify="true" InlineData="1122" />"#;
+        for (ops, expected) in [
+            (format!("{write}{declare}"), false),
+            (format!("{declare}{write}"), true),
+        ] {
+            let app = ops_app_showing(
+                &format!(r#"{ops}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+                &placed_u8(1, 7, 0, OBJ9),
+                &[1],
+                false,
+            )?;
+            let verify: Vec<bool> = writes_to(&plan_ops(&app)?, 208)
+                .into_iter()
+                .filter_map(|s| match s {
+                    FlashStep::WriteProp { verify, .. } => Some(verify),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(verify, vec![expected], "{ops}");
+        }
         Ok(())
     }
 

@@ -2759,8 +2759,9 @@ struct ResolvedPropertyParameter<'a> {
     /// and its property is named by index without an `LdCtrlDeclarePropDesc`
     /// (see [`unreached_keeps_base`]). Its `value` still sizes the property.
     keeps_base: bool,
-    /// Whether the configuration reaches it (a value the project can set).
-    reached: bool,
+    /// The ref the configuration reaches it through, `None` when it is
+    /// unreached (the project cannot set its value).
+    reached_ref: Option<String>,
 }
 
 /// The octets one property-located parameter wrote in a composed property
@@ -2772,6 +2773,11 @@ pub struct WrittenOctets {
     /// Whether the configuration reaches the parameter, so the project can
     /// set its value; an unreached one writes its default.
     pub reached: bool,
+    /// The parameter: the ref the configuration reaches it through, else
+    /// its own id.
+    pub parameter: String,
+    /// Its text (`Text`, else `Name`), for a message.
+    pub text: String,
 }
 
 impl<'a> PropertyParameters<'a> {
@@ -2835,8 +2841,8 @@ impl<'a> PropertyParameters<'a> {
                 let loc = param.property.as_ref()?;
                 let object = PropertyObjectRef::of(loc)?;
                 let key = (object, loc.property_id);
-                let is_reached = reached.contains_key(param.id.as_str());
-                let keeps_base = !is_reached && unreached_keeps_base(&declared, key);
+                let reached_ref = reached.get(param.id.as_str()).map(|r| r.to_string());
+                let keeps_base = reached_ref.is_none() && unreached_keeps_base(&declared, key);
                 let (value, source) = match reached.get(param.id.as_str()) {
                     Some(ref_id) => (
                         config.value(app, None, ref_id),
@@ -2861,7 +2867,7 @@ impl<'a> PropertyParameters<'a> {
                     value,
                     source,
                     keeps_base,
-                    reached: is_reached,
+                    reached_ref,
                 })
             })
             .collect();
@@ -2960,7 +2966,14 @@ impl<'a> PropertyParameters<'a> {
             let range = place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
             written.push(WrittenOctets {
                 range,
-                reached: p.reached,
+                reached: p.reached_ref.is_some(),
+                parameter: p.reached_ref.clone().unwrap_or_else(|| p.param.id.clone()),
+                text: p
+                    .param
+                    .text
+                    .clone()
+                    .or_else(|| p.param.name.clone())
+                    .unwrap_or_default(),
             });
         }
         Ok(out)

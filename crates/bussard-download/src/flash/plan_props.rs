@@ -384,10 +384,13 @@ pub(super) fn may_hold(
     }
 }
 
-/// Lowers an `LdCtrlWriteProp` with its `Count` and `Verify` (the System 7
-/// and property-only planners, and the System B planner for a write without
-/// `InlineData`, issue #669; a System B write with `InlineData` keeps its own
-/// lowering).
+/// Lowers an `LdCtrlWriteProp` to a property the procedure does not declare,
+/// with its `Count` and `Verify`: on the System 7 and property-only
+/// planners, and on the System B planner for a write without `InlineData`
+/// (issue #669). The System B planner lowers an undeclared write with
+/// `InlineData` itself, with `Verify` not honoured (issue #390); both lay
+/// the parameters over the `InlineData` by the one rule
+/// ([`super::declare::overlay_undeclared_inline`], issue #1049).
 ///
 /// A write without `InlineData` on a property no parameter of `app` is stored
 /// in lowers to [`FlashStep::DescribeProp`]: ETS reads the property's

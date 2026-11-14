@@ -517,19 +517,30 @@ pub(super) fn overlay_undeclared_inline(
         placeholder,
     } = write;
     let (names, unresolved) = placements(app, target.object, target.prop_id);
-    let placed = names.iter().any(|n| params.places(*n, target.prop_id));
-    if unresolved && (placed || placeholder) {
+    // Whether a parameter places octets in the property at all: an
+    // unreached one that keeps the base (issue #1024) composes nothing, so
+    // it neither refuses the write nor makes it the parameters'.
+    let mut writes = false;
+    for n in &names {
+        if let Some((_, written)) = params
+            .compose(*n, target.prop_id, Vec::new())
+            .map_err(|e| format!("composing the value of {name} from the parameters: {e}"))?
+        {
+            writes |= written.iter().any(|w| !w.range.is_empty());
+        }
+    }
+    if unresolved && (writes || placeholder) {
         return Err(unresolved_reason(name));
     }
-    if !placed {
+    if !writes {
         return Ok((inline.to_vec(), false));
     }
     let start = target.start_element.unwrap_or(1).max(1);
     if start > 1 {
         return Err(format!(
-            "the write to {name} starts at element {start} with InlineData, a parameter is \
-             placed in the property, and no LdCtrlDeclarePropDesc gives the size of its \
-             elements; bussard does not guess which octets of the property the write covers"
+            "the write to {name} starts at element {start} with InlineData, a parameter writes \
+             into the property, and no LdCtrlDeclarePropDesc gives the size of its elements; \
+             bussard does not guess which octets of the property the write covers"
         ));
     }
     compose_over(name, &names, target.prop_id, params, inline, 0)
@@ -552,7 +563,8 @@ type OctetSpan = (usize, usize);
 ///
 /// # Errors
 ///
-/// [`PlanError::UnsupportedWriteProp`] naming the property and the octets.
+/// [`PlanError::PropertyParameter`] naming the parameter, the property and
+/// the octet no write covers.
 pub(super) fn check_parameter_coverage(
     steps: &[FlashStep],
     params: &PropertyParameters<'_>,
@@ -579,12 +591,9 @@ pub(super) fn check_parameter_coverage(
         let (names, _) = placements(app, *object, *prop_id);
         for n in &names {
             let Some((_, written)) = params.compose(*n, *prop_id, Vec::new()).map_err(|e| {
-                PlanError::UnsupportedWriteProp {
-                    step: 0,
-                    reason: format!(
-                        "composing the value of {object} PID {prop_id} from the parameters: {e}"
-                    ),
-                }
+                PlanError::PropertyParameter(format!(
+                    "composing the value of {object} PID {prop_id} from the parameters: {e}"
+                ))
             })?
             else {
                 continue;
@@ -594,23 +603,18 @@ pub(super) fn check_parameter_coverage(
             // leaves octet 267 of type 40960 PID 69 of
             // `M-0008_A-C02A-21-B6D8-O007C` unwritten (its writes cover
             // elements 1 to 25 and 176 to 200; ETS sweep capture).
-            for r in written
-                .iter()
-                .filter(|w| w.reached && !w.range.is_empty())
-                .map(|w| &w.range)
-            {
-                if let Some(octet) = r
+            for w in written.iter().filter(|w| w.reached && !w.range.is_empty()) {
+                if let Some(octet) = w
+                    .range
                     .clone()
                     .find(|o| !covered.iter().any(|(a, b)| a <= o && o < b))
                 {
-                    return Err(PlanError::UnsupportedWriteProp {
-                        step: 0,
-                        reason: format!(
-                            "a parameter placed in {object} PID {prop_id} writes octet {octet}, \
-                             which no write of the procedure to that property covers; bussard \
-                             does not leave a set parameter off the device"
-                        ),
-                    });
+                    return Err(PlanError::PropertyParameter(format!(
+                        "the parameter param@{} \"{}\" is placed in {object} PID {prop_id} at octet \
+                         {octet}, and no write of the load procedure covers that octet, so its \
+                         value cannot be downloaded; set it back to its default",
+                        w.parameter, w.text
+                    )));
                 }
             }
         }
