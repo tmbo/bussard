@@ -957,3 +957,15 @@ main ae14db86, driver of this session, #525, #1049, #1065):
   then set all five changes; the one `lost` is the choose-hides case
   (Flankenauswertung on Eingang 6 hidden after Kanalfunktion = Zeitschalter),
   which `params.py` never compares by design.
+- Continuation after the pause (2026-11-14/15, knx-sim.exe rebuilt from main
+  8cb853b6): `M-00E1_A-9003-30`, `A-E024-30` and `A-6026-30` captured (119,
+  118, 118 operations; same shape as the other L&J SEC rows). The first
+  `A-E024-30` run hung after `catalog_add` (no driver answer for 30 min) and
+  captured on the retry. The run stopped when ssh to the VM failed ("Error
+  reading SSH protocol banner"). The driver now also takes the lone online
+  catalogue row of an order number when OCR reads no version on it (L&J
+  `A9FX-SEC`, `J4FX-SEC`); those two jobs are still to rerun.
+- `vm.py install` uploads whatever `knx-sim.exe` the checkout it runs from
+  has built: from a checkout with an old build it downgrades the VM's sim
+  (the main checkout held a build of acda0c7f, without the BCU 2 region
+  merge). Install from the checkout that ran `winbuild-knx-sim.sh`.
