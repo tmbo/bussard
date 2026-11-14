@@ -926,3 +926,34 @@ of this session, #525):
 - `capture.py`: `row_options_of` keeps a capture's first row, so the options
   of a `run=flash` second row (#1127) no longer land on the first row when
   another product is captured.
+
+Results of VM session 7 (2026-11-14, ETS 6.4.1 build 6.4.8718, knx-sim.exe of
+main ae14db86, driver of this session, #525, #1049, #1065):
+
+- `syn-bcu2-0021` `reload`, `unload` and `unload-reload` (new on this
+  product): the download over a loaded BCU 2 and the one after ETS's unload
+  are request for request the fresh download (38 operations each; the
+  procedure's own Unload of LSM 1 to 3, then every allocation again). The
+  unload is 10 operations: connect, descriptor, `PID_MAX_APDU_LENGTH`, the
+  0115h read, Authorize, Unload of LSM 1 to 3, a read of 0060h, disconnect.
+  No restart and no Master Reset in any of them. Rows `expect=not-comparable`
+  (bussard refuses System 2); knx-sim's replay requires Unloaded after the
+  unload and Loaded after the others.
+- BCU 2 defaults sweep, continued: 23 more corpus applications captured
+  (0021: 17, 0025: 6), every one "Programmieren(Appl.): Abgeschlossen" with
+  the job's application id in each Segment Control Record and no Master
+  Reset; oracle rows `not-comparable`. `M-0001_A-9083` recaptured with the
+  right catalogue row (`0001908301`, 102 operations). Four jobs were skipped
+  by the driver: `M-00D1_A-F007-14` and `M-0001_A-980D-03` (the search finds
+  no row for the order number), `M-00E1_A-2021-30` and `M-00E1_A-9004-30`
+  (the search shows only an online row without a version).
+- Driver: `catalog_add` picks the row by application name when two rows of
+  one order number show the same version (#1157). The dropdown pick is
+  hardened for Hager 207E (#1049): window enumeration is retried when a
+  popup vanishes mid-way (`desktop_windows`, the InvalidWindowHandle in
+  `set_param`), and a list item outside the open list's view is scrolled
+  into view, else reached with Home/Down and Enter (`click_list_item`; "2
+  Lux" near the top of "Schaltschwelle" did not take). The 207E params run
+  then set all five changes; the one `lost` is the choose-hides case
+  (Flankenauswertung on Eingang 6 hidden after Kanalfunktion = Zeitschalter),
+  which `params.py` never compares by design.

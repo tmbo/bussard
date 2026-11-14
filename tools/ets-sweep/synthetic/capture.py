@@ -819,12 +819,14 @@ VARIANTS: dict[str, dict] = {
     "links": {"products": ("syn-minimal", "syn-secure"),
               "doc": "the switch object linked to two group addresses and the status object to one "
                      "(driver `link`), then the application download (#478, #540)"},
-    "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure", "syn-minimal", "syn-secure-fill"),
+    "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure", "syn-minimal", "syn-secure-fill",
+                           "syn-bcu2-0021"),
                "doc": "a defaults download, then the same application again over the loaded device; "
                       "the capture is the second download (#488; on syn-secure the second download runs over "
                       "the device the first one activated, with ETS's tool key, #1054; on syn-minimal and "
                       "syn-secure-fill over a programmed System B device, where ETS sends no factory reset, "
-                      "#1056, #1081)"},
+                      "#1056, #1081; on syn-bcu2-0021 over a loaded BCU 2, whether ETS sends a Master Reset "
+                      "or unloads first, #525)"},
     "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal", "syn-secure-fill"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
                          "over it; the capture is the second download (#488; on syn-secure-fill another "
@@ -860,7 +862,7 @@ VARIANTS: dict[str, dict] = {
     "apply": {"products": ("syn-minimal", "syn-secure", "syn-s7-0705", "syn-relseg-fill"),
               "doc": "the application with two links, then a third link added and ETS's partial download; the "
                      "capture is the partial download, compared with `bussard apply` (#829, #469, #779)"},
-    "unload": {"products": ("syn-minimal", "syn-s7-0705"),
+    "unload": {"products": ("syn-minimal", "syn-s7-0705", "syn-bcu2-0021"),
                "doc": "a defaults download, then ETS's \"Entladen\" of the application only; the capture is the "
                       "unload, the reference for what a later download finds (#1056). bussard has no unload "
                       "command, so the capture has no oracle row; knx-sim replays it",
@@ -873,11 +875,12 @@ VARIANTS: dict[str, dict] = {
                            "knx-sim does not answer yet: ETS ends \"Entladen(Alle): fehlgeschlagen\" and nothing is "
                            "committed (#1120). No oracle row, as `unload`",
                     "row": False, "sim": {"prog_mode": True}},
-    "unload-reload": {"products": ("syn-secure-fill", "syn-minimal"),
+    "unload-reload": {"products": ("syn-secure-fill", "syn-minimal", "syn-bcu2-0021"),
                       "doc": "a defaults download, ETS's \"Entladen\" of the application only, then the "
                              "application again; the capture is the last download, the first two its base: "
                              "whether ETS sends a factory reset (erase code 7) into an unloaded secure-capable "
-                             "device (#1081, #1056)"},
+                             "device (#1081, #1056); on syn-bcu2-0021 what a download finds after a BCU 2 "
+                             "unload (#525)"},
     "assign": {"products": ("syn-minimal", "syn-secure-fill"),
                "doc": "the individual address assigned to a device in programming mode (ETS's \"Physikalische "
                       "Adresse\" download; knx-sim starts the device at 15.15.255 with `prog_mode: true`), then "

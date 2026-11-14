@@ -109,7 +109,60 @@ fn plan_of(
 
 #[tokio::test]
 async fn test_parameters_only_of_a_property_only_program_writes_the_property() -> TestResult {
-    let app = app()?;
+    parameters_only_writes_the_property(
+        app()?,
+        &[
+            "unload",
+            "start",
+            "allocate",
+            "declare",
+            "write-prop",
+            "complete",
+            "restart",
+        ],
+    )
+    .await
+}
+
+/// The declared write of [`APP_XML`].
+const DECLARED_WRITE: &str = r#"<LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />"#;
+
+#[tokio::test]
+async fn test_parameters_only_of_a_property_only_program_writes_undeclared_inline_data()
+-> TestResult {
+    // Issue #1049, the `M-0009_A-E802-13-7620` object 9 shape: the write
+    // carries InlineData (the defaults) and comes before the declaration.
+    // The parameters are laid over the InlineData, so the parameter-only
+    // download plans and writes the changed "Level".
+    assert!(APP_XML.contains(DECLARED_WRITE));
+    let xml = APP_XML.replace(
+        DECLARED_WRITE,
+        r#"<LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" InlineData="0509" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />"#,
+    );
+    parameters_only_writes_the_property(
+        parse_application_program("M-00FA_A-0002", xml.as_bytes())?,
+        &[
+            "unload",
+            "start",
+            "allocate",
+            "describe",
+            "write-prop",
+            "declare",
+            "complete",
+            "restart",
+        ],
+    )
+    .await
+}
+
+/// Flashes `app` at its defaults into a mock device, then the
+/// parameter-only download of "Level" = 20, and checks the device holds it.
+async fn parameters_only_writes_the_property(
+    app: ApplicationProgram,
+    expected_shape: &[&str],
+) -> TestResult {
     let defaults = plan_of(&app, &BTreeMap::new())?;
     let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
     let plan = plan_of(&app, &overrides)?;
@@ -165,6 +218,7 @@ async fn test_parameters_only_of_a_property_only_program_writes_the_property() -
             FlashStep::StartLoading { .. } => "start",
             FlashStep::AllocateSegment { .. } => "allocate",
             FlashStep::DeclareProp { .. } => "declare",
+            FlashStep::DescribeProp { .. } => "describe",
             FlashStep::WriteProp { .. } => "write-prop",
             FlashStep::LoadCompleted { .. } => "complete",
             FlashStep::Restart => "restart",
@@ -172,20 +226,7 @@ async fn test_parameters_only_of_a_property_only_program_writes_the_property() -
             _ => "other",
         })
         .collect();
-    assert_eq!(
-        shape,
-        [
-            "unload",
-            "start",
-            "allocate",
-            "declare",
-            "write-prop",
-            "complete",
-            "restart"
-        ],
-        "{:?}",
-        partial.steps
-    );
+    assert_eq!(shape, expected_shape, "{:?}", partial.steps);
     assert!(partial.steps.iter().any(|s| matches!(
         s,
         FlashStep::WriteProp {
@@ -1202,5 +1243,44 @@ fn test_parameters_only_refuses_a_refilled_segment_it_does_not_rewrite_and_check
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_of_unreached_parameters_over_inline_data_has_nothing_to_write() -> TestResult
+{
+    // Issue #1049 with #1024: no declaration names object 10 PID 52 and no
+    // page reaches its parameters, so they keep the InlineData's octets.
+    // The write is then not the parameters' (`from_parameters` false) and
+    // the parameter-only download finds no parameter of the program to
+    // write, rather than counting a template as a parameter property.
+    assert!(APP_XML.contains(DECLARED_WRITE));
+    let xml = APP_XML
+        .replace(
+            DECLARED_WRITE,
+            r#"<LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" InlineData="0102" />"#,
+        )
+        .replace(r#"<ParameterRefRef RefId="M-00FA_A-0002_P-0_R-1" />"#, "")
+        .replace(r#"<ParameterRefRef RefId="M-00FA_A-0002_P-1_R-2" />"#, "");
+    let app = parse_application_program("M-00FA_A-0002", xml.as_bytes())?;
+    let plan = plan_of(&app, &BTreeMap::new())?;
+    let writes: Vec<(Vec<u8>, bool)> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::WriteProp {
+                prop_id: 52,
+                value,
+                from_parameters,
+                ..
+            } => Some((value.clone(), *from_parameters)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, vec![(vec![0x01, 0x02], false)]);
+    assert_eq!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::NoParameterSegment)
+    );
     Ok(())
 }
