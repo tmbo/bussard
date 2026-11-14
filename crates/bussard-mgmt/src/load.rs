@@ -1833,6 +1833,12 @@ impl McbEntry {
 /// the tool did not itself write (e.g. an object the procedure names but for
 /// which bussard streamed no segment); those entries are read but not
 /// CRC-checked, so the step still confirms the property is present.
+///
+/// Entries are numbered from 1. Element 0 of a property is its current
+/// number of elements, not an entry (Application Layer 03_03_07 §3.4.4.1,
+/// Application Interface Layer 03_04_01 §4.3.4.2), and ETS never reads it
+/// (issue #1128: 3691 `PID_MCB_TABLE` reads in 850 sweep captures, every
+/// one at index 1 or above), so a `start` of 0 reads from entry 1.
 pub async fn read_mcb_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
@@ -1840,6 +1846,7 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     count: u8,
     expected: Option<&[u8]>,
 ) -> Result<Vec<McbEntry>> {
+    let start = start.max(1);
     let address = l4.target();
     // One element per request, exactly as ETS reads a multi-entry MCB table
     // (`LdCtrlLoadImageProp Count="6"` on the Jung 3361-1MWW capture goes out as
@@ -1916,6 +1923,81 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     Ok(entries)
 }
 
+/// The most `PID_MCB_TABLE` entries [`read_mcb_entries_for`] reads: the
+/// largest table a sweep capture reads is 11 entries (issue #1128).
+pub const MAX_MCB_ENTRIES: u16 = 16;
+
+/// Reads the `PID_MCB_TABLE` entries of `object_index` that describe the
+/// first `len` octets of its segment, for a comparison with an image of that
+/// length (the resident-image check before a download, issue #1128).
+///
+/// Reads entry 1, then 2 and so on, one `count=1` read each (the form ETS
+/// uses, see [`read_mcb_table`]), until the entries' sizes add up to `len`
+/// or more, an entry has size 0, the device answers no entry at that index
+/// (count 0: the table has no more entries), or [`MAX_MCB_ENTRIES`] were
+/// read. Element 0, the number of entries, is never read: ETS never reads
+/// it. The entries are returned as read; [`mcb_entries_match`] decides.
+///
+/// # Errors
+///
+/// A transport failure or a malformed response. A device that answers no
+/// entry 1 returns an empty list, not an error.
+pub async fn read_mcb_entries_for<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    len: usize,
+) -> Result<Vec<McbEntry>> {
+    let mut entries = Vec::new();
+    let mut covered = 0usize;
+    for element in 1..=MAX_MCB_ENTRIES {
+        let resp = property_request(l4, object_index, PID_MCB_TABLE, element, 1).await?;
+        let Some(entry) = (resp.count > 0)
+            .then(|| McbEntry::decode(&resp.data))
+            .flatten()
+        else {
+            break;
+        };
+        entries.push(entry);
+        covered = covered.saturating_add(entry.segment_size as usize);
+        if entry.segment_size == 0 || covered >= len {
+            break;
+        }
+    }
+    Ok(entries)
+}
+
+/// Whether `entries` (read by [`read_mcb_entries_for`]) describe exactly
+/// `image`: at least one entry, their sizes add up to the image length, each
+/// entry's CRC equals [`crc16_ccitt`] over its slice of the image in order,
+/// and no entry has CRC control bit 0 set.
+///
+/// The CRC is calculated on the transition to `Loaded` (Resources 03_05_01
+/// §4.2.27.1.2); bit 0 of the CRC control byte says the protected memory
+/// may change after the load (§4.2.27.1.1), so such a CRC is no evidence of
+/// what the segment holds now.
+pub fn mcb_entries_match(image: &[u8], entries: &[McbEntry]) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+    let mut offset = 0usize;
+    for entry in entries {
+        if entry.crc_control & 0x01 != 0 {
+            return false;
+        }
+        let Some(end) = offset
+            .checked_add(entry.segment_size as usize)
+            .filter(|end| *end <= image.len())
+        else {
+            return false;
+        };
+        if entry.crc16 != crc16_ccitt(&image[offset..end]) {
+            return false;
+        }
+        offset = end;
+    }
+    offset == image.len()
+}
+
 // Tables are written the way ETS writes them: allocate the segment, stream
 // the image with memory writes at the negotiated chunk, complete the load. A
 // `PID_TABLE` property-array writer (fixed 8-octet chunks) existed here and had
@@ -1983,6 +2065,49 @@ pub fn is_connection_death(err: &WriteError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry_over(bytes: &[u8], crc_control: u8) -> McbEntry {
+        McbEntry {
+            segment_size: bytes.len() as u32,
+            crc_control,
+            access: 0x33,
+            crc16: crc16_ccitt(bytes),
+        }
+    }
+
+    #[test]
+    fn test_mcb_entries_match_one_entry_over_the_image() {
+        let image = [1u8, 2, 3, 4, 5, 6];
+        assert!(mcb_entries_match(&image, &[entry_over(&image, 0)]));
+        assert!(!mcb_entries_match(&image, &[]));
+        // Another image of the same length.
+        assert!(!mcb_entries_match(
+            &image,
+            &[entry_over(&[1, 2, 3, 4, 5, 7], 0)]
+        ));
+        // The same CRC control byte with bit 0 set: the CRC is no evidence.
+        assert!(!mcb_entries_match(&image, &[entry_over(&image, 1)]));
+        // A shorter or longer segment.
+        assert!(!mcb_entries_match(&image, &[entry_over(&image[..5], 0)]));
+        assert!(!mcb_entries_match(&image[..5], &[entry_over(&image, 0)]));
+    }
+
+    #[test]
+    fn test_mcb_entries_match_compares_entry_by_entry() {
+        let image = [9u8, 8, 7, 6, 5, 4, 3, 2];
+        let split = [entry_over(&image[..6], 0), entry_over(&image[6..], 0)];
+        assert!(mcb_entries_match(&image, &split));
+        // The first entry alone covers part of the image only.
+        assert!(!mcb_entries_match(&image, &split[..1]));
+        // The second entry's CRC over another tail.
+        let wrong_tail = [entry_over(&image[..6], 0), entry_over(&[0, 0], 0)];
+        assert!(!mcb_entries_match(&image, &wrong_tail));
+        // One entry over the whole image is not two entries' table.
+        assert!(!mcb_entries_match(
+            &image,
+            &[entry_over(&image, 0), entry_over(&image[6..], 0)]
+        ));
+    }
 
     #[test]
     fn load_state_round_trips_octets() -> std::result::Result<(), Box<dyn std::error::Error>> {

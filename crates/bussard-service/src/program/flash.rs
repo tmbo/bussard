@@ -460,8 +460,9 @@ pub async fn execute(
     }
     if exec.differential {
         observer.event(Event::Note(Note::Warn(
-            "differential download: objects whose resident image already matches are skipped \
-             (pass --full to re-stream everything)"
+            "differential download: the group-object table is kept when its MCB entries match \
+             the image, as ETS keeps it; every other object is reloaded (pass --full to reload \
+             everything)"
                 .to_string(),
         )));
     }

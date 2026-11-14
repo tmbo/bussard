@@ -529,6 +529,19 @@ impl PropertyPlan {
 impl Report for PropertyPlan {
     const SCHEMA: u32 = 2;
 
+    /// The chat path does not write a property-only procedure (issue
+    /// #1071): the plan has no digest, and `bussard flash` writes it.
+    fn next_step(&self) -> Option<String> {
+        (!self.noop).then(|| {
+            format!(
+                "this plan has no plan_digest: the chat path does not write a property-only \
+                 procedure. Tell the human that `bussard flash {}` on the command line writes it \
+                 and reads every property back.",
+                self.address
+            )
+        })
+    }
+
     fn summary(&self, model: &Model) -> Option<String> {
         let device = self
             .address

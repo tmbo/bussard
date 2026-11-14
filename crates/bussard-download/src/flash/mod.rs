@@ -965,6 +965,26 @@ pub enum PlanError {
     #[error("application program {0:?} declares no mask version; cannot check compatibility")]
     MissingAppMask(String),
 
+    /// A complete download of a System B application whose load procedure
+    /// only writes interface-object properties: no master reset, no segment
+    /// allocation, no table load (issue #1071). bussard runs that shape only
+    /// on mask 0021 (issue #390) and refuses it on every other mask rather
+    /// than guess what the device's load state machines need.
+    #[error(
+        "the load procedure of {app} only writes interface-object properties (no master reset, \
+         no segment allocation, no table load); bussard downloads that shape only to a \
+         property-only device of mask 0021, not to {device:?} (mask {device_mask:04X}). Use ETS \
+         for this device"
+    )]
+    PropertyOnlyShape {
+        /// The application.
+        app: String,
+        /// The device's individual address.
+        device: String,
+        /// The mask the device reports.
+        device_mask: u16,
+    },
+
     /// The application has no load procedure to execute.
     #[error("application program {0:?} has no load procedures")]
     NoProcedure(String),
@@ -1793,8 +1813,17 @@ impl FlashPlan {
 
     /// Whether this plan only reads and writes interface-object properties
     /// (issue #390): a property-only procedure (the IPS 300 SREG, mask
-    /// 0021), executed by its own small executor.
+    /// 0021), executed by its own small executor. The mask decides, not only
+    /// the shape of the steps (issue #1071): on any other mask a plan of this
+    /// shape is refused by the planner ([`PlanError::PropertyOnlyShape`]).
     pub fn is_property_only(&self) -> bool {
+        self.device_mask == plan_props::PROPERTY_ONLY_MASK && self.has_property_only_steps()
+    }
+
+    /// Whether every step reads or writes an interface-object property (or
+    /// restarts), at least one of them a property step: the shape of a
+    /// property-only procedure, whatever the mask.
+    pub(crate) fn has_property_only_steps(&self) -> bool {
         self.sys7.is_none()
             && !self.steps.is_empty()
             && self.steps.iter().all(|s| {
@@ -2087,22 +2116,24 @@ pub struct FlashOptions {
     /// Skip re-downloading an object whose resident image already matches
     /// (issue #73 item 2 — the MCB-CRC re-download skip).
     ///
-    /// ETS's group-B re-download captures streamed ZERO body bytes: before
-    /// touching an object, ETS read its `PID_MCB_TABLE` (PID 27), saw the
-    /// resident image's size and CRC already matched the image it was about to
-    /// stream, and skipped the object's whole re-load (an app-unload flips load
-    /// state without erasing flash, so the resident image is intact). When this
-    /// is `true`, bussard does the same: a pre-pass reads each to-be-written
-    /// object's resident MCB and, on a size+CRC match, skips that object's
+    /// In a download onto a device that already holds the same application,
+    /// ETS reads `PID_MCB_TABLE` of the group-object table (object 3) and the
+    /// application object before the first unload and leaves the group-object
+    /// table alone when it matches, while objects 4, 2 and 1 are reloaded
+    /// (house captures `1-1-5-no-secure-ga`, `secure-1-1-47`, `secure-1-1-48`,
+    /// `taster-1-1-12-unsecure-0-0-6`, issue #1127). Where the product
+    /// declares no MCB check it reads none and reloads every object. When this
+    /// is `true`, bussard does the same: it reads the group-object table's MCB
+    /// entries from entry 1 (issue #1128) and, when they describe the image
+    /// and the object is `Loaded`, leaves out its
     /// `Unload`/`StartLoading`/`AllocateSegment`/`WriteRelMem`/`LoadCompleted`
-    /// steps — leaving the intact resident load untouched — while still running
-    /// its `LoadImageProp` MCB re-verify.
+    /// while still running its `LoadImageProp` check. The application object
+    /// and the address and association tables are always reloaded.
     ///
-    /// It NEVER skips a genuinely-needed write: a fresh/blank device (no MCB
-    /// entry), any object whose resident size or CRC differs, and any object that
-    /// does not currently report `Loaded` full-streams exactly as before. When `false` (the conservative default, and every
-    /// path validated byte-for-byte against DA.tp, which was a fresh flash whose
-    /// blank device never matches) every object is always full-streamed.
+    /// It never keeps an object that needs the write: a fresh device (no MCB
+    /// entry), a differing entry, a CRC control bit 0, a state other than
+    /// `Loaded` or a refused read reloads it, and a failure after the keep
+    /// runs the download again in full. When `false` every object is reloaded.
     pub skip_matching_mcb: bool,
 }
 

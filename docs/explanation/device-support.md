@@ -39,7 +39,11 @@ only when its load procedure holds property compares and writes alone. It loads 
 factory-resets the interface, and ends with a read-back of every property it
 wrote. Every other System 1 and System 2 download (BCU1, BCU2: memory
 allocation and table writes) is refused before anything is written; program
-those devices with ETS.
+those devices with ETS. The shape decides only on `0021`: a System B
+application whose complete load procedure writes properties alone (no master
+reset, no segment allocation, no table load) is refused on every other mask,
+naming the shape, rather than run as a property-only device. The assistant
+shows a property-only plan but does not write it; `bussard flash` does.
 
 - **`flash`** supports System B (`07B0`, and the `57B0` / `27B0` KNX-IP and
   RF variants), System 7 (`0705` / `0701` / `0700`) and the property-only
@@ -218,52 +222,51 @@ Mask `0701` has no proven device yet, so its applications stay unknown
 however their sweep reads.
 
 <!-- supported-table:start -->
-Sweep manifest of 2026-11-10, coverage floor 95.0 %.
+Sweep manifest of 2026-11-14, coverage floor 95.0 %.
 
 | Family (mask) | Proven | Likely | Identical, no proven device | Known problems | Synthetic products |
 |---|---|---|---|---|---|
-| `0701` | 0 | 0 | 364 | 29 | 5 |
-| `0705` | 1 | 275 | 0 | 9 | 8 |
-| `07B0` | 3 | 766 | 0 | 45 | 38 |
-| all | 4 | 1040 | 364 | 83 | 51 |
+| `0701` | 0 | 0 | 366 | 27 | 5 |
+| `0705` | 1 | 276 | 0 | 8 | 8 |
+| `07B0` | 3 | 797 | 0 | 21 | 38 |
+| all | 4 | 1072 | 366 | 56 | 51 |
 
 | Manufacturer | Proven | Likely | Known problems |
 |---|---|---|---|
 | `M-0001` | 0 | 37 | 0 |
-| `M-0002` | 1 | 63 | 1 |
-| `M-0004` | 2 | 69 | 8 |
+| `M-0002` | 1 | 63 | 0 |
+| `M-0004` | 2 | 71 | 6 |
 | `M-0006` | 0 | 6 | 0 |
 | `M-0007` | 0 | 34 | 0 |
-| `M-0008` | 0 | 52 | 3 |
+| `M-0008` | 0 | 53 | 3 |
 | `M-0009` | 0 | 35 | 31 |
 | `M-000C` | 0 | 3 | 0 |
 | `M-0048` | 0 | 82 | 2 |
-| `M-0064` | 0 | 11 | 0 |
-| `M-0071` | 0 | 238 | 8 |
+| `M-0064` | 0 | 12 | 0 |
+| `M-0071` | 0 | 244 | 4 |
 | `M-0072` | 0 | 1 | 0 |
 | `M-0076` | 0 | 2 | 1 |
 | `M-0077` | 0 | 2 | 0 |
-| `M-007C` | 0 | 0 | 6 |
+| `M-007C` | 0 | 8 | 0 |
 | `M-0080` | 0 | 5 | 0 |
 | `M-0083` | 0 | 145 | 1 |
 | `M-0085` | 0 | 22 | 0 |
 | `M-0087` | 0 | 1 | 0 |
 | `M-008B` | 0 | 1 | 0 |
 | `M-008E` | 0 | 12 | 0 |
-| `M-009A` | 0 | 15 | 0 |
+| `M-009A` | 0 | 16 | 0 |
 | `M-00A6` | 0 | 6 | 1 |
 | `M-00B0` | 0 | 1 | 0 |
 | `M-00B6` | 0 | 49 | 1 |
 | `M-00C5` | 0 | 28 | 0 |
-| `M-00C8` | 0 | 16 | 7 |
+| `M-00C8` | 0 | 17 | 6 |
 | `M-00C9` | 0 | 32 | 0 |
-| `M-00E1` | 0 | 0 | 1 |
 | `M-00E8` | 0 | 5 | 0 |
-| `M-00EF` | 0 | 10 | 11 |
+| `M-00EF` | 0 | 21 | 0 |
 | `M-00FC` | 0 | 12 | 0 |
 | `M-00FD` | 0 | 11 | 0 |
 | `M-0112` | 1 | 0 | 0 |
-| `M-011E` | 0 | 15 | 1 |
+| `M-011E` | 0 | 16 | 0 |
 | `M-011F` | 0 | 6 | 0 |
 | `M-0151` | 0 | 2 | 0 |
 | `M-0159` | 0 | 1 | 0 |
