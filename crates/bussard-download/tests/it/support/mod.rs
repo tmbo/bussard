@@ -34,3 +34,42 @@ pub fn plan_flash_default(
         &bussard_product::dynamic::DynamicMemo::new(app),
     )
 }
+
+/// The synthetic product `name` from `tests-support/synthetic-products/`,
+/// its committed XML zipped with the stub master and read back; the
+/// directory holding the zip goes with it.
+pub fn synthetic_product(
+    name: &str,
+) -> bussard_testkit::TestResult<(bussard_product::ProductData, tempfile::TempDir)> {
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join(format!("{name}.knxprod"));
+    crate::builtin_template::zip_synthetic(name, &path).map_err(|e| e.to_string())?;
+    Ok((bussard_product::read_knxprod(&path)?, tmp))
+}
+
+/// The full download of the 07B0 `app` of `product` for 1.1.1 under
+/// `overrides`, spliced into the built-in 07B0 template the stub master
+/// leaves bussard with, with the table images of no model.
+pub fn plan_synthetic_07b0(
+    product: &bussard_product::ProductData,
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+) -> bussard_testkit::TestResult<FlashPlan> {
+    let template = bussard_download::template_ops_for(product, app).ok_or("a template for 07B0")?;
+    let tables = bussard_download::build_table_images(
+        None,
+        "1.1.1".parse()?,
+        app,
+        overrides,
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
+        app,
+        "1.1.1",
+        0x07B0,
+        overrides,
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?)
+}

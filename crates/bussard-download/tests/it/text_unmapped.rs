@@ -9,10 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{
-    FlashOptions, FlashPlan, FlashStep, ImageKind, Session, build_table_images, flash,
-    template_ops_for,
-};
+use bussard_download::{FlashOptions, FlashPlan, FlashStep, ImageKind, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_testkit::consts::{
     OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
@@ -21,8 +18,7 @@ use bussard_testkit::consts::{
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
-use crate::builtin_template::zip_synthetic;
-use crate::support::plan_flash_default;
+use crate::support::{plan_synthetic_07b0, synthetic_product};
 
 /// Where the mock places object 4's segment.
 const BASE: u32 = 0x6000;
@@ -32,30 +28,9 @@ const TEXT: &[u8; 14] = b"Temp ?\0\0\0\0\0\0\0\0";
 
 /// The plan of `syn-text-unmapped` at its defaults.
 fn plan() -> TestResult<FlashPlan> {
-    let tmp = tempfile::tempdir()?;
-    let path = tmp.path().join("syn-text-unmapped.knxprod");
-    zip_synthetic("syn-text-unmapped", &path).map_err(|e| e.to_string())?;
-    let product = bussard_product::read_knxprod(&path)?;
+    let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
     let app = product.applications.first().ok_or("one application")?;
-    let template = template_ops_for(&product, app).ok_or("a template for 07B0")?;
-    let overrides = BTreeMap::new();
-    let tables = build_table_images(
-        None,
-        "1.1.1".parse()?,
-        app,
-        &overrides,
-        &bussard_product::dynamic::DynamicMemo::new(app),
-    );
-    plan_flash_default(
-        app,
-        "1.1.1",
-        0x07B0,
-        &overrides,
-        &BTreeMap::new(),
-        Some(&template),
-        &tables,
-    )
-    .map_err(|e| e.to_string().into())
+    plan_synthetic_07b0(&product, app, &BTreeMap::new())
 }
 
 /// The parameter image the plan writes to object 4.
