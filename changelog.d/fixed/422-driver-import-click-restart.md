@@ -1,1 +1,0 @@
-- ETS sweep driver: the Import click lands inside the word wherever OCR puts it in the line, and a driver restart on upload spawns its replacement before shutting down, so an upload no longer leaves the VM without a driver (#422, #932).

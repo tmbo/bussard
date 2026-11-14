@@ -1,1 +1,0 @@
-- ETS sweep: each catalog row carries its manufacturer group header, and every result records whether the added row's header names the product file's manufacturer (`catalog_manufacturer`), for the analysis of ETS's manufacturer refusals (#881).
