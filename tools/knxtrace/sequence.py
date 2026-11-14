@@ -137,12 +137,23 @@ def abs_segments(records: List[Dict[str, object]]) -> List[Tuple[int, int, str]]
     return out
 
 
-def memory_target(addr: int, segments: List[Tuple[int, int, str]]) -> str:
-    """The target label of a memory address (see the module doc)."""
+def memory_target(addr: int, segments: List[Tuple[int, int, str]], length: int = 1) -> str:
+    """The target label of a memory access of `length` octets at `addr` (see
+    the module doc): the smallest segment that holds all of it, else the
+    first that holds its start. Segments can overlap: knx-sim places a
+    System B table at its fixed base whatever the size of the object before
+    it, so a 9974-octet object 3 at 0x8000 holds object 1's 2 octets at
+    0xA000, and both tools write them there after object 3 (issue #1125)."""
+    inner: Optional[Tuple[int, str]] = None
+    first: Optional[str] = None
     for start, end, label in segments:
         if start <= addr < end:
-            return label
-    return "mem 0x%04X" % (addr & ~0xFF)
+            first = first or label
+            if addr + max(length, 1) <= end and (inner is None or end - start < inner[0]):
+                inner = (end - start, label)
+    if inner is not None:
+        return inner[1]
+    return first or "mem 0x%04X" % (addr & ~0xFF)
 
 
 def _single(ops: DeviceOps, op) -> DeviceOps:
@@ -191,7 +202,7 @@ def operations(ops: DeviceOps) -> List[Dict[str, object]]:
             if mw:
                 addr, data = mw[0]
                 entry = {"op": "mem-write", "address": addr, "length": len(data),
-                         "target": memory_target(addr, segs)}
+                         "target": memory_target(addr, segs, len(data))}
             elif op.kind == KIND_RESTART and apdu is not None and apdu.name == "A_Restart":
                 entry = {"op": "restart", "type": apdu.fields.get("type", "basic")}
                 if apdu.fields.get("erase_code") is not None:
