@@ -135,7 +135,13 @@ impl TextCodec {
         match self {
             TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Unknown => None,
             TextCodec::Latin1 => u8::try_from(code).ok(),
-            TextCodec::Undeclared => u8::try_from(code).ok().filter(|b| undeclared_octet(*b)),
+            // ETS's encoder replaces a character no candidate holds with `?`
+            // (issue #1065).
+            TextCodec::Undeclared => match u8::try_from(code).ok().filter(|b| undeclared_octet(*b))
+            {
+                Some(b) => Some(b),
+                None => in_no_candidate(c).then_some(b'?'),
+            },
             TextCodec::Latin9 => {
                 if let Some((b, _)) = LATIN9.iter().find(|(_, ch)| *ch == c) {
                     return Some(*b);
@@ -187,12 +193,6 @@ impl TextCodec {
             _ => {
                 let mut out = Vec::with_capacity(len);
                 for c in text.chars() {
-                    // ETS's encoder replaces a character no candidate holds
-                    // with `?` (issue #1065).
-                    if self == TextCodec::Undeclared && in_no_candidate(c) {
-                        out.push(b'?');
-                        continue;
-                    }
                     let Some(b) = self.octet(c) else {
                         return Err(match self {
                             TextCodec::Undeclared => format!(
@@ -242,6 +242,21 @@ impl TextCodec {
                 .map(|b| self.char_of(*b).unwrap_or('\u{FFFD}'))
                 .collect(),
         }
+    }
+
+    /// The characters of `text` this code page writes as `?` because it
+    /// has no octet for them (issue #1065), in order, once each. A value
+    /// holding one is lossy: it reads back with `?` in their place.
+    pub fn substituted(self, text: &str) -> Vec<char> {
+        let mut out: Vec<char> = Vec::new();
+        if self == TextCodec::Undeclared {
+            for c in text.chars().filter(|c| in_no_candidate(*c)) {
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+        out
     }
 
     /// The code page's name in messages.
@@ -421,6 +436,12 @@ mod tests {
         // A declared code page keeps refusing it: no capture shows ETS there.
         assert!(TextCodec::Latin1.encode("℃", 3).is_err());
         assert!(TextCodec::Latin9.encode("℃", 3).is_err());
+        assert_eq!(
+            TextCodec::Undeclared.substituted("Küche ✓ ✓ ℃"),
+            vec!['✓', '℃']
+        );
+        assert!(TextCodec::Undeclared.substituted("Küche").is_empty());
+        assert!(TextCodec::Latin1.substituted("✓").is_empty());
         Ok(())
     }
 

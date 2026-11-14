@@ -1366,6 +1366,27 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
     };
     let ignored = analysis.ignored_overrides();
     let assigned = analysis.assigned_overrides();
+    // A stored text value the code page cannot hold in full is written with
+    // `?` (issue #1065, W051): named here so the flash is never silent.
+    let lossy: Vec<String> = model
+        .devices
+        .get(&target)
+        .zip(products.get(app))
+        .map(|(loaded, product)| {
+            loaded
+                .device
+                .parameters
+                .iter()
+                .filter_map(|(key, value)| {
+                    let def = product
+                        .parameters
+                        .get(&bussard_model::param_model::key_to_param_id(key)?)?;
+                    let why = bussard_model::validate::text_substitution(&def.kind, value)?;
+                    Some(format!("`{key}`: {why}"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     ignored
         .iter()
         .map(bussard_model::device_view::IgnoredOverride::sentence)
@@ -1374,6 +1395,7 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
                 .iter()
                 .map(bussard_model::device_view::AssignedOverride::sentence),
         )
+        .chain(lossy)
         .collect()
 }
 

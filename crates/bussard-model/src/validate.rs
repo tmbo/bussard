@@ -241,6 +241,8 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 ///   (the importer omits these, but a hand edit can reintroduce one).
 /// * **W050** — a reached `<Assign>` replaces a stored value with another
 ///   (issue #1070): the download writes the assigned value, as ETS does.
+/// * **W051** — a text value holds characters the program's code page has no
+///   octet for, which the download writes as `?` (issue #1065).
 fn check_parameters(
     model: &Model,
     models: &ProductModels,
@@ -325,6 +327,14 @@ fn check_parameters(
                 ));
                 continue;
             }
+            if let Some(reason) = text_substitution(&def.kind, value) {
+                diags.push(Diagnostic::new(
+                    "W051",
+                    Severity::Warning,
+                    loc.clone(),
+                    reason,
+                ));
+            }
 
             let vendor_default = crate::param_model::key_to_model_ref(key)
                 .and_then(|r| product_model.ref_default(&r))
@@ -374,6 +384,30 @@ fn check_parameters(
 /// Checks a parameter value against its definition, returning the reason it is
 /// unacceptable, or `None` when it is fine.
 ///
+/// Why a text value is lossy, or `None`: the characters of `value` that the
+/// parameter's code page writes as `?` (issue #1065, W051), named once each.
+/// Two values that differ only in such characters are the same device
+/// content.
+pub fn text_substitution(kind: &ParamKind, value: &str) -> Option<String> {
+    let ParamKind::Text { encoding, .. } = kind else {
+        return None;
+    };
+    let chars =
+        crate::text_codec::TextCodec::from_declaration(encoding.as_deref()).substituted(value);
+    if chars.is_empty() {
+        return None;
+    }
+    let list = chars
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "text {value:?} holds {list}, which no code page the program may use has: the download \
+         writes `?` for each, as ETS does, and the device reads back with `?`"
+    ))
+}
+
 /// The public face of the `E017` rule, so a caller that wants to reject a bad
 /// value *before* writing it (the MCP `knx_set_parameter` tool) uses exactly the
 /// same check the validator applies afterwards.
@@ -1608,6 +1642,21 @@ mod tests {
         let unknown = parameter_value_error(&kind(Some("shift_jis")), "Scènario");
         assert!(unknown.is_some_and(|e| e.contains("#401")));
         assert_eq!(parameter_value_error(&kind(None), "Scene"), None);
+    }
+
+    /// Issue #1065: a character no candidate code page holds is written as
+    /// `?`; the value is accepted (no E017) and named lossy (W051).
+    #[test]
+    fn test_text_substitution_names_the_replaced_characters() {
+        let kind = |encoding: Option<&str>| ParamKind::Text {
+            len: Some(8),
+            encoding: encoding.map(str::to_string),
+        };
+        assert_eq!(parameter_value_error(&kind(None), "Küche ✓"), None);
+        let w = text_substitution(&kind(None), "Küche ✓").unwrap_or_default();
+        assert!(w.contains("`✓`") && w.contains("`?`"), "{w}");
+        assert_eq!(text_substitution(&kind(None), "Küche"), None);
+        assert_eq!(text_substitution(&kind(Some("utf-8")), "Küche ✓"), None);
     }
 
     /// Issue #616: a colour parameter takes `#` and two hex digits per
