@@ -3255,6 +3255,18 @@ class TestStateDiff(unittest.TestCase):
         r = self.run_cli("--base", base, "--ets", ours, "--bussard", ets)
         self.assertEqual(r["properties"]["bussard_only_step"], ["obj9 PID 208 [1]", "obj9 PID 208 [2]"])
 
+    def test_props_text_counts_a_property_written_by_one_side_only(self):
+        # Issue #1073 review: the oracle summary line shows the elements of a
+        # property one side left out, not only bussard-only, ets-only, value.
+        base = self.capture([], props=[(9, 208, 2, 1, b"\x8e\x05")])
+        ets = self.capture([], [self.START, self.DONE], props=[(9, 208, 2, 1, b"\x8e\x05")])
+        ours = self.capture([], [self.START, self.DONE], props=[(10, 55, 1, 1, b"\x01")])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(
+            memimage.props_text(r["properties"]),
+            "  props=differs(bussard-only 0, ets-only 0, value 0, written by ETS only 2, by bussard only 1)")
+        self.assertEqual(memimage.props_text({"verdict": memimage.IDENTICAL, "matched": [1, 2]}), "  props=ok(2)")
+
     def test_statediff_property_value_differs_keeps_the_memory_headline(self):
         base = self.capture([(0x4000, b"\x02")], props=[(10, 55, 2, 1, b"\x00\x14")])
         ets = self.capture([(0x4000, b"\x03")], props=[(10, 55, 1, 2, b"\x15")])

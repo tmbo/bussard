@@ -332,6 +332,21 @@ async fn stale_reason<Ch: L4Channel>(
     if record.objects.is_empty() {
         return Some("no interface objects recorded".to_string());
     }
+    // A table of exactly 16 objects may be one an earlier walk cut at its old
+    // bound (issue #1073): one probe of the next index says whether the
+    // device has more, and a table it outgrew is read again.
+    if record.objects.len() == usize::from(bussard_mgmt::LEGACY_WALK_BOUND)
+        && bussard_mgmt::probe_walk_index(l4, bussard_mgmt::LEGACY_WALK_BOUND)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return Some(format!(
+            "an object follows the {} recorded (a walk before issue #1073 stopped there)",
+            bussard_mgmt::LEGACY_WALK_BOUND
+        ));
+    }
     let index = record.application_object?;
     let now = application_id(l4, index).await;
     (now != record.application_id).then(|| {

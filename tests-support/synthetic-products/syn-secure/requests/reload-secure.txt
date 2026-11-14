@@ -67,13 +67,6 @@ authorize Authorize_Request key=FFFFFFFF(free-access) secured=tool
 prop-read obj4/PID_1 count=1 index=1 secured=tool
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1 secured=tool
 descriptor type0 type=0 secured=tool
-prop-read obj0/PID_1 count=1 index=1 secured=tool
-prop-read obj1/PID_1 count=1 index=1 secured=tool
-prop-read obj2/PID_1 count=1 index=1 secured=tool
-prop-read obj3/PID_1 count=1 index=1 secured=tool
-prop-read obj4/PID_1 count=1 index=1 secured=tool
-prop-read obj5/PID_1 count=1 index=1 secured=tool
-prop-read obj6/PID_1 count=1 index=1 secured=tool
 prop-read obj1/PID_23 count=1 index=0 secured=tool
 prop-read obj1/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 mem-read 0xa000 addr_int=40960 count=2 secured=tool
@@ -86,13 +79,6 @@ mem-read 0xc002 addr_int=49154 count=4 secured=tool
 prop-read obj3/PID_23 count=1 index=0 secured=tool
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 mem-read 0x8000 addr_int=32768 count=2 secured=tool
-prop-read obj0/PID_1 count=1 index=1 secured=tool
-prop-read obj1/PID_1 count=1 index=1 secured=tool
-prop-read obj2/PID_1 count=1 index=1 secured=tool
-prop-read obj3/PID_1 count=1 index=1 secured=tool
-prop-read obj4/PID_1 count=1 index=1 secured=tool
-prop-read obj5/PID_1 count=1 index=1 secured=tool
-prop-read obj6/PID_1 count=1 index=1 secured=tool
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 mem-read 0x6000 addr_int=24576 count=50 secured=tool
 mem-read 0x6032 addr_int=24626 count=50 secured=tool

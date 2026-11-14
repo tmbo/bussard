@@ -1,0 +1,116 @@
+# A synthetic product of the catalogue (#1073): syn-minimal with a seeded
+# memory control block. Rendered by ../generate.py into xml/; see
+# ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with the Jung/ABB 07B0 seed of the memory control block: MergeId 4
+writes object 4's PID_MCB_TABLE (PID 27) with the segment size, CRC control
+byte 0 and access 0x33 by LdCtrlWriteProp, padded to 10 octets as the vendor
+data is, and object 4's PID_PEI_TYPE (PID 16) with FF, before the segment
+write. The device calculates the entry's CRC on the transition to Loaded
+(KNX 3/5/1 4.2.27.1.2) and keeps the PEI type it measures (4.2.16), so the
+read-back after a flash compares the size, control and access octets of the
+entry and not the PEI type (#1073)."""
+construct = "LdCtrlWriteProp seeding PID_MCB_TABLE and PID_PEI_TYPE"
+issues = [1073]
+
+[product]
+text = "Nest-side seed switch"
+order_number = "NEST-SEED"
+hardware_name = "NEST-SEED"
+hardware_serial = "00FA002A0027"
+bus_current = 10
+
+[application]
+number = 0x2A27
+version = 0x10
+name = "Nest-side seed switch"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Nestsaatschalter" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [
+    { op = "LdCtrlWriteProp", object = 4, prop_id = 27, verify = false, inline_data = "00000100003300000000" },
+    { op = "LdCtrlWriteProp", object = 4, prop_id = 16, verify = false, inline_data = "FF" },
+    { op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false },
+]

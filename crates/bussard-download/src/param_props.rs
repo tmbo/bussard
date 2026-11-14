@@ -41,13 +41,20 @@ pub struct ParamProperty {
     /// like a parameter property, but a difference in it alone is no
     /// parameter change ([`changed_parameter_properties`]).
     pub fixed: bool,
+    /// The octets a read-back compares (`0xFF`) and the ones the device
+    /// computes itself (`0x00`, the CRC of a `PID_MCB_TABLE` entry), as
+    /// [`FlashStep::written_range`] gives them; `None` compares every octet.
+    pub mask: Option<Vec<u8>>,
 }
 
 impl ParamProperty {
     /// Whether the device does not hold the model's value: it differs, or it
     /// could not be read (a value bussard cannot confirm is written).
     pub fn differs(&self) -> bool {
-        self.device.as_deref() != Some(self.model.as_slice())
+        !self
+            .device
+            .as_deref()
+            .is_some_and(|device| masked_equal(&self.model, device, self.mask.as_deref()))
     }
 
     /// `object 4 PID 201`.
@@ -130,6 +137,7 @@ impl FlashPlan {
                 device: None,
                 parameters: Vec::new(),
                 fixed: false,
+                mask: None,
             };
             if !out.iter().any(|p| {
                 (p.object, p.prop_id, p.start_element)
@@ -158,6 +166,81 @@ pub struct PropertyRange {
     pub value: Vec<u8>,
     /// No parameter composes the write ([`ParamProperty::fixed`]).
     pub fixed: bool,
+    /// The octets a read-back compares ([`ParamProperty::mask`]); `None`
+    /// compares every octet.
+    pub mask: Option<Vec<u8>>,
+}
+
+/// Whether `actual` holds `expected` on the octets `mask` compares (`0x00`
+/// ignores a position, a missing mask octet compares it); the lengths must
+/// agree.
+pub fn masked_equal(expected: &[u8], actual: &[u8], mask: Option<&[u8]>) -> bool {
+    actual.len() == expected.len()
+        && expected.iter().zip(actual).enumerate().all(|(i, (e, a))| {
+            let m = mask.and_then(|m| m.get(i)).copied().unwrap_or(0xFF);
+            (e & m) == (a & m)
+        })
+}
+
+/// `PID_PEI_TYPE` (16): the device keeps "the currently connected PEI type"
+/// in it and updates it itself (KNX 3/5/1 §4.2.16), so what a procedure
+/// writes there (`FF` on object 4 of 414 corpus 07B0 programs) is no value a
+/// read-back can expect.
+const PID_PEI_TYPE: u32 = 16;
+
+/// The mask of one `PID_MCB_TABLE` entry: segment size, CRC control byte and
+/// access as written, the CRC (octets 6 and 7) the device calculates on the
+/// transition to Loaded (KNX 3/5/1 §4.2.27, §4.2.27.1.2).
+const MCB_ENTRY_MASK: [u8; bussard_mgmt::MCB_ENTRY_LEN] =
+    [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00];
+
+impl crate::flash::FlashStep {
+    /// What this step leaves in a property as a read-back must find it
+    /// (issue #1073): a [`FlashStep::WriteProp`](crate::flash::FlashStep::WriteProp)
+    /// or a held write ([`property_write`](Self::property_write)), with the
+    /// executor's own special cases.
+    ///
+    /// - A load event on `PID_LOAD_STATE_CONTROL`
+    ///   ([`load_state_control`](Self::load_state_control)) leaves a load
+    ///   state, which the load-state check reads: `None`. Any other PID 5
+    ///   write is a property write and read back as one, as the executor
+    ///   sends it.
+    /// - `PID_PEI_TYPE` holds what the device measures: `None`.
+    /// - A `PID_MCB_TABLE` value is the 8-octet entries the executor writes
+    ///   (a padded one entry by entry, issue #89), compared without the CRC
+    ///   the device fills in.
+    pub fn written_range(&self) -> Option<PropertyRange> {
+        if self.load_state_control().is_some() {
+            return None;
+        }
+        let w = self.property_write()?;
+        if w.prop_id == PID_PEI_TYPE {
+            return None;
+        }
+        let entry = bussard_mgmt::MCB_ENTRY_LEN;
+        if w.prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) && w.value.len() >= entry {
+            let entries = w.value.len() / entry;
+            let value = w.value.get(..entries * entry).unwrap_or_default().to_vec();
+            return Some(PropertyRange {
+                object: w.object,
+                prop_id: w.prop_id,
+                start: w.start_element,
+                count: u16::try_from(entries).unwrap_or(u16::MAX),
+                value,
+                fixed: !w.from_parameters,
+                mask: Some(MCB_ENTRY_MASK.repeat(entries)),
+            });
+        }
+        Some(PropertyRange {
+            object: w.object,
+            prop_id: w.prop_id,
+            start: w.start_element,
+            count: w.count.max(1),
+            value: w.value.to_vec(),
+            fixed: !w.from_parameters,
+            mask: None,
+        })
+    }
 }
 
 /// What `writes` (in procedure order) leave on the device: each write on the
@@ -197,6 +280,10 @@ fn still_held(write: &PropertyRange, later: &[PropertyRange]) -> Vec<PropertyRan
             (false, Some((from, to))) => {
                 out.push(PropertyRange {
                     fixed: write.fixed,
+                    mask: write
+                        .mask
+                        .as_ref()
+                        .map(|m| m.get(from * elem..to * elem).unwrap_or_default().to_vec()),
                     object: write.object,
                     prop_id: write.prop_id,
                     // Within the write's own u16 extent.
@@ -228,6 +315,20 @@ impl FlashPlan {
         }
     }
 
+    /// What the plan's property writes leave on the device, as the
+    /// read-back after the flash compares it (issue #1073): every write's
+    /// [`FlashStep::written_range`](crate::flash::FlashStep::written_range),
+    /// on the elements no later write covers ([`held_after`]). The one list
+    /// the flash read-back and the parameter-only check share.
+    pub fn written_properties(&self) -> Vec<PropertyRange> {
+        let writes: Vec<PropertyRange> = self
+            .steps
+            .iter()
+            .filter_map(crate::flash::FlashStep::written_range)
+            .collect();
+        held_after(&writes)
+    }
+
     /// The properties a parameter-only download of this plan writes and
     /// reads back (issue #1052). For a plan run by the mask's parameter-only
     /// procedure ([`FlashPlan::parameters_only`]): every property that
@@ -244,16 +345,7 @@ impl FlashPlan {
         };
         let writes: Vec<PropertyRange> = steps
             .iter()
-            .filter(|s| s.load_state_control().is_none())
-            .filter_map(crate::flash::FlashStep::property_write)
-            .map(|w| PropertyRange {
-                object: w.object,
-                prop_id: w.prop_id,
-                start: w.start_element,
-                count: w.count.max(1),
-                value: w.value.to_vec(),
-                fixed: !w.from_parameters,
-            })
+            .filter_map(crate::flash::FlashStep::written_range)
             .collect();
         held_after(&writes)
             .into_iter()
@@ -266,6 +358,7 @@ impl FlashPlan {
                 device: None,
                 parameters: Vec::new(),
                 fixed: r.fixed,
+                mask: r.mask,
             })
             .collect()
     }
@@ -376,6 +469,7 @@ mod tests {
             device: device.map(<[u8]>::to_vec),
             parameters: Vec::new(),
             fixed: false,
+            mask: None,
         }
     }
 

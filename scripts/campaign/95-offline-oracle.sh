@@ -864,9 +864,11 @@ fi
 
 rule
 say "Summary ($OUT)"
-"$PYTHON" - "$OUT" "$CHECK" ${DEVICES_RUN+"${DEVICES_RUN[@]}"} <<'EOF'
+"$PYTHON" - "$OUT" "$CHECK" "$(dirname "$KNXTRACE")" ${DEVICES_RUN+"${DEVICES_RUN[@]}"} <<'EOF'
 import json, os, sys
-out, check, devices = sys.argv[1], sys.argv[2] == "1", sys.argv[3:]
+sys.path.insert(0, sys.argv[3])
+import image as memimage  # noqa: E402
+out, check, devices = sys.argv[1], sys.argv[2] == "1", sys.argv[4:]
 failures = []
 short = {"address table": "addr", "association table": "assoc",
          "group-object table": "gobj", "parameters": "par"}
@@ -913,15 +915,8 @@ for dev in devices:
     if r.get("ets_only_octets"):
         detail += "  [ets-only %d]" % r["ets_only_octets"]
     props = r.get("properties") or {}
-    if props.get("verdict") == "identical":
-        detail += "  props=ok(%d)" % len(props.get("matched", []))
-    elif props.get("verdict") == "differs":
-        detail += "  props=differs(bussard-only %d, ets-only %d, value %d)" % (
-            len(props.get("bussard_only", [])), len(props.get("ets_only", [])),
-            props.get("value_counts", {}).get("differs", 0))
-    elif props.get("verdict") == "not-comparable" and props.get("reason") and "matched" in props:
-        detail += "  props=n/c(bussard %d, ETS ran no procedure write)" % len(
-            props.get("bussard_only", []))
+    # The one rendering of the property verdict (knxtrace image.props_text).
+    detail += memimage.props_text(props)
     if props.get("commissioning"):
         detail += " [ETS commissioning %d, not counted]" % len(props["commissioning"])
     if props.get("not_compared"):

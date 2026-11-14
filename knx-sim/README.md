@@ -54,6 +54,10 @@ architecture.
   object types reaches 31 (#1073). What a real device keeps there is not in
   the product data. A KNXnet/IP parameter object placed at the lowest free
   index takes a placeholder's place.
+  `PID_MCB_TABLE` entries a procedure writes while Loading are kept by
+  element: each describes the subsegment after the ones before it and reads
+  back with the CRC over that subsegment (#1073; the Jung
+  `M-0004_A-146F-11-17FA-O00F4` writes four).
 - A virtual bus with an **observable event stream** (`src/bus`) — the seam a
   future read-only HTML visualization will consume. Today a `TracingSink` logs
   every telegram + state change to stdout.

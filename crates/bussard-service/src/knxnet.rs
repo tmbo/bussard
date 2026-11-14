@@ -435,6 +435,7 @@ impl InterfacePlan {
                 start: s.start,
                 count: s.count.max(1),
                 value: s.value.clone(),
+                mask: None,
             })
             .collect()
     }

@@ -453,7 +453,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base,
                     descriptor: obj.clone(),
-                    mcb_written: None,
+                    mcb_written: BTreeMap::new(),
                     write_extent: rel_mem_extent(product, obj.lsm_index),
                 },
             );
@@ -508,7 +508,7 @@ impl Device {
                             max_size: None,
                             image: Vec::new(),
                         },
-                        mcb_written: None,
+                        mcb_written: BTreeMap::new(),
                         write_extent: rel_mem_extent(product, index),
                     },
                 );
@@ -669,7 +669,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base: u32::from(sys7_region_base(&s7, lsm_index)),
                     descriptor,
-                    mcb_written: None,
+                    mcb_written: BTreeMap::new(),
                     write_extent: 0,
                 },
             );

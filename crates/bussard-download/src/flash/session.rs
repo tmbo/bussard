@@ -320,6 +320,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             pending_readiness: None,
             verify: VerifyModeState::default(),
             user_memory_above_64k: false,
+            objects: None,
         }
     }
 }
@@ -386,6 +387,11 @@ pub struct Session<C: Connector> {
     /// like [`max_apdu`](Self::max_apdu) on every later window, so the absence
     /// costs one exchange for the whole flash as a value does.
     max_apdu_absent: bool,
+    /// The interface-object table a connection of this session discovered,
+    /// remembered onto every later connection (issue #1073): device state
+    /// that a reboot keeps, so the read-back after the restart does not walk
+    /// the objects again.
+    objects: Option<Vec<(u8, u16)>>,
     /// Whether the session's connections wrap management APDUs with a Data
     /// Secure tool key. A restart the flash triggers then ends with the Secure
     /// readiness probe and the longer S-A_Sync retry (issue #166); a plain
@@ -614,6 +620,7 @@ impl<C: Connector> Session<C> {
             pending_readiness: None,
             verify: VerifyModeState::default(),
             user_memory_above_64k: false,
+            objects: None,
         })
     }
 
@@ -756,6 +763,7 @@ impl<C: Connector> Session<C> {
     async fn reconnect_once(&mut self) -> Result<(), WriteError> {
         // Drop the dead connection outright (do NOT try to T_Disconnect — the
         // device is mid-reboot and will not answer).
+        self.harvest_objects();
         self.l4 = None;
         let connector =
             self.connector
@@ -813,11 +821,42 @@ impl<C: Connector> Session<C> {
             l4.set_max_apdu_absent();
         }
         l4.set_user_memory_above_64k(self.user_memory_above_64k);
+        // The table the connection being replaced discovered, and the one
+        // the session already knew, go onto the fresh connection.
+        self.harvest_objects();
+        if let Some(table) = &self.objects {
+            l4.remember_object_table(table);
+        }
         self.l4 = Some(l4);
         // A new transport connection: the device cleared verify mode
         // (Resources 03_05_01 §4.2.14); the next write sets it again.
         self.verify.on_connection = false;
         Ok(())
+    }
+
+    /// Keeps the object table the current connection discovered or was
+    /// seeded with before the connection goes (issue #1073), for
+    /// [`adopt`](Self::adopt) to put on the next one.
+    fn harvest_objects(&mut self) {
+        if self.objects.is_none() {
+            self.objects = self
+                .l4
+                .as_ref()
+                .and_then(|l4| l4.known_object_table())
+                .map(<[_]>::to_vec);
+        }
+    }
+
+    /// Remembers the interface-object table discovered on this session's
+    /// connection for every later connection of the session (issue #1073).
+    pub(super) fn remember_object_table(&mut self, table: &[(u8, u16)]) {
+        if table.is_empty() {
+            return;
+        }
+        self.objects = Some(table.to_vec());
+        if let Some(l4) = self.l4.as_mut() {
+            l4.remember_object_table(table);
+        }
     }
 
     /// Arms verify mode for the download: the next write that goes out over
@@ -986,6 +1025,7 @@ impl<C: Connector> Session<C> {
             // bus lease, and the probes need it. Dropping (rather than
             // disconnecting) is right — the peer is mid-reboot and will not
             // answer.
+            self.harvest_objects();
             self.l4 = None;
             let losses = self.link_losses();
             let result = if self.secure {
@@ -1245,6 +1285,7 @@ impl<C: Connector> Session<C> {
                 bussard_transport::TransportError::Closed,
             )));
         }
+        self.harvest_objects();
         self.l4 = None;
         let accepted = tokio::time::Instant::now();
         self.pending_readiness = Some(PendingReadiness {
@@ -1302,6 +1343,7 @@ impl<C: Connector> Session<C> {
         // Gracefully close the live connection with a T_Disconnect so the device
         // frees the old connection immediately (best-effort: a send error here is
         // irrelevant, the fresh T_Connect below re-establishes state regardless).
+        self.harvest_objects();
         if let Some(l4) = self.l4.take() {
             let _ = l4.disconnect().await;
         }

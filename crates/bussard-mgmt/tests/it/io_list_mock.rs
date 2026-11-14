@@ -303,3 +303,89 @@ async fn test_discover_object_table_takes_an_io_list_of_more_than_sixteen_object
     assert_eq!(property_reads(&requests).len(), 7);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_probe_object_types_ends_where_the_device_object_answers_again() -> TestResult {
+    // Issue #1073 review: a device that wraps the object index at 16 answers
+    // every index. The device object is the one object at index 0, so index
+    // 16 answering its type ends the walk: 17 probes, not 255.
+    let types = hager_types();
+    let first: Vec<u16> = types.iter().take(16).copied().collect();
+    let wrapped = first.clone();
+    let dev = MockDevice::new(target()?)
+        .with_object_types(&first)
+        .with_hook(move |_, apci, data| {
+            let pv = apci::decode_property_value_read(data)?;
+            (apci == A_PROPERTY_VALUE_READ
+                && pv.property_id == PID_OBJECT_TYPE
+                && pv.object_index >= 16)
+                .then(|| {
+                    let ot = wrapped[usize::from(pv.object_index % 16)];
+                    Reaction::Answer(
+                        0x3D6,
+                        bussard_testkit::device::prop_response(
+                            pv.object_index,
+                            PID_OBJECT_TYPE,
+                            1,
+                            1,
+                            &ot.to_be_bytes(),
+                        ),
+                    )
+                })
+        });
+    let table = walk(dev).await?;
+    assert_eq!(table.len(), 16);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_object_types_ends_at_an_unanswered_index_past_16() -> TestResult {
+    // Issue #1073 review: a 16-object device the old walk never asked at
+    // index 16 acknowledges the probe and never answers. The walk ends there
+    // with its 16 objects instead of failing.
+    let types: Vec<u16> = hager_types().into_iter().take(16).collect();
+    let dev = MockDevice::new(target()?)
+        .with_object_types(&types)
+        .with_hook(|_, apci, data| {
+            let pv = apci::decode_property_value_read(data)?;
+            (apci == A_PROPERTY_VALUE_READ
+                && pv.property_id == PID_OBJECT_TYPE
+                && pv.object_index == 16)
+                .then_some(Reaction::Ack)
+        });
+    let table = walk(dev).await?;
+    assert_eq!(table.len(), 16);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_object_types_walks_once_per_connection() -> TestResult {
+    // Issue #1073 review: the table is device state; a second reader on the
+    // same connection (the tables, then the parameters, of a read-back)
+    // sends no PID_OBJECT_TYPE probe.
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(5))
+        .device(device()?)
+        .start()
+        .await?;
+    let mut bus = open_bus(gw.addr()).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        "0.0.255".parse()?,
+        Timeouts::discovery().into(),
+    )
+    .await?;
+    let first = probe_object_types(&mut l4).await?;
+    let probes_first = gw.with_device(target()?, |d| property_reads(&d.requests).len())?;
+    let second = probe_object_types(&mut l4).await?;
+    let (again, _) = discover_object_table(&mut l4).await?;
+    let probes_after = gw.with_device(target()?, |d| property_reads(&d.requests).len())?;
+    let _ = l4.disconnect().await;
+    assert_eq!((first.clone(), second), (expected(), expected()));
+    assert_eq!(again, first);
+    assert_eq!(probes_first, TYPES.len() + 1);
+    assert_eq!(probes_after, probes_first);
+    Ok(())
+}

@@ -413,8 +413,11 @@ async fn describe_reuses_the_warm_connection_within_the_idle_window() -> TestRes
     assert_eq!(first["ok"], true, "{first}");
     assert_eq!(first, second);
     assert_eq!(gw.with_device(ia("1.1.12")?, |d| d.connects)?, 1);
-    // The second call skips the authorize and the max-APDU read.
-    assert_eq!(second_requests + 2, first_requests);
+    // The second call skips the authorize and the max-APDU read, and the
+    // object walk the warm connection already made (issue #1073): one
+    // `PID_OBJECT_TYPE` read per object and the terminating one.
+    let walk = gw.with_device(ia("1.1.12")?, |d| d.object_types.len())? + 1;
+    assert_eq!(second_requests + 2 + walk, first_requests);
     assert_eq!(disconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // The idle close: the kept connection is disconnected after the window.

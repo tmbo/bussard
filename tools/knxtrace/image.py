@@ -2051,6 +2051,28 @@ def compare_properties(
     return out
 
 
+def props_text(props: Dict[str, object]) -> str:
+    """The property verdict of an oracle row's summary line: `props=ok(n)`,
+    `props=differs(bussard-only a, ets-only b, value c)` with the elements
+    of a property only one side wrote in the step when there are any
+    (statediff, bussard issue #1073), `props=n/c(...)` or nothing."""
+    verdict = props.get("verdict")
+    if verdict == IDENTICAL:
+        return "  props=ok(%d)" % len(props.get("matched") or [])
+    if verdict == DIFFERS:
+        text = "  props=differs(bussard-only %d, ets-only %d, value %d" % (
+            len(props.get("bussard_only") or []), len(props.get("ets_only") or []),
+            (props.get("value_counts") or {}).get("differs", 0))
+        left_ets = len(props.get("ets_only_step") or [])
+        left_ours = len(props.get("bussard_only_step") or [])
+        if left_ets or left_ours:
+            text += ", written by ETS only %d, by bussard only %d" % (left_ets, left_ours)
+        return text + ")"
+    if verdict == NOT_COMPARABLE and props.get("reason") and "matched" in props:
+        return "  props=n/c(bussard %d, ETS ran no procedure write)" % len(props.get("bussard_only") or [])
+    return ""
+
+
 def plan_function_calls(plan: dict) -> List[Dict[str, object]]:
     """bussard's function property calls (`function_property` records of
     `plan.json`, bussard issue #946), in plan order."""

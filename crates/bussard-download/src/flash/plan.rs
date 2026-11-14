@@ -1245,8 +1245,8 @@ fn plan_flash_as(
                         // The PID 13 placeholder's parameters are laid over its
                         // template as on the declared arm (the one rule,
                         // `maybe_substitute_app_id`), and the step says the
-                        // value is theirs, so the executor never skips it as a
-                        // template write to an unlisted object (issue #669).
+                        // value is theirs (issue #669), so a parameter change
+                        // rewrites it.
                         let (value, from_parameters) = if placeholder {
                             match super::declare::placed_value(
                                 &name,
@@ -5333,7 +5333,7 @@ mod tests {
         // Issue #964: one rule on both arms. A parameter placed in PID 13 is
         // laid over the application id when there is one, and supplies the
         // value over zeros when there is none; the step is marked as the
-        // parameters' value either way, so the executor never skips it.
+        // parameters' value either way.
         let param = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="v" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="7"><Property ObjectIndex="4" PropertyId="13" Offset="4" BitOffset="0" /></Parameter>"#;
         for (identity, expected) in [
             (false, vec![0, 0, 0, 0, 7]),

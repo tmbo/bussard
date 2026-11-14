@@ -40,6 +40,7 @@ next to it, and zips it on demand.
 | [`syn-map-error`](syn-map-error/product.toml) | `NEST-FALSE` | 07B0 | LdCtrlMapError around LdCtrlUnload LsmIdx 5 (07B0 ProductProcedure) | #614 |
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
+| [`syn-mcb-seed`](syn-mcb-seed/product.toml) | `NEST-SEED` | 07B0 | LdCtrlWriteProp seeding PID_MCB_TABLE and PID_PEI_TYPE | #1073 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-module-choose`](syn-module-choose/product.toml) | `NEST-ROOST` | 07B0 | module instances in the branches of a choose, literal arguments | #1050, #449, #1054 |
 | [`syn-module-repeat`](syn-module-repeat/product.toml) | `NEST-TRIFEED` | 07B0 | ModuleDef with allocator-fed bases, instantiated three times by a Repeat | #449 |

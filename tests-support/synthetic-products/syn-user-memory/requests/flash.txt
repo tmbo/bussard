@@ -639,13 +639,6 @@ mem-read 0x8000 addr_int=32768 count=4
 mem-read 0xc000 addr_int=49152 count=4
 mem-read 0xa000 addr_int=40960 count=4
 descriptor type0 type=0
-prop-read obj0/PID_1 count=1 index=1
-prop-read obj1/PID_1 count=1 index=1
-prop-read obj2/PID_1 count=1 index=1
-prop-read obj3/PID_1 count=1 index=1
-prop-read obj4/PID_1 count=1 index=1
-prop-read obj5/PID_1 count=1 index=1
-prop-read obj6/PID_1 count=1 index=1
 prop-read obj1/PID_23 count=1 index=0
 prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0xa000 addr_int=40960 count=2
@@ -658,13 +651,6 @@ mem-read 0xc002 addr_int=49154 count=4
 prop-read obj3/PID_23 count=1 index=0
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x8000 addr_int=32768 count=2
-prop-read obj0/PID_1 count=1 index=1
-prop-read obj1/PID_1 count=1 index=1
-prop-read obj2/PID_1 count=1 index=1
-prop-read obj3/PID_1 count=1 index=1
-prop-read obj4/PID_1 count=1 index=1
-prop-read obj5/PID_1 count=1 index=1
-prop-read obj6/PID_1 count=1 index=1
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x010000 addr_int=65536 count=15
 mem-read 0x01000f addr_int=65551 count=15

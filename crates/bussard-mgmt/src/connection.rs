@@ -578,6 +578,9 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// on a fresh connection, so every read path is unchanged until a caller
     /// seeds it.
     seed: Option<ConnectionSeed>,
+    /// The interface-object table a reader of this connection discovered
+    /// ([`Layer4Connection::remember_object_table`]).
+    known_objects: Option<Vec<(u8, u16)>>,
     /// The outcome of the last [`authorize`](Self::authorize) on this
     /// connection, kept so the device facts can record the verdict.
     last_authorize: Option<AuthorizeOutcome>,
@@ -666,6 +669,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             secure,
             sync_retry: SyncRetry::default(),
             seed: None,
+            known_objects: None,
             last_authorize: None,
             connection_timeout: CONNECTION_TIMEOUT,
             idle_reconnects: 0,
@@ -685,6 +689,26 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             self.max_apdu = Some(max_apdu);
         }
         self.seed = Some(seed);
+    }
+
+    /// Remembers the interface-object table a reader of this connection
+    /// discovered (issue #1073), so the next reader on it sends nothing. An
+    /// empty table is not remembered.
+    pub fn remember_object_table(&mut self, table: &[(u8, u16)]) {
+        if !table.is_empty() {
+            self.known_objects = Some(table.to_vec());
+        }
+    }
+
+    /// The object table this connection was seeded with or already
+    /// discovered ([`remember_object_table`](Self::remember_object_table)).
+    pub fn known_object_table(&self) -> Option<&[(u8, u16)]> {
+        self.seeded_object_table().or(self.known_objects.as_deref())
+    }
+
+    /// The object table a reader of this connection discovered, seed aside.
+    pub(crate) fn remembered_object_table(&self) -> Option<&[(u8, u16)]> {
+        self.known_objects.as_deref()
     }
 
     /// The seeded object table, when a caller seeded a non-empty one.
@@ -2263,6 +2287,52 @@ pub async fn probe_object_type<Ch: L4Channel>(
     }
 }
 
+/// The walk bound before issue #1073: no walk probed an index at or past it.
+pub const LEGACY_WALK_BOUND: u8 = 16;
+
+/// Probes one index of an object walk: [`probe_object_type`], with the two
+/// ends a walk past the old bound of 16 needs (issue #1073).
+///
+/// - An index above 0 that answers the device object's type ends the walk:
+///   the device object is the one object at index 0 (KNX 3/5/1 §4.3), so a
+///   device answering it again ignores or wraps the index, and every later
+///   index would answer too.
+/// - An index at or past [`LEGACY_WALK_BOUND`] that the device acknowledged
+///   and never answered ends the walk, the connection reopened as after any
+///   unanswered read. The standard counts no answer as an error (KNX 3/5/2
+///   §3.28.3); a device the old walk never asked there keeps working.
+///
+/// The worst case is a device that answers a distinct type at every index:
+/// [`MAX_OBJECT_INDEX`] probes.
+pub async fn probe_walk_index<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    index: u8,
+) -> Result<Option<u16>> {
+    let before = l4.numbered_exchanges();
+    match probe_object_type(l4, index).await {
+        Ok(Some(crate::tables::OT_DEVICE)) if index > 0 => {
+            tracing::debug!(target = %l4.target(), index, "the device object answers again; the walk ends");
+            Ok(None)
+        }
+        Ok(found) => Ok(found),
+        Err(
+            err @ (MgmtError::NoResponse { .. }
+            | MgmtError::MidSessionSilence {
+                kind: crate::error::SilenceKind::NoResponse,
+                ..
+            }),
+        ) => {
+            if index >= LEGACY_WALK_BOUND && l4.numbered_exchanges() > before {
+                l4.reopen_after_unanswered();
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// Walks `PID_OBJECT_TYPE` over `0..`[`MAX_OBJECT_INDEX`] and returns the
 /// `(object index, object type)` pairs the device exposes, in index order.
 ///
@@ -2282,13 +2352,19 @@ pub async fn probe_object_types<Ch: L4Channel>(
     if let Some(table) = l4.seeded_object_table() {
         return Ok(table.to_vec());
     }
+    // A table this connection already walked (issue #1073): device state, so
+    // a second reader on the connection sends nothing.
+    if let Some(table) = l4.known_object_table() {
+        return Ok(table.to_vec());
+    }
     let mut objects = Vec::new();
     for index in 0..MAX_OBJECT_INDEX {
-        match probe_object_type(l4, index).await? {
+        match probe_walk_index(l4, index).await? {
             Some(ot) => objects.push((index, ot)),
             None => break,
         }
     }
+    l4.remember_object_table(&objects);
     Ok(objects)
 }
 

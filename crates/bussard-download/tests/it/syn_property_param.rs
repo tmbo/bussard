@@ -1228,3 +1228,58 @@ async fn test_flash_confirms_a_procedure_load_state_write_by_the_answered_state(
     assert_eq!(dev.load_state(8), 1, "object 8 ends loaded");
     Ok(())
 }
+
+#[tokio::test]
+async fn test_flash_fails_a_segment_write_to_an_object_the_device_lacks() -> TestResult {
+    // Issue #1073 review: a spliced template's segment write naming an
+    // object the device does not list fell back to another object's segment
+    // base and streamed the image there. Its allocation is left out as
+    // absent; the write fails the flash, naming the object, before a memory
+    // write goes out.
+    let (product, _tmp) = product()?;
+    let app = product.applications.first().ok_or("one application")?;
+    let mut plan = plan_of(&product, app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let mut moved = 0;
+    for step in &mut plan.steps {
+        if let FlashStep::WriteRelMem { target, .. } | FlashStep::AllocateSegment { target, .. } =
+            step
+            && *target == Some(4)
+        {
+            *target = Some(9);
+            moved += 1;
+        }
+    }
+    assert!(moved >= 2, "the allocation and the write of object 4");
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    let text = match result {
+        Err(err) => err.to_string(),
+        Ok(outcome) => return Err(format!("expected a failure, got {outcome:?}").into()),
+    };
+    assert!(text.contains("interface object 9"), "{text}");
+    let requests = gw.with_device(ia("1.1.1")?, |d| d.requests.clone())?;
+    assert!(
+        !requests
+            .iter()
+            .any(|(apci, _)| *apci == bussard_mgmt::apci::A_MEMORY_WRITE
+                || *apci == bussard_mgmt::apci::A_MEMORY_EXTENDED_WRITE),
+        "no memory write"
+    );
+    Ok(())
+}

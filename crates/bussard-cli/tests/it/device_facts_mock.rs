@@ -320,6 +320,33 @@ fn test_describe_application_change_invalidates_facts() -> TestResult {
 }
 
 #[test]
+fn test_describe_rereads_a_table_an_old_walk_cut_at_16() -> TestResult {
+    // Issue #1073 review: a walk before the fix stopped at 16 objects, and
+    // the facts kept that table while the mask and application id matched.
+    // A table of exactly 16 is checked with one probe of index 16, and a
+    // device with more objects is read again.
+    let mut types: Vec<u16> = TYPES.to_vec();
+    types.extend((11..20).map(|i| 50_000 + i));
+    let bench = Bench::start("describe-cut-16", device()?.with_object_types(&types))?;
+    ok_stdout(&bench.run(&["describe", "1.1.12"])?)?;
+    let mut record = bench.facts()?;
+    assert_eq!(record.objects.len(), 20);
+    record.objects.truncate(16);
+    bussard_model::facts::save_facts(&bench.dir(), &record)?;
+    ok_stdout(&bench.run(&["describe", "1.1.12"])?)?;
+    assert_eq!(
+        bench.facts()?.objects.len(),
+        20,
+        "the cut table is read again"
+    );
+    // A complete table of more than 16 is reused as before.
+    bench.take_requests()?;
+    ok_stdout(&bench.run(&["describe", "1.1.12"])?)?;
+    assert_eq!(object_type_reads(&bench.take_requests()?), 0);
+    Ok(())
+}
+
+#[test]
 fn test_describe_mask_change_invalidates_facts() -> TestResult {
     let bench = Bench::start("describe-mask", device()?)?;
     ok_stdout(&bench.run(&["describe", "1.1.12"])?)?;

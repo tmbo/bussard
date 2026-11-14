@@ -16,7 +16,7 @@
 
 use crate::connection::{
     L4Channel, Layer4Connection, MAX_OBJECT_INDEX, probe_object_type, probe_object_types,
-    property_request,
+    probe_walk_index, property_request,
 };
 use crate::error::{MgmtError, Result, SilenceKind};
 use crate::tables::{OT_APPLICATION_PROGRAM, OT_DEVICE};
@@ -101,9 +101,14 @@ pub async fn read_io_list<Ch: L4Channel>(
 pub async fn discover_object_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<(Vec<(u8, u16)>, ObjectTableSource)> {
+    // A table this connection already discovered (issue #1073).
+    if let Some(table) = l4.remembered_object_table() {
+        return Ok((table.to_vec(), ObjectTableSource::Walk));
+    }
     if let Some(types) = read_io_list(l4).await?
         && let Some(table) = checked_table(l4, &types).await?
     {
+        l4.remember_object_table(&table);
         return Ok((table, ObjectTableSource::IoList));
     }
     Ok((probe_object_types(l4).await?, ObjectTableSource::Walk))
@@ -148,7 +153,7 @@ async fn checked_table<Ch: L4Channel>(
     }
     if let Ok(next) = u8::try_from(table.len())
         && next < MAX_OBJECT_INDEX
-        && probe_object_type(l4, next).await?.is_some()
+        && probe_walk_index(l4, next).await?.is_some()
     {
         tracing::debug!(target = %l4.target(), next, "an object follows the PID_IO_LIST entries");
         return Ok(None);
