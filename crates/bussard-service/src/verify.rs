@@ -14,9 +14,7 @@
 //!   absent), plus both table sizes. A full flash also compares the
 //!   group-object table's element count with the count the planned image
 //!   carries (System B; a System 7 image takes its group-object table from
-//!   the product data), and every descriptor of it for a program whose
-//!   descriptor sizes come from a ref over an object size without a type
-//!   code (issue #1065; every descriptor for every flash is #1150).
+//!   the product data).
 //! - **Parameters**: the parameter memory decoded and compared with the
 //!   model ([`crate::params::read_flashed_parameters`], the plan's decode).
 //! - **Load-procedure properties** (issue #390): every property an
@@ -314,29 +312,10 @@ impl<'a> Expected<'a> {
                 .and_then(|img| img.get(..2))
                 .map(|w| u16::from_be_bytes([w[0], w[1]]))
         };
-        // A program with a com-object whose descriptor takes its size from
-        // a ref over an object size without a type code (issue #1065)
-        // compares the whole group-object table, not only its count; the
-        // count is part of that compare, so it is not compared twice. A
-        // table that cannot be read is then one leftover ("no answer"): the
-        // flash is not verified. Every other flash compares the count
-        // (issue #1150), where an unreadable table is a note, as for the
-        // address and association tables.
-        let object_table = if group_objects.is_some() && bussard_download::has_ref_sized_object(app)
-        {
-            images.get(&3).cloned()
-        } else {
-            None
-        };
-        let group_objects = if object_table.is_some() {
-            None
-        } else {
-            group_objects
-        };
         Expected {
             tables,
             group_objects,
-            object_table,
+            object_table: None,
             parameters: Some(ExpectedParameters {
                 product,
                 app,

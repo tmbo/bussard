@@ -351,16 +351,21 @@ pub(crate) fn object_size_code(object_size: &str) -> Option<u8> {
 /// [`object_size_code`]), `0` (1 bit) when the product declares none.
 ///
 /// A declared size without a code also maps to `0` here, so the descriptor
-/// builders stay infallible. Every System B table image a write sends comes
-/// from a [`crate::FlashPlan`]: the flash's own, and the plan `apply` and the
-/// line commands build with `plan_for_parameters` for the group-object
-/// table reload (#540). `plan_flash` refuses an application in which a
-/// descriptor would take such a size ([`unknown_object_sizes`]) before any
-/// image is built, so no write sends the fallback for one. The check and
-/// every builder (flat, dynamic, module) take the size through
-/// [`bussard_product::ResolvedComObject::object_size`]; the test
-/// `test_unknown_object_sizes_agrees_with_the_descriptor_builders` exercises
-/// the flat builder. (System 7 keeps the product's TYPE octet instead.)
+/// builders stay infallible. What guards against writing that fallback:
+/// `plan_flash` refuses an application in which a descriptor would take such
+/// a size ([`unknown_object_sizes`], issue #1065), and every System B table
+/// image a write sends is streamed by a `plan_flash` plan (the flash's own,
+/// and the plan `apply` and the line commands build for the group-object
+/// table reload, #540). The table images themselves are built before
+/// `plan_flash` runs (`plan_from_model`, `FlashInputs::from_model`), so this
+/// fallback can be computed for a refused program, but no write sends it.
+/// The check and the builders read the same effective size (the ref's, else
+/// the object's): the flat builder and the check through
+/// [`bussard_product::ResolvedComObject::object_size`], the dynamic and
+/// module builders by constructing a `ResolvedComObject` for the pair they
+/// resolve. That is by construction in each builder, not enforced by a type;
+/// `test_unknown_object_sizes_agrees_with_the_descriptor_builders` checks
+/// the flat builder only. (System 7 keeps the product's TYPE octet instead.)
 pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
     object_size.and_then(object_size_code).unwrap_or(0)
 }
@@ -413,21 +418,6 @@ pub(crate) struct UnknownObjectSize {
     pub(crate) com_object_ref: String,
     /// That size.
     pub(crate) size: String,
-}
-
-/// Whether a com-object of `app` whose own `ObjectSize` has no value field
-/// type code has a ref stating a size that has one (issue #1065): a
-/// descriptor written through that ref takes the ref's size, a rule the
-/// flash read-back checks by comparing the whole group-object table
-/// (`bussard-service` `Expected::for_flash`).
-pub fn has_ref_sized_object(app: &bussard_product::ApplicationProgram) -> bool {
-    app.resolved_com_objects().iter().any(|c| {
-        c.base
-            .object_size
-            .as_deref()
-            .is_some_and(|s| object_size_code(s).is_none())
-            && c.object_size().and_then(object_size_code).is_some()
-    })
 }
 
 /// Builds group-object descriptors from a device's resolved com-objects,
@@ -1062,7 +1052,6 @@ mod tests {
     fn test_unknown_object_sizes_takes_the_ref_size_over_the_object_size() {
         let mut app = app_with_legacy_var_data();
         assert!(unknown_object_sizes(&app).is_empty());
-        assert!(has_ref_sized_object(&app));
 
         // Two refs without a size of their own take the object's: refused,
         // the object named once.
@@ -1098,8 +1087,6 @@ mod tests {
                 },
             ]
         );
-        // Object 7's first ref still takes its size from the ref.
-        assert!(has_ref_sized_object(&app));
     }
 
     /// The pre-check and the flat descriptor builder read the same size:

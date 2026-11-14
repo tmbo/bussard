@@ -80,14 +80,7 @@ fn captured_group_object_table() -> TestResult<Vec<u8>> {
         .find(|r| r["start"].as_u64() == Some(0x8000))
         .and_then(|r| r["hex"].as_str())
         .ok_or("the region at 0x8000")?;
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| {
-            hex.get(i..i + 2)
-                .ok_or_else(|| "odd hex".into())
-                .and_then(|h| u8::from_str_radix(h, 16).map_err(Into::into))
-        })
-        .collect()
+    Ok(bussard_model::text::from_hex(hex)?)
 }
 
 #[tokio::test]
