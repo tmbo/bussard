@@ -2,5 +2,8 @@
 "about": "Synthetic products bussard refuses to flash, each the finding of an open issue (#604). The synthetic sim loop (crates/bussard-cli/tests/it/sim_catalog_loop.rs) accepts the refusal when its text contains `contains`, and fails once the product flashes, so the entry is dropped with the fix. An entry with a `note` is a product knx-sim has no profile for (the loop skips its mask); it goes when the sim models the mask.",
 "refusals": {
   "M-00FA_A-2A24-10-0000": {"product": "syn-rf-27b0", "issue": 604, "contains": "mask 27B0 is not simulated", "note": "no knx-sim profile for RF mask 27B0, not a bussard refusal; bussard plans it (flash --dry-run), and ETS will not place it on the sweep's TP line"}
+},
+"parameter_refusals": {
+  "M-00FA_A-278A-10-0000": {"product": "syn-master-reset-code4", "issue": 1085, "contains": "erase code 4", "note": "its MergeId 2 master reset (erase code 4, no AppliesTo) runs in the mask's par procedure; no capture shows ETS's parameter-only download of it, so the parameter-only download is refused before anything is sent and the loop leaves out the partial change"}
 }
 }

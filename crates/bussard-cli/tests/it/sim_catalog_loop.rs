@@ -234,6 +234,30 @@ pub(crate) fn read_synthetic_refusals() -> Result<BTreeMap<String, String>, BoxE
     Ok(out)
 }
 
+/// The synthetic products whose parameter-only download bussard refuses
+/// on purpose (issue #1085), from `parameter_refusals` in
+/// `tests-support/synthetic-products/sim-loop-refusals.json`: application id
+/// to a phrase the plan's note must contain. The loop checks the note and
+/// leaves out the partial change for them.
+pub(crate) fn read_parameter_refusals() -> Result<BTreeMap<String, String>, BoxError> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests-support/synthetic-products/sim-loop-refusals.json");
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let mut out = BTreeMap::new();
+    if let Some(map) = value.get("parameter_refusals").and_then(|v| v.as_object()) {
+        for (app, entry) in map {
+            let needle = entry
+                .get("contains")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| {
+                    format!("sim-loop-refusals.json: parameter refusal {app} has no `contains`")
+                })?;
+            out.insert(app.clone(), needle.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// Zips every synthetic product's `xml/` with the stub master into `dir` as
 /// `<product>.knxprod`; returns the product names.
 pub(crate) fn synthetic_knxprods(dir: &Path) -> Result<Vec<String>, BoxError> {
@@ -841,6 +865,22 @@ fn run_loop(
     // a full flash of the same model must change nothing the plan sees.
     let partial = last.partial_change(app, &mut rng);
     bench.write_device(&partial).map_err(infra("setup"))?;
+    // A product whose parameter-only download is refused on purpose: the
+    // plan must say so, and the partial change is not applied.
+    let parameter_refusals = read_parameter_refusals().map_err(|e| {
+        Stop::Fail(
+            "plan before apply".to_string(),
+            format!("sim-loop-refusals.json: {e}"),
+        )
+    })?;
+    if let Some(needle) = parameter_refusals.get(&app.id) {
+        bench.plan_notes_contain("plan before apply", needle)?;
+        drop(bench);
+        if settings.work.is_none() {
+            let _ = std::fs::remove_dir_all(&work.root);
+        }
+        return Ok(());
+    }
     // Issue #540: a link to an object the flash left unlinked changes the
     // group-object table on System B. The plan names the reload, `apply`
     // runs it, and the plan after it (which compares the table) is a no-op.
@@ -1984,6 +2024,37 @@ impl Bench<'_> {
             .get("writes")
             .and_then(|w| w.get("group_object_table"))
             .is_some_and(|t| t.is_object()))
+    }
+
+    /// `plan --json` must carry a note containing `needle`.
+    fn plan_notes_contain(&self, step: &str, needle: &str) -> Result<(), Stop> {
+        let run = self
+            .bussard(&["plan", DEVICE, "--json"])
+            .map_err(infra(step))?;
+        if !run.ok {
+            return Err(Stop::Fail(step.to_string(), run.tail()));
+        }
+        let plan: serde_json::Value = serde_json::from_str(&run.stdout).map_err(|e| {
+            Stop::Fail(
+                step.to_string(),
+                format!("plan --json: {e}\n{}", run.tail()),
+            )
+        })?;
+        let found = plan
+            .get("notes")
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_str())
+            .any(|n| n.contains(needle));
+        if found {
+            Ok(())
+        } else {
+            Err(Stop::Fail(
+                step.to_string(),
+                format!("no plan note contains {needle:?}"),
+            ))
+        }
     }
 
     /// `plan --json` must be a no-op with the parameters decoded.
