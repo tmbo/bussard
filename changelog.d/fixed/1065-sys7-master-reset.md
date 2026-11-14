@@ -6,3 +6,6 @@
   property write, which is read back), a reset of the individual address
   (erase codes 2 and 3) and a value beyond one octet are refused; the
   parameter-only download refuses a System 7 reset instead of dropping it.
+- After a master reset, `flash` reconnects without an `A_Authorize_Request`
+  when the key is the free-access key, as ETS does in every master-reset
+  capture (System B and System 7); a real key is still presented (#1065).

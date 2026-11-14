@@ -318,6 +318,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             max_apdu_absent: false,
             readiness: Vec::new(),
             pending_readiness: None,
+            after_master_reset: false,
             verify: VerifyModeState::default(),
             user_memory_above_64k: false,
             objects: None,
@@ -403,6 +404,11 @@ pub struct Session<C: Connector> {
     readiness: Vec<RebootReadiness>,
     /// The measurement of the confirmed restart being waited out, if any.
     pending_readiness: Option<PendingReadiness>,
+    /// Whether the next adopted connection is the reconnect after a master
+    /// reset, which ETS opens without an `A_Authorize_Request` when its key
+    /// is the free-access key (see
+    /// [`reconnect_after_master_reset`](Session::reconnect_after_master_reset)).
+    after_master_reset: bool,
     /// Verify mode of a download (System 7 issue #524, System B issue #705):
     /// whether the plan switched it on, and whether the current connection
     /// has it.
@@ -618,6 +624,7 @@ impl<C: Connector> Session<C> {
             max_apdu_absent,
             readiness: Vec::new(),
             pending_readiness: None,
+            after_master_reset: false,
             verify: VerifyModeState::default(),
             user_memory_above_64k: false,
             objects: None,
@@ -808,11 +815,24 @@ impl<C: Connector> Session<C> {
         mut l4: Layer4Connection<C::Channel>,
         losses: u64,
     ) -> Result<(), WriteError> {
-        let connector = &self.connector;
-        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes, || {
-            connector.as_ref().map_or(0, Connector::link_losses) != losses
-        })
-        .await?;
+        // The reconnect after a master reset sends no authorize when the key is
+        // the free-access key: ETS reads the descriptor and the max APDU on
+        // that connection and goes on unauthorized, in all 331 master-reset
+        // captures of the sweep and the synthetic catalogue (System B and
+        // System 7, every one with the free-access key, syn-s7-master-reset
+        // among them). A free-access authorize grants the level an
+        // unauthorized connection has, so leaving it out changes nothing the
+        // device allows. A real key is still presented.
+        let skip = std::mem::take(&mut self.after_master_reset)
+            && self.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY)
+                == bussard_mgmt::apci::FREE_ACCESS_KEY;
+        if !skip {
+            let connector = &self.connector;
+            Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes, || {
+                connector.as_ref().map_or(0, Connector::link_losses) != losses
+            })
+            .await?;
+        }
         // Re-seed the device-stable max APDU onto the fresh connection without a
         // round-trip, so scaling persists across the cycle without spending an
         // exchange against the tight per-connection budget (issue #58).
@@ -1265,7 +1285,9 @@ impl<C: Connector> Session<C> {
     /// [`bussard_mgmt::restart_process_wait`]; never shortened, issue #212),
     /// stays quiet for [`CONFIRMED_RESTART_QUIET`] and finishes with the bounded
     /// liveness poll and reconnect of
-    /// [`reconnect_after_reboot`](Session::reconnect_after_reboot).
+    /// [`reconnect_after_reboot`](Session::reconnect_after_reboot). On a plain
+    /// session with the free-access key the new connection is not authorized,
+    /// as ETS does after a master reset (issue #1065).
     ///
     /// A process time longer than [`FACTORY_RESET_PROBE_FROM`] (the 8 s of a
     /// factory reset) is probed from +3 s to measure when the device answers
@@ -1297,9 +1319,13 @@ impl<C: Connector> Session<C> {
             self.measure_readiness_until(accepted, until).await;
         }
         tokio::time::sleep_until(until).await;
+        // Only the plain reconnect adopts through `adopt`; a secure one keeps
+        // its authorize (the S-A_Sync handshake).
+        self.after_master_reset = !self.secure;
         let result = self
             .reconnect_after_reboot_quiet(CONFIRMED_RESTART_QUIET)
             .await;
+        self.after_master_reset = false;
         if let Some(pending) = self.pending_readiness.take() {
             self.readiness.push(RebootReadiness {
                 kind,
