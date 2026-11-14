@@ -315,16 +315,24 @@ impl<'a> Expected<'a> {
                 .map(|w| u16::from_be_bytes([w[0], w[1]]))
         };
         // A program with a com-object whose descriptor takes its size from
-        // a ref over an object size without a type code (issue #1065): the
-        // type octets that rule writes are not confirmed by a capture, so
-        // the whole group-object table is compared, not only its count.
-        // Every other flash compares the count (issue #1150).
-        let object_table =
-            if group_objects.is_some() && !bussard_download::ref_sized_objects(app).is_empty() {
-                images.get(&3).cloned()
-            } else {
-                None
-            };
+        // a ref over an object size without a type code (issue #1065)
+        // compares the whole group-object table, not only its count; the
+        // count is part of that compare, so it is not compared twice. A
+        // table that cannot be read is then one leftover ("no answer"): the
+        // flash is not verified. Every other flash compares the count
+        // (issue #1150), where an unreadable table is a note, as for the
+        // address and association tables.
+        let object_table = if group_objects.is_some() && bussard_download::has_ref_sized_object(app)
+        {
+            images.get(&3).cloned()
+        } else {
+            None
+        };
+        let group_objects = if object_table.is_some() {
+            None
+        } else {
+            group_objects
+        };
         Expected {
             tables,
             group_objects,

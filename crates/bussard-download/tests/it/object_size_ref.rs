@@ -5,7 +5,8 @@
 //! The synthetic `syn-object-size-ref` is `syn-minimal` with object 2
 //! declared `LegacyVarData` and its only ref `14 Bytes`, the shape of the Jung
 //! `M-0004_A-1111-11-A356-O000A` object 7. A `ComObjectRef` attribute
-//! overrides the `ComObject` one, so the descriptor takes code 14. The flash
+//! overrides the `ComObject` one, so the descriptor takes code 14, as ETS 6
+//! wrote it (`captures/synthetic/syn-object-size-ref/defaults`). The flash
 //! ends with the read-back, and the group-object table the device holds is
 //! the planned one.
 
@@ -61,7 +62,32 @@ fn test_plan_flash_legacy_var_data_object_takes_its_ref_size() -> TestResult {
     assert_eq!(table.get(..2), Some(&[0x00, 0x02][..]), "{table:02x?}");
     let object_2 = table.get(4..6).ok_or("object 2")?;
     assert_eq!(object_2[1], 14, "{table:02x?}");
+    // ETS 6 wrote the same table (`13 0E` for object 2 at 0x8004).
+    assert_eq!(table, captured_group_object_table()?);
     Ok(())
+}
+
+/// The group-object table ETS wrote at 0x8000 in the capture of
+/// `syn-object-size-ref` (VM session 6, 2026-11-14).
+fn captured_group_object_table() -> TestResult<Vec<u8>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../captures/synthetic/syn-object-size-ref/defaults/image.json");
+    let image: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let hex = image["regions"]
+        .as_array()
+        .ok_or("regions")?
+        .iter()
+        .find(|r| r["start"].as_u64() == Some(0x8000))
+        .and_then(|r| r["hex"].as_str())
+        .ok_or("the region at 0x8000")?;
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            hex.get(i..i + 2)
+                .ok_or_else(|| "odd hex".into())
+                .and_then(|h| u8::from_str_radix(h, 16).map_err(Into::into))
+        })
+        .collect()
 }
 
 #[tokio::test]

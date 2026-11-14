@@ -351,12 +351,16 @@ pub(crate) fn object_size_code(object_size: &str) -> Option<u8> {
 /// [`object_size_code`]), `0` (1 bit) when the product declares none.
 ///
 /// A declared size without a code also maps to `0` here, so the descriptor
-/// builders stay infallible; a System B flash plan first refuses an
-/// application in which a descriptor would take such a size
-/// ([`unknown_object_sizes`], over the same effective size the builders use;
-/// `test_unknown_object_sizes_agrees_with_the_descriptor_builders` holds the
-/// two together), so no plan writes the fallback for one. (System 7 keeps the
-/// product's TYPE octet instead.)
+/// builders stay infallible. Every System B table image a write sends comes
+/// from a [`crate::FlashPlan`]: the flash's own, and the plan `apply` and the
+/// line commands build with `plan_for_parameters` for the group-object
+/// table reload (#540). `plan_flash` refuses an application in which a
+/// descriptor would take such a size ([`unknown_object_sizes`]) before any
+/// image is built, so no write sends the fallback for one. The check and
+/// every builder (flat, dynamic, module) take the size through
+/// [`bussard_product::ResolvedComObject::object_size`]; the test
+/// `test_unknown_object_sizes_agrees_with_the_descriptor_builders` exercises
+/// the flat builder. (System 7 keeps the product's TYPE octet instead.)
 pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
     object_size.and_then(object_size_code).unwrap_or(0)
 }
@@ -386,17 +390,15 @@ pub(crate) fn unknown_object_sizes(
         let Some(size) = c.object_size().filter(|s| object_size_code(s).is_none()) else {
             continue;
         };
-        let entry = by_object
+        // `resolved_com_objects` comes sorted by number, then ref id: the
+        // first ref met is the object's first by id.
+        by_object
             .entry(c.base.id.clone())
             .or_insert_with(|| UnknownObjectSize {
                 object: c.base.id.clone(),
                 com_object_ref: c.cref.id.clone(),
                 size: size.to_string(),
             });
-        if c.cref.id < entry.com_object_ref {
-            entry.com_object_ref = c.cref.id.clone();
-            entry.size = size.to_string();
-        }
     }
     by_object.into_values().collect()
 }
@@ -413,27 +415,19 @@ pub(crate) struct UnknownObjectSize {
     pub(crate) size: String,
 }
 
-/// The numbers of the com-objects whose own `ObjectSize` has no value field
-/// type code and that have a ref stating a size that has one (issue #1065):
-/// a descriptor written through that ref takes the ref's size. Empty for nearly
-/// every program. The flash read-back compares the whole group-object table
-/// of a program that has one (`bussard-service` `Expected::for_flash`): the
-/// type octets the rule writes are not confirmed by a capture.
-pub fn ref_sized_objects(app: &bussard_product::ApplicationProgram) -> Vec<u16> {
-    let mut out: Vec<u16> = app
-        .resolved_com_objects()
-        .iter()
-        .filter(|c| {
-            c.base
-                .object_size
-                .as_deref()
-                .is_some_and(|s| object_size_code(s).is_none())
-                && c.object_size().and_then(object_size_code).is_some()
-        })
-        .map(|c| c.number())
-        .collect();
-    out.dedup();
-    out
+/// Whether a com-object of `app` whose own `ObjectSize` has no value field
+/// type code has a ref stating a size that has one (issue #1065): a
+/// descriptor written through that ref takes the ref's size, a rule the
+/// flash read-back checks by comparing the whole group-object table
+/// (`bussard-service` `Expected::for_flash`).
+pub fn has_ref_sized_object(app: &bussard_product::ApplicationProgram) -> bool {
+    app.resolved_com_objects().iter().any(|c| {
+        c.base
+            .object_size
+            .as_deref()
+            .is_some_and(|s| object_size_code(s).is_none())
+            && c.object_size().and_then(object_size_code).is_some()
+    })
 }
 
 /// Builds group-object descriptors from a device's resolved com-objects,
@@ -1068,7 +1062,7 @@ mod tests {
     fn test_unknown_object_sizes_takes_the_ref_size_over_the_object_size() {
         let mut app = app_with_legacy_var_data();
         assert!(unknown_object_sizes(&app).is_empty());
-        assert_eq!(ref_sized_objects(&app), vec![7]);
+        assert!(has_ref_sized_object(&app));
 
         // Two refs without a size of their own take the object's: refused,
         // the object named once.
@@ -1105,14 +1099,14 @@ mod tests {
             ]
         );
         // Object 7's first ref still takes its size from the ref.
-        assert_eq!(ref_sized_objects(&app), vec![7]);
+        assert!(has_ref_sized_object(&app));
     }
 
-    /// The pre-check and the descriptor builders read the same size: when
-    /// `unknown_object_sizes` passes an application, every descriptor the
-    /// builders produce has a size with a code, so the `unwrap_or(0)`
-    /// fallback of `size_code_from_object_size` is never taken for a
-    /// declared size (issue #1065).
+    /// The pre-check and the flat descriptor builder read the same size:
+    /// when `unknown_object_sizes` passes an application, every descriptor
+    /// that builder produces has a size with a code (issue #1065). The
+    /// dynamic and module builders take the size through the same
+    /// `ResolvedComObject::object_size`.
     #[test]
     fn test_unknown_object_sizes_agrees_with_the_descriptor_builders() {
         let app = app_with_legacy_var_data();

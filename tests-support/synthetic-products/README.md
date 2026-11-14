@@ -409,7 +409,6 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 | `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
 | `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
 | `syn-bcu2-0021` | the first BCU 2 VM session (#525); bussard refuses BCU 2 | `capture.py syn-bcu2-0021` |
-| `syn-object-size-ref` | the #1065 VM session; the type code bussard writes from the ref is not confirmed by a capture | `capture.py syn-object-size-ref` |
 
 A secure product (`[application.security]`) is captured the way
 `tools/ets-sweep/secure.py` captures a vendor one: `capture.py` starts the

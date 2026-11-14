@@ -1314,7 +1314,8 @@ pub(super) fn sys7_object_defaults(
         let Ok(asap) = u16::try_from(i64::from(base.number) + offset) else {
             continue;
         };
-        let size = cref.object_size.as_deref().or(base.object_size.as_deref());
+        let resolved = bussard_product::ResolvedComObject { base, cref };
+        let size = resolved.object_size();
         out.insert(
             asap,
             Sys7ObjectDefault {
