@@ -518,6 +518,7 @@ impl Device {
             address,
             profile,
             sys7: None,
+            bcu2: None,
             objects,
             loadables,
             memory: Memory::new(),
@@ -712,6 +713,7 @@ impl Device {
             address,
             profile,
             sys7: Some(Sys7Runtime { profile: s7, lsms }),
+            bcu2: None,
             objects,
             loadables,
             memory,
@@ -746,6 +748,175 @@ impl Device {
 }
 
 impl Device {
+    /// Build a BCU 2 device (System 2, masks 0020 / 0021 / 0025, bussard issue
+    /// #525). Objects 0 to 3 are the device, address table, association table
+    /// and application objects (KNX 9/4/1 §5.1.2.13; the mask's
+    /// `FirstAppObjectIdx` is 4). Objects 1 to 3 hold the three LSMs, driven
+    /// over PID 5 with the System 7 records; [`super::bcu2`] adds the BCU 2
+    /// memory map, system table and access levels. The memory holds what a
+    /// fresh BCU 2 of the product's hardware holds: the mask version at 004Fh,
+    /// OptionReg FFh, the product manufacturer at 0101h, this application's id
+    /// at 0103h and PEI type at 0109h, RunError FFh (no error), and an address
+    /// table of length 1 with the own address at 0116h (9/4/1 §5.1.2.12).
+    pub(super) fn build_system2(
+        address: IndividualAddress,
+        product: &ProductData,
+        initial_state: LoadState,
+        mask: u16,
+        prog_mode: bool,
+        secure: Option<crate::secure::DataSecureSession>,
+        events: std::sync::Arc<dyn EventSink>,
+    ) -> Self {
+        use super::bcu2;
+        let manufacturer = manufacturer_id_from_app(&product.application_id).unwrap_or(0);
+        let program_manufacturer =
+            crate::prod::program_manufacturer(&product.application_id).unwrap_or(manufacturer);
+        let mut app_id = program_manufacturer.to_be_bytes().to_vec();
+        app_id.extend_from_slice(
+            &u16::try_from(product.application_number)
+                .unwrap_or(0)
+                .to_be_bytes(),
+        );
+        app_id.push(u8::try_from(product.application_version).unwrap_or(0));
+        let pei = product.pei_type.unwrap_or(0);
+
+        let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
+        let mut device_object = InterfaceObject::new();
+        device_object.set_property(PID_OBJECT_TYPE, Property::read_only(vec![0, 0]));
+        device_object.set_property(PID_PROGMODE, Property::writable(vec![u8::from(prog_mode)]));
+        device_object.set_property(
+            0x0C,
+            Property::read_only(manufacturer.to_be_bytes().to_vec()),
+        );
+        device_object.set_property(
+            0x0F,
+            Property::read_only(order_info_bytes(&product.application_id)),
+        );
+        // PID_DEVICE_CONTROL: bit 2 is Verify Mode, mandatory on BCU 2
+        // (Profiles §4.2 row 3; the mask's `VerifyMode` feature).
+        device_object.set_property(
+            super::interface_object::PID_DEVICE_CONTROL,
+            Property::writable(vec![0x00]),
+        );
+        device_object.set_property(bcu2::PID_PEI_TYPE, Property::read_only(vec![pei]));
+        for (pid, value) in &product.device_compare_props {
+            device_object.set_property(*pid, Property::read_only(value.clone()));
+        }
+        objects.insert(0, device_object);
+
+        let mut lsms: BTreeMap<u8, Sys7LoadStateMachine> = BTreeMap::new();
+        let mut loadables: BTreeMap<u8, ObjectState> = BTreeMap::new();
+        for lsm_index in 1u8..=3 {
+            let mut io = InterfaceObject::new();
+            io.set_property(
+                PID_OBJECT_TYPE,
+                Property::read_only(u16::from(lsm_index).to_be_bytes().to_vec()),
+            );
+            io.set_property(
+                PID_LOAD_STATE_CONTROL,
+                Property::writable(vec![initial_state.to_byte()]),
+            );
+            let reference: u16 = if lsm_index == 1 && mask != 0x0025 {
+                bcu2::ADDRESS_TABLE
+            } else {
+                0
+            };
+            io.set_property(
+                PID_TABLE_REFERENCE,
+                Property::read_only(reference.to_be_bytes().to_vec()),
+            );
+            if lsm_index == bcu2::APP_OBJECT {
+                io.set_property(PID_PROGRAM_VERSION, Property::read_only(app_id.clone()));
+                io.set_property(bcu2::PID_PEI_TYPE, Property::read_only(vec![pei]));
+            }
+            objects.insert(lsm_index, io);
+            let lsm = if product
+                .task_segment_lsms
+                .as_ref()
+                .is_none_or(|l| l.contains(&lsm_index))
+            {
+                Sys7LoadStateMachine::new(initial_state)
+            } else {
+                Sys7LoadStateMachine::without_task_segment(initial_state)
+            };
+            lsms.insert(lsm_index, lsm);
+            loadables.insert(
+                lsm_index,
+                ObjectState {
+                    lsm: LoadStateMachine::new(initial_state),
+                    base: 0,
+                    descriptor: LoadableObject {
+                        lsm_index,
+                        name: format!("BCU 2 LSM {lsm_index}"),
+                        max_size: None,
+                        image: Vec::new(),
+                    },
+                    mcb_written: BTreeMap::new(),
+                    write_extent: 0,
+                },
+            );
+        }
+        seed_procedure_props(&mut objects, product, 0);
+
+        let mut memory = Memory::new();
+        memory.seed(0x004E, &[0x00, (mask & 0xFF) as u8]);
+        memory.seed(0x0100, &[0xFF]);
+        memory.seed(u32::from(bcu2::MANUFACTURER), &manufacturer.to_be_bytes());
+        memory.seed(u32::from(bcu2::APPLICATION_ID), &app_id);
+        memory.seed(u32::from(bcu2::PEI_TYPE), &[pei]);
+        memory.seed(u32::from(bcu2::RUN_ERROR), &[0xFF]);
+        memory.seed(u32::from(bcu2::ADDRESS_TABLE), &[0x01]);
+        memory.seed(u32::from(bcu2::ADDRESS_TABLE) + 1, &address.0.to_be_bytes());
+        for (at, value) in &product.compare_mems {
+            memory.seed(u32::from(*at), value);
+        }
+        // The LSM records are the System 7 ones over PID 5; the memory-map
+        // fields of this profile are unused on a BCU 2.
+        let s7 = profile::Sys7Profile {
+            mask,
+            lsm_access: profile::LsmAccess::Property,
+            mm_lsm: profile::MemoryMappedLsm::default(),
+            memory_map: profile::Sys7MemoryMap::default(),
+            bcu_key: None,
+            hardware_type: [0; 10],
+        };
+        Self {
+            address,
+            profile: Profile::System2 { mask },
+            sys7: Some(Sys7Runtime { profile: s7, lsms }),
+            bcu2: Some(bcu2::Bcu2Runtime::new(product)),
+            objects,
+            loadables,
+            memory,
+            access_level: 15,
+            connected: false,
+            tx_seq: 0,
+            rx_seq: 0,
+            l4_exchange_budget: None,
+            l4_exchanges: 0,
+            l4: Default::default(),
+            group_comm: None,
+            prog_mode,
+            security_object: secure
+                .as_ref()
+                .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
+            knxnet_by_type: None,
+            typed_objects: typed_objects_for(product, address, false).1,
+            knxnet_slots: 0,
+            ip_secure: None,
+            secure,
+            restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
+            max_allocation: None,
+            // A BCU 2 predates the Master Reset (Profiles §4.2 row 11c: optional);
+            // the sim runs it as a basic restart without an answer.
+            master_reset: MasterResetSupport::Basic,
+            intermediate_reports: 0,
+            intermediate: std::collections::BTreeMap::new(),
+            factory_properties: Vec::new(),
+            events,
+        }
+    }
+
     /// Build a property-only device (bussard issue #390): the Jung IPS 300
     /// SREG KNX IP interface (mask 0021), whose load procedure only compares
     /// and writes properties. Its object-index walk lists a device object and
@@ -800,6 +971,7 @@ impl Device {
             address,
             profile,
             sys7: None,
+            bcu2: None,
             objects,
             loadables: BTreeMap::new(),
             memory: Memory::new(),

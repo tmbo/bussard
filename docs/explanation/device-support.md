@@ -39,7 +39,11 @@ only when its load procedure holds property compares and writes alone. It loads 
 factory-resets the interface, and ends with a read-back of every property it
 wrote. Every other System 1 and System 2 download (BCU1, BCU2: memory
 allocation and table writes) is refused before anything is written; program
-those devices with ETS.
+those devices with ETS. The shape decides only on `0021`: a System B
+application whose complete load procedure writes properties alone (no master
+reset, no segment allocation, no table load) is refused on every other mask,
+naming the shape, rather than run as a property-only device. The assistant
+shows a property-only plan but does not write it; `bussard flash` does.
 
 - **`flash`** supports System B (`07B0`, and the `57B0` / `27B0` KNX-IP and
   RF variants), System 7 (`0705` / `0701` / `0700`) and the property-only

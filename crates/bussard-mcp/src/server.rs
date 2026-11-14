@@ -694,31 +694,21 @@ impl BussardMcp {
             group: args.group,
         };
         let model = self.state().model.current();
-        // The keyring rules (issue #205) against the server's keyring: never
-        // prompts; without BUSSARD_KEYRING_PASSWORD one info line says the
-        // key checks were skipped.
+        // The rules `bussard validate` runs, one function (issue #1112), with
+        // the server's keyring: never prompts; without
+        // BUSSARD_KEYRING_PASSWORD one info line says the key checks were
+        // skipped.
         let facts = self
             .state()
             .keyring
             .as_deref()
             .map(|path| bussard_service::secure::keyring_facts(path, "the server's keyring"));
-        let mut extra = bussard_model::validate_keyring(&model, facts.as_ref());
-        // W034 (issue #297): secured GAs only tunnel clients can write.
-        extra.extend(bussard_service::admission::tunnel_gap_diagnostics(
-            &model,
-            facts.as_ref(),
-        ));
-        // W047 (issue #391): an IP interface's [knxnet] tunnels against the
-        // tunnelling addresses the key store lists for it.
-        extra.extend(
-            bussard_service::admission::knxnet_tunnel_keyring_diagnostics(&model, facts.as_ref()),
-        );
-        // W040 (issue #348): keyring exports older than the key store.
-        extra.extend(bussard_model::keystore_meta::stale_export_diagnostics(
+        let run = bussard_service::validate_report::validate_project(
             &model,
             &self.state().dir,
-        ));
-        ok(tools::validate_filtered(&model, extra, &filter))
+            facts.as_ref(),
+        );
+        ok(tools::validate_filtered(&model, run, &filter))
     }
 
     // `knx_read_group` (omitted in passive mode).

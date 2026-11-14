@@ -4,7 +4,8 @@
 //! (the shared [`crate::style`], respecting `NO_COLOR`) or as a JSON array. Exits with a failure code if any
 //! diagnostic is an error.
 //!
-//! Besides the model's own rules it checks the configured keyring (issue
+//! The rules are the ones `knx_validate` runs, one function in the service
+//! (issue #1112). Among them the configured keyring (issue
 //! #205, [`bussard_model::validate_keyring`]): the keyring `BUSSARD_KEYRING`
 //! or `connection.keyring` names is decrypted at most once, with the password
 //! from `BUSSARD_KEYRING_PASSWORD`; without it one info line says the key
@@ -14,6 +15,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use bussard_model::{Diagnostic, Model, Severity, validate_in_dir};
+use bussard_service::validate_report::{
+    ValidateFilter, ValidateReport, ValidateRun, validate_project,
+};
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::style::{Style, Tone, count};
@@ -32,20 +36,19 @@ impl Run for ValidateArgs {
     }
 }
 
-/// Runs the validate command over the model in `dir`.
+/// Runs the validate command over the model in `dir`: the rule set
+/// `knx_validate` runs ([`validate_project`], issue #1112).
 fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let model = Model::load(dir)?;
-    let mut diagnostics = validate_in_dir(&model, dir);
-    diagnostics.extend(keyring_diagnostics(&model, dir));
-    diagnostics.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
+    let run = validate_project(&model, dir, keyring_facts(dir).as_ref());
+    let has_errors = bussard_model::has_errors(&run.diagnostics);
 
     if json {
-        print_json(&diagnostics);
+        print_json(run);
     } else {
-        print_text(&diagnostics);
+        print_text(&run.diagnostics);
     }
 
-    let has_errors = bussard_model::has_errors(&diagnostics);
     Ok(if has_errors {
         ExitCode::FAILURE
     } else {
@@ -53,28 +56,13 @@ fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     })
 }
 
-/// The keyring rules for the model in `dir`: the keyring `BUSSARD_KEYRING`
-/// or `connection.keyring` names (the bus commands' resolver without a
-/// `--keyring` flag), checked by [`bussard_model::validate_keyring`].
-fn keyring_diagnostics(model: &Model, dir: &Path) -> Vec<Diagnostic> {
+/// The keyring `BUSSARD_KEYRING` or `connection.keyring` names (the bus
+/// commands' resolver without a `--keyring` flag), decrypted at most once.
+fn keyring_facts(dir: &Path) -> Option<bussard_model::KeyringFacts> {
     let env = crate::conn_cmd::EnvGlobals::from_process();
-    let facts =
-        bussard_service::secure::keyring_file(dir, None, env.keyring.as_deref()).map(|resolved| {
-            bussard_service::secure::keyring_facts(&resolved.path, resolved.source.describe())
-        });
-    let mut diags = bussard_model::validate_keyring(model, facts.as_ref());
-    // W034 (issue #297): secured GAs only tunnel clients can write, on
-    // devices that do not admit the tunnelling addresses.
-    diags.extend(bussard_service::admission::tunnel_gap_diagnostics(
-        model,
-        facts.as_ref(),
-    ));
-    // W047 (issue #391): an IP interface's [knxnet] tunnels against the
-    // tunnelling addresses the key store lists for it.
-    diags.extend(
-        bussard_service::admission::knxnet_tunnel_keyring_diagnostics(model, facts.as_ref()),
-    );
-    diags
+    bussard_service::secure::keyring_file(dir, None, env.keyring.as_deref()).map(|resolved| {
+        bussard_service::secure::keyring_facts(&resolved.path, resolved.source.describe())
+    })
 }
 
 /// Prints diagnostics in rustc style.
@@ -114,12 +102,9 @@ fn render_text(diagnostics: &[Diagnostic], style: Style) -> String {
     out
 }
 
-/// Prints the diagnostics as the JSON document `knx_validate` returns.
-fn print_json(diagnostics: &[Diagnostic]) {
-    let report = bussard_service::validate_report::ValidateReport::new(
-        diagnostics.to_vec(),
-        &bussard_service::validate_report::ValidateFilter::all(),
-    );
+/// Prints the run as the JSON document `knx_validate` returns.
+fn print_json(run: ValidateRun) {
+    let report = ValidateReport::new(run, &ValidateFilter::all());
     if let Err(e) = crate::output::report(&report) {
         eprintln!("error: failed to serialize diagnostics: {e}");
     }

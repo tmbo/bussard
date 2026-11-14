@@ -33,7 +33,12 @@ import threading
 import time
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    # Only a sweep run writes sim.yaml; the offline tests (and CI) run
+    # without pyyaml. `uv run` installs it from the header above.
+    yaml = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vm  # noqa: E402
