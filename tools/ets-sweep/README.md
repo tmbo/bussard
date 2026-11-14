@@ -213,6 +213,14 @@ the version octet's nibbles in decimal (0x1C is `1.12`, 0xB1 is `11.1`).
 `defaults.py --relabel` applies the rule to the results already recorded,
 without the VM.
 
+**Two applications at one version.** An order number can carry two
+applications that show the same version (Siemens N512 `5WG1 512-1AB01`:
+`A-9007` and `A-9083`, both 0.1; the driver took the first and captured 9007
+for 9083, #525). `sweep.py` passes the application's names (its `Name` and
+every translation, `application_names`) to `catalog_add`, and the driver
+takes the row whose application cell (cut off at `...`) matches one of them;
+with no clear winner it raises "ambiguous catalog rows" instead of adding.
+
 What ETS needed from the sim in this part: connectionless
 `A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
 capable devices before connecting), and the device identity above. A KNX
