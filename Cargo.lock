@@ -257,7 +257,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bussard-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-download"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-mgmt",
  "bussard-model",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-ha"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-model",
  "bussard-testkit",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-mcp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-mgmt"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-model",
  "bussard-secure",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-model"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-monitor"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-model",
  "bussard-project",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-product"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-project"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64 0.22.1",
  "bussard-model",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-secure"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-service"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "base64 0.22.1",
  "bussard-download",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-testkit"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-model",
  "bussard-secure",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-transport"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bussard-model",
  "bussard-secure",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "bussard-viz"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
