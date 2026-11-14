@@ -726,7 +726,12 @@ async fn test_flash_parameters_only_checks_the_base_a_master_reset_moved() -> Te
         .device(moving_device(armed.clone(), 2, moved)?)
         .start()
         .await?;
-    open!(gw, bus, session);
+    let (handle, _actor) =
+        bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    handle
+        .wait_connected(std::time::Duration::from_secs(5))
+        .await;
+    let mut session = Session::open(Lease { handle }, None, None).await?;
     flash_defaults(&gw, &mut session, &app).await?;
     let full = plan_of(&app, &delay(20))?;
     let partial = full.parameters_only(&read_parameter_regions(session.l4(), &full, &[]).await)?;
@@ -751,4 +756,48 @@ async fn test_flash_parameters_only_checks_the_base_a_master_reset_moved() -> Te
     assert_eq!(dev.load_state(4), LS_LOADED);
     assert_eq!(dev.read_mem(moved, 3), vec![1, 0, 20]);
     Ok(())
+}
+
+/// A plain [`Connector`] that leases the bus actor, so a session can
+/// reconnect after a master reset reboots the device (the shape of
+/// `flash_mock.rs`'s `LeaseConnector`).
+struct Lease {
+    handle: bussard_transport::bus::BusHandle,
+}
+
+impl Connector for Lease {
+    type Channel = bussard_mgmt::LeaseChannel;
+
+    async fn connect(
+        &mut self,
+    ) -> Result<Layer4Connection<bussard_mgmt::LeaseChannel>, WriteError> {
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
+        let lease = self.handle.lease().await.map_err(|_| {
+            WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                bussard_transport::TransportError::Closed,
+            ))
+        })?;
+        Layer4Connection::connect(
+            bussard_mgmt::LeaseChannel::new(lease),
+            ia("1.1.1").map_err(|_| {
+                WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                    bussard_transport::TransportError::Closed,
+                ))
+            })?,
+            ia("0.0.255").map_err(|_| {
+                WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                    bussard_transport::TransportError::Closed,
+                ))
+            })?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await
+        .map_err(WriteError::Mgmt)
+    }
+
+    fn link_losses(&self) -> u64 {
+        self.handle.link_losses()
+    }
 }

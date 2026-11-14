@@ -793,14 +793,6 @@ mod tests {
         // Review of #1139, finding 4: the program version the `par`
         // procedure writes is a constant; a device that does not answer its
         // read does not block a parameter write a restore could undo.
-        let regions = ParamRegions::from([(
-            "RS-1".to_string(),
-            bussard_download::ParamRegion {
-                segment_id: "RS-1".to_string(),
-                address: 0x6000,
-                bytes: vec![0],
-            },
-        )]);
         let fixed = bussard_download::ParamProperty {
             object: bussard_download::PropObject::Index(4),
             prop_id: 13,
@@ -812,7 +804,17 @@ mod tests {
             fixed: true,
             mask: None,
         };
-        assert!(super::super::apply::check_backup_covers(&regions, &[fixed]).is_ok());
+        let parameter = bussard_download::ParamProperty {
+            prop_id: 201,
+            model: vec![1],
+            device: Some(vec![1]),
+            fixed: false,
+            ..fixed.clone()
+        };
+        assert!(
+            super::super::apply::check_backup_covers(&ParamRegions::new(), &[parameter, fixed])
+                .is_ok()
+        );
         Ok(())
     }
 
