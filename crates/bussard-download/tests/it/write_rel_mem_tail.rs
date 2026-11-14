@@ -6,7 +6,9 @@
 //! with `Mode` 1, `Fill` 0 and writes 15 octets; the 32-bit `marker`
 //! (`C3 00 00 00`) sits at octets 12 to 15, the shape of the Gira push-button
 //! rockers `M-0008_A-1161-23-518D-O000A` and `A-1162-21-2E13-O000A`, where
-//! ETS wrote `C3` and nothing past the write. The device holds octet 15 from
+//! ETS wrote `C3` and nothing past the write. The ETS capture of this
+//! product (`captures/synthetic/syn-writerelmem-tail`) writes octets 0 to 12
+//! and leaves 13 to 15 to the fill. The device holds octet 15 from
 //! the fill; the flash's read-back samples the octets the sparse write left
 //! to the fill, so a device that ignores the fill fails the flash.
 
@@ -93,11 +95,15 @@ async fn test_flash_write_rel_mem_tail_held_by_the_fill_reads_back() -> TestResu
     let (outcome, dev) = run(device()?, &plan).await?;
     let outcome = outcome?;
     assert!(outcome.ok(), "the flash verifies: {outcome:?}");
-    // The marker is on the device, its last octet from the fill.
-    assert_eq!(dev.read_mem(BASE + 12, 4), vec![0xC3, 0x00, 0x00, 0x00]);
-    // Nothing past the write's 15 octets was written.
+    // ETS wrote these 13 octets at 0x6000 and nothing else of the segment
+    // (captures/synthetic/syn-writerelmem-tail/defaults, image.json): the
+    // write stops at the `C3` that starts the marker, octets 13 to 15 stay
+    // at the Mode 1 fill 0.
+    let ets = bussard_model::text::from_hex("01012c000000000000000000c3")?;
+    assert_eq!(dev.read_mem(BASE, 13), ets);
+    assert_eq!(dev.read_mem(BASE + 13, 3), vec![0x00; 3]);
     let last = last_written_octet(&dev).ok_or("a memory write")?;
-    assert!(last < 15, "wrote octet {last}");
+    assert_eq!(last, 12, "wrote up to octet {last}, ETS up to octet 12");
     Ok(())
 }
 
