@@ -19,6 +19,14 @@
 //! uses where they differ, so the characters whose octet depends on that
 //! choice are refused rather than guessed (see [`TextCodec::Undeclared`]).
 //!
+//! A character that none of the three holds (`℃`, U+2103) is written as `?`
+//! (0x3F), the replacement character of a .NET single-octet encoder, which is
+//! what ETS 6 writes (issue #1065): its download of the KNX Smart Touch S3
+//! `M-0085_A-0098-12-75FF` (no `TextParameterEncoding`, a 3-octet `Text for
+//! unit` at its default `℃`) wrote `3F 00 00`
+//! (`captures/ets-sweep/M-0085_A-0098-12-75FF/plain-defaults`, segment
+//! offset 136). The choice of candidate does not matter for such a character.
+//!
 //! A program that declares a name this module does not know has no stated
 //! code page: ASCII text is the same octets in every candidate and is written,
 //! anything else is refused.
@@ -40,9 +48,12 @@ pub enum TextCodec {
     /// No declaration: ISO 8859-1, as ETS writes it (issue #416), limited to
     /// the characters whose octet is the same in ISO 8859-1, Windows-1252 and
     /// ISO 8859-15: ASCII and U+00A0 to U+00FF without the eight Latin-9
-    /// replaces. A character outside that set (the euro sign, `Š`, a C1
-    /// control, anything beyond U+00FF) is refused: no capture shows what ETS
-    /// writes for it.
+    /// replaces. A character no candidate holds (anything beyond U+00FF that
+    /// is not in Windows-1252's or ISO 8859-15's extra characters, up to
+    /// U+FFFF) is written as `?`, as ETS writes it (issue #1065). A character
+    /// whose octet depends on the candidate (the euro sign, `Š`, a C1 control)
+    /// and one beyond U+FFFF are refused: no capture shows what ETS writes for
+    /// them.
     Undeclared,
     /// A declared name this module does not know: ASCII text is written (the
     /// same octets in every candidate), anything else refused.
@@ -176,6 +187,12 @@ impl TextCodec {
             _ => {
                 let mut out = Vec::with_capacity(len);
                 for c in text.chars() {
+                    // ETS's encoder replaces a character no candidate holds
+                    // with `?` (issue #1065).
+                    if self == TextCodec::Undeclared && in_no_candidate(c) {
+                        out.push(b'?');
+                        continue;
+                    }
                     let Some(b) = self.octet(c) else {
                         return Err(match self {
                             TextCodec::Undeclared => format!(
@@ -238,6 +255,18 @@ impl TextCodec {
             TextCodec::Ascii | TextCodec::Unknown => "ASCII",
         }
     }
+}
+
+/// Whether `c` has an octet in none of the code pages an undeclared program's
+/// text may be in (ISO 8859-1, Windows-1252, ISO 8859-15) and lies in the
+/// Basic Multilingual Plane, a single UTF-16 unit for ETS's encoder (issue
+/// #1065).
+fn in_no_candidate(c: char) -> bool {
+    let code = u32::from(c);
+    code > 0xFF
+        && code <= 0xFFFF
+        && !LATIN9.iter().any(|(_, ch)| *ch == c)
+        && !CP1252_HIGH.contains(&Some(c))
 }
 
 /// The octet `b` of an undeclared program's text stands for the same character
@@ -367,7 +396,7 @@ mod tests {
     /// that no one-octet candidate holds, is refused for an undeclared program.
     #[test]
     fn test_encode_undeclared_refuses_outside_the_common_latin1_range() -> TestResult {
-        for text in ["5€", "Šum", "Grün ✓", "\u{0085}", "¤"] {
+        for text in ["5€", "Šum", "\u{0085}", "¤", "Grün 😀"] {
             let err = TextCodec::Undeclared
                 .encode(text, 16)
                 .err()
@@ -375,6 +404,23 @@ mod tests {
             assert!(err.contains("issue #416"), "{err}");
         }
         assert_eq!(TextCodec::Undeclared.decode(b"5\x80"), "5\u{FFFD}");
+        Ok(())
+    }
+
+    /// ETS's download of `M-0085_A-0098-12-75FF` (issue #1065): `℃` in the
+    /// 3-octet `Text for unit` of a program without `TextParameterEncoding`
+    /// is `3F 00 00`.
+    #[test]
+    fn test_encode_undeclared_writes_a_character_no_candidate_holds_as_question_mark() -> TestResult
+    {
+        assert_eq!(TextCodec::Undeclared.encode("℃", 3)?, [0x3F, 0x00, 0x00]);
+        assert_eq!(TextCodec::Undeclared.encode("20 ℉", 6)?, b"20 ?\0\0");
+        assert_eq!(TextCodec::Undeclared.encode("Grün ✓", 8)?, b"Gr\xFCn ?\0\0");
+        // One octet per character, so the field still bounds the text.
+        assert!(TextCodec::Undeclared.encode("℃℃℃℃", 3).is_err());
+        // A declared code page keeps refusing it: no capture shows ETS there.
+        assert!(TextCodec::Latin1.encode("℃", 3).is_err());
+        assert!(TextCodec::Latin9.encode("℃", 3).is_err());
         Ok(())
     }
 
