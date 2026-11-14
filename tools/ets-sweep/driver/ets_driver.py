@@ -292,6 +292,21 @@ def ets_pid() -> int:
     return ets_main_window().process_id()
 
 
+def desktop_windows(enumerate_windows, attempts: int = 3) -> list:
+    """The desktop's top-level windows. pywinauto wraps each window while it
+    enumerates them, and a window that closes meanwhile (a dropdown popup
+    closing, Hager 207E 2026-11-14, #1049) raises InvalidWindowHandle for the
+    whole list: enumerate again."""
+    for attempt in range(attempts):
+        try:
+            return enumerate_windows()
+        except Exception:  # noqa: BLE001 - a window vanished during the enumeration
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1)
+    return []
+
+
 def ets_popups() -> list:
     """Visible ETS windows other than the main one: menus, dropdowns, dialogs."""
     from pywinauto import Desktop as _D
@@ -299,7 +314,7 @@ def ets_popups() -> list:
     pid = ets_pid()
     main = ets_main_window().handle
     out = []
-    for w in _D(backend="win32").windows():
+    for w in desktop_windows(lambda: _D(backend="win32").windows()):
         try:
             if w.process_id() == pid and w.is_visible() and w.handle != main:
                 out.append(DESKTOP.window(handle=w.handle))
@@ -1978,8 +1993,7 @@ def dropdown_options(row: dict) -> list[str]:
     the list stays open for `pick_option`."""
     x0, x1 = row["box"]
     click((x0 + x1) // 2, row["y"])
-    pop = wait_for("dropdown list", lambda: next((p for p in ets_popups()
-                                                  if p.descendants(control_type="ListItem")), None), 3, 0.2)
+    pop = wait_for("dropdown list", listing_popup, 3, 0.2)
     if pop is None:
         # A dropdown ETS shows but does not open (read-only, Ekinex 4741
         # 'Last Typ', 2026-11-11): nothing was changed, so the change is
@@ -1991,6 +2005,63 @@ def dropdown_options(row: dict) -> list[str]:
         texts = [t.window_text() for t in it.descendants(control_type="Text")]
         out.append(" ".join(t for t in texts if t).strip())
     return out
+
+
+def listing_popup():
+    """The ETS popup that shows list items (an open dropdown), or None. A
+    popup that closes while it is queried is skipped: on Hager 207E
+    (2026-11-14) another popup vanished during the wait for the list and
+    the InvalidWindowHandle failed `set_param` (#1049)."""
+    for p in ets_popups():
+        try:
+            if p.descendants(control_type="ListItem"):
+                return p
+        except Exception:  # noqa: BLE001 - a vanished popup is a closed one
+            continue
+    return None
+
+
+def _inside(inner, outer) -> bool:
+    """Whether rectangle `inner` lies within `outer` (pywinauto rectangles)."""
+    return (inner.left >= outer.left and inner.right <= outer.right
+            and inner.top >= outer.top and inner.bottom <= outer.bottom and inner.bottom > inner.top)
+
+
+def click_list_item(pop, it) -> str:
+    """Choose list item `it` of the open dropdown `pop`. An item outside
+    the list's visible part (a long list opens scrolled to the current
+    value) is scrolled into view first; a click there hit nothing in the
+    list and closed it without a choice: Hager 207E "Schaltschwelle" pick
+    "2 Lux" near the top of the list did not take (#1049). An item still
+    not visible is selected through UI Automation, or without that pattern
+    reached with Home and Down, and confirmed with Enter. Returns how it was
+    chosen."""
+    try:
+        if not _inside(it.rectangle(), pop.rectangle()):
+            it.iface_scroll_item.ScrollIntoView()
+            time.sleep(0.3)
+    except Exception:  # noqa: BLE001 - no scroll pattern: try the click as before
+        pass
+    try:
+        visible = _inside(it.rectangle(), pop.rectangle())
+    except Exception:  # noqa: BLE001 - the rectangle is unknown: click as before
+        visible = True
+    if visible:
+        it.click_input()
+        COUNTS["clicks"] += 1
+        return "click"
+    try:
+        it.select()
+    except Exception:  # noqa: BLE001 - no SelectionItem pattern (207E, 2026-11-14)
+        # The keyboard: Home to the list's first item, Down to this one.
+        items = pop.descendants(control_type="ListItem")
+        index = next(i for i, x in enumerate(items) if x == it)
+        keys("{HOME}" + "{DOWN}" * index)
+        time.sleep(0.2)
+        keys("{ENTER}")
+        return "keys"
+    keys("{ENTER}")
+    return "select"
 
 
 def popup_lists_open() -> bool:
@@ -2017,8 +2088,7 @@ def pick_option(text: str) -> bool:
         for it in items:
             texts = " ".join(t.window_text() for t in it.descendants(control_type="Text")).strip()
             if texts == text:
-                it.click_input()
-                COUNTS["clicks"] += 1
+                click_list_item(pop, it)
                 # The open list covers the dropdown: read the row after.
                 wait_for("dropdown closed", lambda: not popup_lists_open(), 2, 0.15)
                 return True
