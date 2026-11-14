@@ -5,7 +5,7 @@
   the load, and runs the procedure's steps without `AppliesTo` (MergeId 7's
   MCB checks of the tables, for example). Only the parameter octets that
   differ from the device are written, as before. A device whose tables differ
-  from the project is refused before anything is written. `bussard plan`
-  reads the fixed property writes only when a write will run, and a second
-  parameter backup within the same second no longer replaces the first
-  (#1085).
+  from the project is refused before anything is written. A program whose
+  procedure refills a segment or erases more than the parameters keeps the
+  previous download, noted as not confirmed by a capture. A second backup
+  within the same second no longer replaces the first (#1085).
