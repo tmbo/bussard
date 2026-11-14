@@ -306,13 +306,13 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
     }
     if req_apci == apci::A_PROPERTY_VALUE_READ {
         let (oi, pid, count, start) = decode_prop_header(data)?;
+        if pid == PID_OBJECT_TYPE {
+            dev.object_type_reads += 1;
+        }
         let empty = prop_response(oi, pid, 0, start, &[]);
         let answer = |d: &[u8]| prop_response(oi, pid, 1, start, d);
         let resp = match (oi, pid) {
-            (_, PID_OBJECT_TYPE) => match {
-                dev.object_type_reads += 1;
-                [0u16, 1, 2, 3].get(usize::from(oi))
-            } {
+            (_, PID_OBJECT_TYPE) => match [0u16, 1, 2, 3].get(usize::from(oi)) {
                 Some(ot) => answer(&ot.to_be_bytes()),
                 None => empty,
             },
