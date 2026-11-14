@@ -244,6 +244,14 @@ impl FlashPlan {
                         occurrence: *occurrence,
                     }
                 ),
+                // A Master Reset on System 7 (issue #1065): the parameter-only
+                // cut writes only the parameter segments back, so it would
+                // drop or not restore what the reset erases. Refused, never
+                // dropped.
+                FlashStep::MasterReset { erase_code, .. } if self.is_sys7() => format!(
+                    "a master reset with erase code {erase_code} (LdCtrlMasterReset) on System 7, \
+                     which the parameter-only download cannot restore"
+                ),
                 FlashStep::DeclareProp {
                     object, prop_id, ..
                 } if self.is_sys7() => format!(

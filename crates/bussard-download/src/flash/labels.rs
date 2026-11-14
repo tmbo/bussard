@@ -12,6 +12,8 @@ pub(super) struct LabelCtx<'a> {
     pub confirmed_restart: bool,
     /// The System 7 segments are written by read-compare.
     pub sys7_read_compare: bool,
+    /// The plan is a System 7 download.
+    pub sys7: bool,
     /// A parameter-only download against the resident memory.
     pub parameters_only: bool,
     /// The address each segment's baseline was read at before the download.
@@ -360,7 +362,12 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             erase_code,
             channel_number,
         } => format!(
-            "master reset (erase code {erase_code}, channel {channel_number}) — reconnect and resume"
+            "master reset (erase code {erase_code}, channel {channel_number}{}) — reconnect and resume",
+            if super::plan::master_reset_captured(ctx.sys7, *erase_code, *channel_number) {
+                ""
+            } else {
+                ", not confirmed by a capture"
+            }
         ),
         FlashStep::Sys7Unload { lsm } => format!("[S7] unload LSM {lsm}"),
         FlashStep::Sys7StartLoading { lsm } => format!("[S7] open LSM {lsm} for loading"),

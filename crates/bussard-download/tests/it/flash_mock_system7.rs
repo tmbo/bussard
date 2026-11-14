@@ -523,6 +523,14 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         let writes = s.memory_writes_seen;
         s.master_resets
             .push((payload.first().copied().unwrap_or(0), writes));
+        // The reset erases what a download left: every load-state machine
+        // back to Unloaded, the memory, and PID_DEVICE_CONTROL (RAM) with
+        // its verify mode, as the restart does.
+        for v in s.lsm_states.values_mut() {
+            *v = LS_UNLOADED;
+        }
+        s.memory.clear();
+        s.device_control = 0;
         if s.reboot_on_restart {
             s.rebooting = true;
         }
@@ -5259,10 +5267,36 @@ fn test_plan_flash_sys7_master_reset_after_the_load_began_refused()
     .err()
     .ok_or("a reset inside the load planned")?;
     assert!(
-        err.to_string()
-            .contains("after the System 7 load has begun"),
+        err.to_string().contains("after a step it would undo"),
         "{err}"
     );
+    // A function property call is not read back: a reset after it is
+    // refused as well.
+    let mut app = app_with_function_call()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let call = ops
+        .iter()
+        .position(|op| matches!(op, LoadOp::InvokeFunctionProp { .. }))
+        .ok_or("the procedure calls a function")?;
+    ops.insert(
+        call + 1,
+        LoadOp::MasterReset {
+            erase_code: Some(5),
+            channel_number: Some(0),
+        },
+    );
+    let err = plan_flash_default(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .err()
+    .ok_or("a reset after a function call planned")?;
+    assert!(err.to_string().contains("InvokeFunctionProp"), "{err}");
     Ok(())
 }
 
@@ -5296,6 +5330,12 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
         None,
         &BTreeMap::new(),
     )?;
+    assert!(
+        plan.steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::Sys7PreDownloadRestart { .. })),
+        "the plan carries the pre-download pass"
+    );
     // SAFETY: nextest runs each test in its own process, so this
     // process-global env write races with no other thread.
     unsafe {
@@ -5314,6 +5354,18 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
     let s = lock(&state);
     assert_eq!(s.master_resets, vec![(6, 0), (5, 0)]);
     assert!(s.memory_writes_seen > 0);
+    // One authorized connection at the start, one after the pre-download
+    // pass's restart and one after each reset.
+    assert_eq!(s.authorizes_seen, 4, "connections authorized");
+    // Verify mode is switched on after the resets, which cleared it, before
+    // the first memory write.
+    assert!(
+        s.device_control_writes
+            .iter()
+            .any(|v| v & DEVICE_CONTROL_VERIFY_MODE != 0),
+        "{:?}",
+        s.device_control_writes
+    );
     for lsm in 1..=3 {
         assert_eq!(s.lsm_states.get(&lsm), Some(&LS_LOADED), "LSM {lsm}");
     }

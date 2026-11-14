@@ -247,6 +247,8 @@ fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profi
 /// | `LoadImageProp{oi,pid}` | [`FlashStep::LoadImageProp`] (Jung A-A011 MCB)  |
 /// | `Restart`               | [`FlashStep::Restart`]                          |
 /// | `Delay{ms}`             | [`FlashStep::Delay`] (a pause, nothing sent)    |
+/// | `MasterReset{ec,ch}`    | [`FlashStep::MasterReset`] (before the load only, |
+/// |                         | erase codes 2 and 3 refused; issue #1065)      |
 ///
 /// [`add_ets_prelude`] then adds ETS's pre-download restart pass and, on a
 /// `VerifyMode` mask, the verify-mode switch.
@@ -383,6 +385,11 @@ pub(super) fn plan_flash_sys7(
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #946,
     // as on System B since #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
+    // What the device holds after a Master Reset of its parameters, as on
+    // System B (issue #951, #1065): a write of a value the reset restores is
+    // not sent, as ETS sends none (the Hager 0701 `M-0009_A-E0ED-10-0B6F`:
+    // no write to objects 6 to 8 after its resets).
+    let mut device_image = super::factory::DeviceImage::default();
     // The parameters placed in properties, resolved once (issue #945).
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
 
@@ -697,6 +704,9 @@ pub(super) fn plan_flash_sys7(
                 declared.push(decl);
             }
             LoadOp::WriteProp { .. } => {
+                let lowered_from = steps.len();
+                let declared_target =
+                    super::declare::declaration_for(&declared, step_no, op).is_some();
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
                 if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
@@ -727,6 +737,9 @@ pub(super) fn plan_flash_sys7(
                         app,
                         false,
                     )?);
+                }
+                for step in &mut steps[lowered_from..] {
+                    device_image.settle(step, app, declared_target);
                 }
             }
             LoadOp::LoadImageProp {
@@ -764,20 +777,22 @@ pub(super) fn plan_flash_sys7(
                 erase_code,
                 channel_number,
             } => {
-                if sys7_load_begun(&steps) {
+                if let Some(before) = steps.iter().find(|s| !sys7_kept_by_a_reset(s)) {
                     return Err(PlanError::UnsupportedOp {
                         op: format!(
-                            "LdCtrlMasterReset after the System 7 load has begun (step {step_no}): \
-                             it would erase what the steps before it wrote"
+                            "LdCtrlMasterReset after a step it would undo (step {step_no}, after \
+                             `{}`): only precondition checks, delays, earlier resets and property \
+                             writes (read back after the flash) may come before it on System 7",
+                            plan_label(before)
                         ),
                     });
                 }
-                // One octet each on the wire; absent, the confirmed restart
-                // (1) of the whole device (0), as on System B.
-                steps.push(FlashStep::MasterReset {
-                    erase_code: erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8,
-                    channel_number: channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8,
-                });
+                steps.push(super::plan::lower_master_reset(
+                    step_no,
+                    *erase_code,
+                    *channel_number,
+                    &mut device_image,
+                )?);
             }
             LoadOp::Raw { name, attrs } if name == "LdCtrlCompareMem" => {
                 let (address, expected) =
@@ -2053,23 +2068,35 @@ pub(super) fn mem_type_for_addr(addr: u32, profile: &bussard_mgmt::Sys7Profile) 
     }
 }
 
-/// Whether a lowered System 7 procedure has begun the load: a load-state
-/// event, an allocation or task record, or a memory write.
-fn sys7_load_begun(steps: &[FlashStep]) -> bool {
-    steps.iter().any(|s| {
-        matches!(
-            s,
-            FlashStep::Sys7Unload { .. }
-                | FlashStep::Sys7StartLoading { .. }
-                | FlashStep::Sys7AbsSegment { .. }
-                | FlashStep::Sys7TaskSegment { .. }
-                | FlashStep::Sys7TaskCtrl1 { .. }
-                | FlashStep::Sys7TaskPtr { .. }
-                | FlashStep::Sys7TaskCtrl2 { .. }
-                | FlashStep::Sys7LoadCompleted { .. }
-                | FlashStep::WriteMem { .. }
-        )
-    })
+/// Whether a lowered step may come before an `LdCtrlMasterReset` on System
+/// 7 (issue #1065): a step the reset cannot undo, or one whose effect the
+/// flash checks afterwards. Precondition checks and delays change nothing; an
+/// earlier reset is undone by nothing; a declaration sends nothing; a
+/// property write is read back after the flash (#390), so a reset that erased
+/// it fails the read-back. The Hager 0701 `M-0009_A-E0ED-10-0B6F` writes the
+/// routing count before its resets, as ETS sends it. Everything else (a load
+/// step, an allocation, a memory write, a function property call) refuses the
+/// reset.
+fn sys7_kept_by_a_reset(step: &FlashStep) -> bool {
+    matches!(
+        step,
+        FlashStep::CompareProp { .. }
+            | FlashStep::Sys7CompareMem { .. }
+            | FlashStep::Delay { .. }
+            | FlashStep::MasterReset { .. }
+            | FlashStep::DeclareProp { .. }
+            | FlashStep::WriteProp { .. }
+    )
+}
+
+/// A short name of a step for a refusal.
+fn plan_label(step: &FlashStep) -> String {
+    let debug = format!("{step:?}");
+    debug
+        .split([' ', '{', '('])
+        .next()
+        .unwrap_or(&debug)
+        .to_string()
 }
 
 /// A human label for a System 7 op that this engine cannot lower.

@@ -1586,13 +1586,33 @@ impl FlashPlan {
         if self.is_property_only() || self.knxnet_ip().is_some() {
             return;
         }
-        let at = self
-            .steps
-            .iter()
-            .rposition(|s| matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }))
-            .unwrap_or(self.steps.len());
+        let at = self.terminal_restart().unwrap_or(self.steps.len());
         self.steps
             .insert(at, FlashStep::KnxnetIpParameters { program });
+    }
+
+    /// The index of the plan's closing restart: the first `Restart` or
+    /// `MasterReset` after the last load completion. A Master Reset before
+    /// the load (the Hager 0701 shape, issue #1065) is not one; a plan
+    /// without a closing restart has none.
+    fn terminal_restart(&self) -> Option<usize> {
+        let after = self
+            .steps
+            .iter()
+            .rposition(|s| {
+                matches!(
+                    s,
+                    FlashStep::LoadCompleted { .. }
+                        | FlashStep::Sys7LoadCompleted { .. }
+                        | FlashStep::TypedLoadControl { .. }
+                )
+            })
+            .map_or(0, |i| i + 1);
+        self.steps
+            .get(after..)?
+            .iter()
+            .position(|s| matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }))
+            .map(|i| i + after)
     }
 
     /// The KNXnet/IP parameter writes the plan carries (issue #455).
@@ -1809,6 +1829,7 @@ impl FlashPlan {
                 uncompared: &uncompared,
                 confirmed_restart: self.confirmed_restart,
                 sys7_read_compare: self.sys7_read_compare(),
+                sys7: self.is_sys7(),
                 parameters_only: self.is_parameters_only(),
                 baseline_address: Some(&self.baseline_address),
             },
@@ -2318,6 +2339,45 @@ mod tests {
             .filter(|s| matches!(s, FlashStep::KnxnetIpParameters { .. }))
             .count();
         assert_eq!(blocks, 1);
+        Ok(())
+    }
+
+    /// A Master Reset before the load is not the closing restart (issue
+    /// #1065): without a closing restart the KNXnet/IP writes go last, after
+    /// the load, never before the reset.
+    #[test]
+    fn test_add_knxnet_ip_skips_a_master_reset_before_the_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{FlashStep, KnxnetIpProgram, PropObject};
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        plan.steps
+            .retain(|s| !matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }));
+        plan.steps.insert(
+            0,
+            FlashStep::MasterReset {
+                erase_code: 5,
+                channel_number: 0,
+            },
+        );
+        let program = KnxnetIpProgram {
+            object: PropObject::Index(6),
+            writes: Vec::new(),
+        };
+        plan.add_knxnet_ip(program);
+        assert!(matches!(
+            plan.steps.last(),
+            Some(FlashStep::KnxnetIpParameters { .. })
+        ));
+        assert!(matches!(plan.steps[0], FlashStep::MasterReset { .. }));
         Ok(())
     }
 

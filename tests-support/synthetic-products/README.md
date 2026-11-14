@@ -143,7 +143,7 @@ Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
 `LdCtrlWriteProp` (`object`, `prop_id`, optional `start_element`, `count`, `verify`,
 `inline_data` in hex; without `inline_data` the value is what the parameters
 placed in that property compose, so a parameter must be placed there). A System 7 product procedure
-also takes `LdCtrlMasterReset` (#1065), `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
+also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
 `LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`), and
 `LdCtrlDelay` (`milliseconds`, #615). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
