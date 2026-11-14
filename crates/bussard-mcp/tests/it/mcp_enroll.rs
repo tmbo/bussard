@@ -446,13 +446,18 @@ fn element_text<'a>(html: &'a str, id: &str) -> Result<&'a str, BoxError> {
     Ok(&rest[open..open + close])
 }
 
+/// The session code of each link seen in this test process.
+fn session_codes() -> &'static Mutex<HashMap<String, String>> {
+    static CODES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CODES.get_or_init(Mutex::default)
+}
+
 /// The key and the session code of `link`. The code is a million PBKDF2
 /// rounds, so each link's code is derived once per test (#1118).
 fn key_and_code(link: &str) -> Result<(String, String), BoxError> {
-    static CODES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     let params = fragment(link)?;
     let key = params.get("k").cloned().ok_or("no key")?;
-    let codes = CODES.get_or_init(Mutex::default);
+    let codes = session_codes();
     if let Some(code) = codes.lock().map_err(|_| "poisoned")?.get(link) {
         return Ok((key, code.clone()));
     }
@@ -472,6 +477,17 @@ fn key_and_code(link: &str) -> Result<(String, String), BoxError> {
 /// The pairing page at `url`: the phone link it shows, after checking the
 /// page's session code is the one of the link's key.
 fn pairing_link(url: &str) -> Result<String, BoxError> {
+    let (link, shown) = shown_link_and_code(url)?;
+    let (_, code) = key_and_code(&link)?;
+    assert_eq!(shown, code);
+    Ok(link)
+}
+
+/// The phone link and the session code the pairing page at `url` shows,
+/// without deriving the code from the link: [`key_and_code`] then returns
+/// the shown code for that link. For a test's later pages, once
+/// [`pairing_link`] checked the derivation on its first (#1118).
+fn shown_link_and_code(url: &str) -> Result<(String, String), BoxError> {
     let html = ureq::get(url).call()?.into_string()?;
     let link = element_text(&html, "phone-link")?
         .replace("&#39;", "'")
@@ -479,10 +495,14 @@ fn pairing_link(url: &str) -> Result<String, BoxError> {
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&amp;", "&");
-    let (_, code) = key_and_code(&link)?;
-    assert_eq!(element_text(&html, "code")?, code);
+    let code = element_text(&html, "code")?.to_string();
     assert_no_secret(&html);
-    Ok(link)
+    session_codes()
+        .lock()
+        .map_err(|_| "poisoned")?
+        .entry(link.clone())
+        .or_insert_with(|| code.clone());
+    Ok((link, code))
 }
 
 /// The pairing page's last status, read as the page's own script reads it:
@@ -795,8 +815,36 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     let next = started["next_step"].as_str().ok_or("no next_step")?;
     assert!(next.contains("Do not repeat the pairing page"), "{next}");
 
-    // A new session can start once the last one ended, on a new page.
-    let second = spawn_call(&client, "knx_enroll_certificates", json!({}));
+    let progress = human.progress().join(" ");
+
+    let results = format!("{started} {running} {detailed} {stopped} {progress}");
+    assert_no_secret(&results);
+    assert_no_link(&results, &link, &pairing)?;
+    Ok(())
+}
+
+/// A new session can start once the last one ended, on a new page. Its own
+/// test, apart from the stop test, so that neither derives more than two
+/// session codes (a million PBKDF2 rounds each, #1118).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_knx_enroll_certificates_after_stop_opens_a_new_page() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path(), "")?;
+    let human = Human::new(false, ElicitationAction::Accept);
+    let browser = FakeBrowser::default();
+    let client = Arc::new(start_with(dir.path(), human.clone(), browser.clone()).await?);
+
+    let first = spawn_call(&client, "knx_enroll_certificates", json!({"local": true}));
+    let opened = browser.clone();
+    let pairing = opened_page(|| opened.opened(), || first.is_finished()).await?;
+    let page_url = pairing.clone();
+    let (link, _) = tokio::task::spawn_blocking(move || shown_link_and_code(&page_url)).await??;
+    let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
+    assert_eq!(stopped["end"], "stopped", "{stopped}");
+    let started = tokio::time::timeout(Duration::from_secs(30), first).await???;
+    assert_eq!(started["end"], "stopped", "{started}");
+
+    let second = spawn_call(&client, "knx_enroll_certificates", json!({"local": true}));
     let opened = browser.clone();
     let next_pairing = opened_page(
         || opened.opened().into_iter().skip(1).collect(),
@@ -805,15 +853,16 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     .await?;
     assert_ne!(next_pairing, pairing);
     let page_url = next_pairing.clone();
-    let next_link = tokio::task::spawn_blocking(move || pairing_link(&page_url)).await??;
+    let (next_link, _) =
+        tokio::task::spawn_blocking(move || shown_link_and_code(&page_url)).await??;
     assert_ne!(next_link, link);
-    let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
-    assert_eq!(stopped["end"], "stopped", "{stopped}");
+    let next_stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
+    assert_eq!(next_stopped["end"], "stopped", "{next_stopped}");
     let next = tokio::time::timeout(Duration::from_secs(30), second).await???;
     assert_eq!(next["end"], "stopped", "{next}");
     let progress = human.progress().join(" ");
 
-    let results = format!("{started} {running} {detailed} {stopped} {next} {progress}");
+    let results = format!("{stopped} {started} {next_stopped} {next} {progress}");
     assert_no_secret(&results);
     assert_no_link(&results, &link, &pairing)?;
     assert_no_link(&results, &next_link, &next_pairing)?;
