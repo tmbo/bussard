@@ -57,10 +57,10 @@ mem-read 0x6064 addr_int=24676 count=50 secured=tool
 mem-read 0x6096 addr_int=24726 count=50 secured=tool
 mem-read 0x60c8 addr_int=24776 count=50 secured=tool
 mem-read 0x60fa addr_int=24826 count=6 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
 mem-read 0x8000 addr_int=32768 count=2 secured=tool
 mem-read 0x8002 addr_int=32770 count=2 secured=tool
-prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
 prop-read type17.1/PID53 count=1 index=0 key_material=True secured=tool
 prop-read type17.1/PID61 count=1 index=0 secured=tool
 prop-read type17.1/PID61 count=1 index=1 secured=tool
