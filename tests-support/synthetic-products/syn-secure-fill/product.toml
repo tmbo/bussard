@@ -6,14 +6,13 @@ purpose = """
 syn-secure (KNX Data Secure capable 07B0, MergedProcedure) with the parameter
 segment allocated `LdCtrlRelSegment Mode="1" Fill="255"`: the device fills the
 segment, so bussard writes it sparsely (only the octets that differ from the
-fill, #123), and with the confirmed restart of a secure-capable System B
-program it opens a full download with a factory reset, erase code 7
-(`insert_factory_reset`, crates/bussard-download/src/flash/plan.rs). About a
-third of the 07B0 sweep rows carry that reset where ETS sends none on a fresh
-device (#1081). The `reload` variant downloads the application twice into one
-sim: the second download runs over the programmed, activated device, and is
-ETS's reference for what it sends in place of the reset."""
-construct = "Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard plans a factory reset)"
+fill, #123). With the confirmed restart of a secure-capable System B program
+bussard opened such a download with a factory reset, erase code 7, which ETS
+sends on neither a fresh nor a programmed device; #1081 removed it. The
+`reload` variant downloads the application twice into one sim: the second
+download runs over the programmed, activated device, and is ETS's reference
+for what it sends there (the unloads and the filled allocation, no reset)."""
+construct = "Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard planned a factory reset ETS does not send, removed in #1081)"
 issues = [1081, 1056, 423]
 
 [product]

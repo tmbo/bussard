@@ -40,9 +40,7 @@ impl FlashPlan {
     ///   `Mode="0"` allocation keeps the memory contents);
     /// - an object the plan only unloads (no allocation, no load) gets no
     ///   `Unload` when `resident` read it `Unloaded`, as ETS reads object 5
-    ///   and leaves it alone;
-    /// - the factory reset the planner adds for a sparse write of a filled
-    ///   segment goes when no allocation is filled any more.
+    ///   and leaves it alone.
     ///
     /// Returns whether the plan changed. A no-op on a System 7, property-only
     /// or parameter-only plan, and on a product that declares no `par`
@@ -99,13 +97,6 @@ impl FlashPlan {
             _ => true,
         });
         changed |= self.steps.len() != before;
-        let filled = self.steps.iter().any(
-            |s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()),
-        );
-        if !filled && self.has_factory_reset() {
-            self.skip_factory_reset();
-            changed = true;
-        }
         self.par_procedure = changed;
         changed
     }
@@ -151,14 +142,12 @@ mod tests {
     #[test]
     fn test_use_par_procedure_takes_the_par_allocation() -> Result<(), Box<dyn std::error::Error>> {
         let mut plan = super::super::test_support::par_pair_plan()?;
-        assert!(plan.has_factory_reset(), "the full plan opens with a reset");
         let changed = plan.use_par_procedure(Some(&resident(&[
             (4, LoadState::Loaded),
             (5, LoadState::Unloaded),
         ])));
         assert!(changed);
         assert!(plan.is_par_procedure());
-        assert!(!plan.has_factory_reset());
         let allocs: Vec<_> = plan
             .steps
             .iter()

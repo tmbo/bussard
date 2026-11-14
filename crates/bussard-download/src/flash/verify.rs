@@ -176,8 +176,8 @@ impl FlashPlan {
     /// Every object the plan names counts as present; `app_obj` is the
     /// application object an op without an index resolves to. Returns the
     /// objects dropped. The caller gates it the way the executor's skip is
-    /// gated (`skip_unchanged` in `bussard-service`): not on a plan that
-    /// erases resident objects ([`FlashPlan::erases_resident_objects`]).
+    /// gated (`skip_unchanged` in `bussard-service`): only where
+    /// [`FlashPlan::allows_resident_skip`].
     pub fn skip_resident_matches(
         &mut self,
         mcbs: &std::collections::BTreeMap<u8, (u32, u16)>,
@@ -474,6 +474,52 @@ pub(super) fn advisory_mcb_warning(obj_idx: u32, err: &WriteError) -> String {
     )
 }
 
+/// The read-back sample of the octets a sparse write over a filled segment
+/// skipped (issue #1081): up to 4 octets at the start of the first gap
+/// between the written `regions` of a `len`-octet image at `addr`, expected
+/// to hold `fill`. `None` when the write left no octet out, or when
+/// `written`, the step's own read-back sample, already reads an octet of
+/// that gap (it samples the image's first octets, written or not).
+///
+/// The sparse write is right only when the device filled the segment on the
+/// allocation (Management Procedures 03_05_02 §3.31.3.4, Mode bit 0). A
+/// passed MCB check of the segment proves that for every octet (its CRC runs
+/// over the whole image, fill included) and stands in for this sample; where
+/// no such check runs (3 of the 56 sweep programs that used to carry the
+/// factory reset), this one read catches a device that kept other contents
+/// at the sampled octets. It is a sample, not proof: a device that ignores
+/// the fill flag and happens to hold the fill byte there passes.
+pub(super) fn fill_sample(
+    addr: u32,
+    len: usize,
+    regions: &[(usize, usize)],
+    fill: u8,
+    segment: Option<(u8, String)>,
+    written: Option<&WrittenSample>,
+) -> Option<WrittenSample> {
+    let mut at = 0usize;
+    let mut gap = None;
+    for &(start, end) in regions {
+        if start > at {
+            gap = Some((at, start));
+            break;
+        }
+        at = at.max(end);
+    }
+    let (start, end) = gap.or((at < len).then_some((at, len)))?;
+    let (gap_start, gap_end) = (addr + start as u32, addr + end as u32);
+    if written.is_some_and(|w| w.address < gap_end && gap_start < w.address + w.bytes.len() as u32)
+    {
+        return None;
+    }
+    Some(WrittenSample {
+        address: addr + start as u32,
+        bytes: vec![fill; (end - start).min(4)],
+        segment,
+        mask: None,
+    })
+}
+
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.
 pub(super) fn take_sample(bytes: &[u8]) -> Vec<u8> {
     bytes[..bytes.len().min(4)].to_vec()
@@ -504,6 +550,30 @@ mod tests {
     /// The ABB BE/S16 / Busch-Wächter PRO 280 shape (issue #145): the
     /// application image on object 4, a companion program's on object 5.
     const TABLE: [(u8, u16); 5] = [(1, 1), (2, 2), (3, 9), (4, 3), (5, 3)];
+
+    #[test]
+    fn test_fill_sample_takes_the_first_skipped_octets() -> Result<(), Box<dyn std::error::Error>> {
+        let sample = fill_sample(0x4000, 6, &[(1, 2), (3, 4), (5, 6)], 0xFF, None, None)
+            .ok_or("a gap at octet 0")?;
+        assert_eq!(sample.address, 0x4000);
+        assert_eq!(sample.bytes, vec![0xFF]);
+        let sample = fill_sample(0x4000, 16, &[(0, 4)], 0x00, None, None).ok_or("a tail gap")?;
+        assert_eq!(sample.address, 0x4004);
+        assert_eq!(sample.bytes, vec![0; 4]);
+        assert_eq!(fill_sample(0x4000, 4, &[(0, 4)], 0x00, None, None), None);
+        // The step's own sample of octets 0 to 3 already reads the gap at 0.
+        let own = WrittenSample {
+            address: 0x4000,
+            bytes: vec![0, 1, 0, 3],
+            segment: None,
+            mask: None,
+        };
+        assert_eq!(
+            fill_sample(0x4000, 6, &[(1, 2), (3, 4)], 0x00, None, Some(&own)),
+            None
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_mcb_read_object_reads_the_companion_object_it_wrote() {

@@ -1007,10 +1007,9 @@ pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
 /// channel_number]`, as a numbered request, and reads the device's
 /// `A_Restart_Response` (APCI `0x3A1`).
 ///
-/// This is the ETS wire shape for the factory reset that opens an initial System
-/// B download (`4f 81 07 00` answered by `4f a1 00 00 08`, erase code 7) and for
-/// the confirmed restart that ends it (erase code 1), both from the issue #117
-/// captures. After answering, the device reboots and drops the L4 connection, so
+/// This is the ETS wire shape of a factory reset (`4f 81 07 00` answered by
+/// `4f a1 00 00 08`, erase code 7) and of the confirmed restart that ends a
+/// download (erase code 1), both from the issue #117 captures. After answering, the device reboots and drops the L4 connection, so
 /// the caller must wait [`restart_process_wait`] and reconnect; this function
 /// only performs the exchange.
 ///

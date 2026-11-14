@@ -23,9 +23,12 @@
 //! The same split holds for the factory reset (erase code 7) ETS opens an
 //! "unload + download" of a secure-capable device with: an application that
 //! is not secure-capable is unloaded with load controls and a basic restart,
-//! never with a master reset. [`FlashPlan`](super::FlashPlan) therefore adds
-//! its factory reset only where [`restart_form`] is
-//! [`RestartForm::Confirmed`].
+//! never with a master reset.
+//! [`FlashPlan::require_factory_reset`](super::FlashPlan::require_factory_reset)
+//! therefore adds its factory reset (for a device with another application or
+//! an unreadable state) only where
+//! [`restart_form`] is [`RestartForm::Confirmed`]. A download onto a fresh
+//! device or one with the same application opens with no reset (issue #1081).
 //!
 //! # Master Reset support
 //!

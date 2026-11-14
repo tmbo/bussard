@@ -65,9 +65,11 @@ Table 1) lists the same four as mandatory and the absolute and task records
 | `LdCtrlInvokeFunctionProp` | `A_FunctionPropertyCommand` (object by index) or `A_FunctionPropertyExtCommand` (by type), 3/3/7 §3.4.7.1 and §3.4.8.1; return code 00h is success, a response without one means the property is no function property (§3.4.7.3) | `FlashStep::InvokeFunctionProp` on System B and System 7 (`flash/function_prop.rs`, `bussard_mgmt::function_property`): one call with the op's `InlineData`, named in the plan; a non-zero return code, a response without one, a response for another property or no response fails the flash. A parameter-only download of such a procedure is refused (no capture shows which calls it makes). An index or PID past what the service carries (8 bits plain, 12-bit PID extended) is refused, never clamped. ETS reads the description of PID 53 of the same object after each plain call; bussard does not | supported (#946): the 54 Berker/Hager 0701 rows call object 5 PID 52 with `04` and `10` before the unloads, the Hager 07B0 rows object 6 PID 52, the Gira `M-0008_A-E000-10-89B0-O0077` object type 65281 PID 208 with `FF` (identical). The dump records both forms as `function_property`; `knxtrace image` writes ETS's calls to `function_properties.json` and `imgdiff` compares them by object, PID and input (`fcall=` in the oracle summary; E00D: `fcall=ok(2)`, the Gira row `fcall=ok(1)`) |
 | other `Raw` | | refused before any write | |
 
-The factory reset that opens a download of a secure-capable application
-(erase code 07h, Master Reset §3.7.1.2 Table 4, AN194 for what it resets) is
-not an op: `plan_flash` inserts it from the restart form.
+The factory reset (erase code 07h, Master Reset §3.7.1.2 Table 4, AN194 for
+what it resets) is not an op. `plan_flash` never inserts one (issue #1081: ETS
+sends none on a fresh or a programmed device, the filled allocation covers the
+unwritten octets); `FlashPlan::require_factory_reset` adds it for a
+secure-capable application over another or an unreadable one.
 
 ## Where the frame ops come from
 
@@ -173,7 +175,7 @@ parameter is written at its default regardless (#450).
 ## Master reset
 
 No vendor device in the corpus uses `LdCtrlMasterReset`; its only user is KNX
-Virtual. The factory reset bussard sends itself (erase code 7) and the
+Virtual. The factory reset bussard sends over another application (erase code 7) and the
 confirmed restart (erase code 1) are the Master Reset of 3/5/2 §3.7.1.2 with
 the process time of §3.7.1.2.2 honoured as a minimum wait; above 60 s bussard
 logs a warning and still waits it out (#546).
