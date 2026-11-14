@@ -483,20 +483,50 @@ pub fn device_backup_file_name(address: &str, unix_timestamp: u64) -> String {
 /// Writes one device's backup into `dir`, creating the directory if needed, and
 /// returns the file written.
 pub fn write_device_backup(dir: &Path, backup: &DeviceBackup) -> Result<PathBuf, BackupError> {
+    let body = serde_json::to_string_pretty(backup).map_err(BackupError::Encode)?;
+    write_new_backup(dir, &backup.address, backup.unix_timestamp, &body)
+}
+
+/// Writes `body` into `dir` as `<address>-<unix time>.json`, creating the
+/// directory if needed, and returns the file written. A file of that name
+/// is never replaced: a second backup of the device within the same second
+/// is written as `<address>-<unix time>-2.json`, and so on (issue #1085);
+/// [`find_device_backup`] ranks it after the first.
+fn write_new_backup(
+    dir: &Path,
+    address: &str,
+    unix_timestamp: u64,
+    body: &str,
+) -> Result<PathBuf, BackupError> {
+    use std::io::Write as _;
     std::fs::create_dir_all(dir).map_err(|source| BackupError::Io {
         path: dir.to_path_buf(),
         source,
     })?;
-    let path = dir.join(device_backup_file_name(
-        &backup.address,
-        backup.unix_timestamp,
-    ));
-    let body = serde_json::to_string_pretty(backup).map_err(BackupError::Encode)?;
-    std::fs::write(&path, body).map_err(|source| BackupError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    Ok(path)
+    let mut n = 1u32;
+    loop {
+        let path = if n == 1 {
+            dir.join(device_backup_file_name(address, unix_timestamp))
+        } else {
+            dir.join(format!("{address}-{unix_timestamp}-{n}.json"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(body.as_bytes())
+                    .map_err(|source| BackupError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(source) => return Err(BackupError::Io { path, source }),
+        }
+    }
 }
 
 /// The parameter memory a parameter-only download is about to rewrite, saved
@@ -567,26 +597,15 @@ pub fn parameter_backups_dir(model_dir: &Path) -> PathBuf {
     backups_root(model_dir).join("parameters")
 }
 
-/// Writes a [`ParameterBackup`] into `dir` as `<address>-<unix time>.json`,
-/// creating the directory if needed, and returns the file written.
+/// Writes a [`ParameterBackup`] into `dir` as `<address>-<unix time>.json`
+/// (a later one of the same second with a `-2` suffix, and so on), creating
+/// the directory if needed, and returns the file written.
 pub(crate) fn write_parameter_backup(
     dir: &Path,
     backup: &ParameterBackup,
 ) -> Result<PathBuf, BackupError> {
-    std::fs::create_dir_all(dir).map_err(|source| BackupError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let path = dir.join(device_backup_file_name(
-        &backup.address,
-        backup.unix_timestamp,
-    ));
     let body = serde_json::to_string_pretty(backup).map_err(BackupError::Encode)?;
-    std::fs::write(&path, body).map_err(|source| BackupError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    Ok(path)
+    write_new_backup(dir, &backup.address, backup.unix_timestamp, &body)
 }
 
 /// Reads a [`ParameterBackup`] back from disk (`bussard restore
@@ -650,7 +669,7 @@ pub fn find_device_backup(dir: &Path, address: IndividualAddress) -> Result<Path
         path: dir.to_path_buf(),
         source,
     })?;
-    let mut best: Option<(u64, PathBuf)> = None;
+    let mut best: Option<((u64, u32), PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -662,7 +681,10 @@ pub fn find_device_backup(dir: &Path, address: IndividualAddress) -> Result<Path
         let Some(ts) = stem.strip_prefix(&prefix) else {
             continue;
         };
-        let ts: u64 = ts.parse().unwrap_or(0);
+        // `<unix time>` or `<unix time>-<n>`, a later backup of the same
+        // second ([`write_new_backup`]).
+        let (secs, n) = ts.split_once('-').unwrap_or((ts, "1"));
+        let ts: (u64, u32) = (secs.parse().unwrap_or(0), n.parse().unwrap_or(1));
         if best.as_ref().is_none_or(|(seen, _)| ts >= *seen) {
             best = Some((ts, path));
         }
@@ -805,6 +827,51 @@ mod tests {
         assert_eq!(back, with);
         assert_eq!(back.properties[0].object, "index 10");
         assert_eq!(back.properties[0].octets(), Some(vec![5, 9]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_parameter_backup_keeps_a_second_backup_of_the_same_second()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1085: two parameter writes within one second each keep
+        // their own backup.
+        let dir = tempfile::tempdir()?;
+        let memory_only = r#"{"address":"1.1.4","mask":"07B0","application":"M-00FA_A-0002",
+            "unix_timestamp":7,"read_time":"t","regions":[]}"#;
+        let first: ParameterBackup = serde_json::from_str(memory_only)?;
+        let second = ParameterBackup {
+            application: "M-00FA_A-0003".to_string(),
+            ..first.clone()
+        };
+        let a = write_parameter_backup(dir.path(), &first)?;
+        let b = write_parameter_backup(dir.path(), &second)?;
+        assert_ne!(a, b);
+        assert_eq!(a.file_name().and_then(|n| n.to_str()), Some("1.1.4-7.json"));
+        assert_eq!(
+            b.file_name().and_then(|n| n.to_str()),
+            Some("1.1.4-7-2.json")
+        );
+        assert_eq!(read_parameter_backup(&a)?, first);
+        assert_eq!(read_parameter_backup(&b)?, second);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_device_backup_keeps_a_second_backup_of_the_same_second()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let addr: IndividualAddress = "1.1.4".parse()?;
+        let at = UNIX_EPOCH + Duration::from_secs(9);
+        let first = DeviceBackup::capture(addr, &live(), None, None, at);
+        let a = write_device_backup(dir.path(), &first)?;
+        let b = write_device_backup(dir.path(), &first)?;
+        assert_eq!(a.file_name().and_then(|n| n.to_str()), Some("1.1.4-9.json"));
+        assert_eq!(
+            b.file_name().and_then(|n| n.to_str()),
+            Some("1.1.4-9-2.json")
+        );
+        // The later one of the same second is the latest.
+        assert_eq!(find_device_backup(dir.path(), addr)?, b);
         Ok(())
     }
 

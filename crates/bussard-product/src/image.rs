@@ -48,9 +48,9 @@
 //! `LdCtrlRelSegment` declares, whatever its `Mode` (issues #834, #1061), else
 //! to the values before #1061 (see `unplaced_fill`). A download writes only
 //! the octets of such a segment that a declared parameter occupies
-//! ([`declared_parameter_octets`], issue #1084), so the fill reaches the
-//! device in the octets of a parameter the download does not place, and
-//! nowhere else.
+//! ([`declared_parameter_octets`], issue #1084). Under an allocation without
+//! pre-fill (`Mode` 0) the octets of a parameter the download does not place
+//! hold `00`, as ETS writes them, whatever the fill.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
@@ -129,14 +129,17 @@ const ERASED_FILL: u8 = 0xFF;
 /// `syn-relseg-dataless` (`Mode="0" Fill="165"`, #1054) shows ETS writing
 /// octets 0 to 2 and never 3 to 15, neither `a5` nor `00`. So this fill is
 /// what the image holds in the octets no parameter occupies, which no
-/// download sends, and what a parameter the download does not place goes
-/// out with. Whether ETS sends a hidden parameter's octets under a `Fill`
-/// other than `0` as that fill waits for the capture of
-/// `syn-relseg-dataless-hidden` (#1054). Known limits of this per-LSM
-/// lookup, which no corpus program hits, are listed in #1084.
-fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
+/// download sends. The octets of a parameter the download does not place
+/// take [`HIDDEN_OCTET`] instead under `Mode` 0 ([`UnplacedFill::occupied`]).
+/// Known limits of this per-LSM lookup, which no corpus program hits, are
+/// listed in #1084.
+fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> UnplacedFill {
+    let erased = UnplacedFill {
+        unoccupied: ERASED_FILL,
+        occupied: ERASED_FILL,
+    };
     let Some(lsm) = seg.load_state_machine else {
-        return ERASED_FILL;
+        return erased;
     };
     let full = |applies_to: &Option<String>| {
         applies_to
@@ -154,21 +157,61 @@ fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
                 declared_fill,
                 ..
             } if *idx == lsm && full(applies_to) => {
-                Some(declared_fill.unwrap_or_else(|| fill.prefill().unwrap_or(ERASED_FILL)))
+                let unoccupied =
+                    declared_fill.unwrap_or_else(|| fill.prefill().unwrap_or(ERASED_FILL));
+                let occupied = if fill.prefill().is_none() {
+                    HIDDEN_OCTET
+                } else {
+                    unoccupied
+                };
+                Some(UnplacedFill {
+                    unoccupied,
+                    occupied,
+                })
             }
             _ => None,
         })
-        .unwrap_or(ERASED_FILL)
+        .unwrap_or(erased)
 }
 
-/// Sets every octet that no placement wrote ([`PlacedOctets`]) to the
-/// segment's [`unplaced_fill`] in the image of each relative segment without
-/// `<Data>`. The image length is unchanged.
+/// What [`unplaced_fill`] leaves in the unplaced octets of a relative
+/// segment without `<Data>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnplacedFill {
+    /// The octets no declared parameter occupies.
+    unoccupied: u8,
+    /// The octets a declared parameter occupies that no placement wrote: a
+    /// parameter the download does not place (hidden, or a union member
+    /// other than the one written).
+    occupied: u8,
+}
+
+/// The octet ETS writes into the octets of a parameter the download does not
+/// place, in a relative segment without `<Data>` allocated without pre-fill
+/// (`Mode` bit 0 clear): `00`, neither the parameter's default nor the
+/// declared `Fill` (issue #1084).
+///
+/// Evidence, ETS 6.4.1 into knx-sim: `syn-relseg-dataless-hidden/defaults`
+/// (`captures/synthetic/`, VM session 5, PR #1143), a 2-octet parameter no
+/// block shows at octets 3 and 4, default 4660 (`12 34`), in a `Mode="0"
+/// Fill="165"` segment: ETS writes `01 01 2c 00 00` at 0x6000. The 11 M-00EF
+/// rows of #1061 (`Mode="0" Fill="0"`) agree: 23379 octets of hidden
+/// parameters with a non-zero default, all written `00`.
+const HIDDEN_OCTET: u8 = 0x00;
+
+/// Sets every octet that no placement wrote ([`PlacedOctets`]) in the image
+/// of each relative segment without `<Data>` to the segment's
+/// [`unplaced_fill`]: the octets a declared parameter occupies
+/// ([`declared_parameter_octets`] under `config`) to its
+/// [`UnplacedFill::occupied`], the others to its [`UnplacedFill::unoccupied`].
+/// The image length is unchanged.
 fn apply_erased_fill(
     app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
     images: &mut BTreeMap<String, Vec<u8>>,
     placed: &PlacedOctets,
 ) {
+    let mut declared: Option<PlacedOctets> = None;
     for (seg_id, image) in images.iter_mut() {
         let Some(seg) = app
             .code_segments
@@ -178,10 +221,21 @@ fn apply_erased_fill(
             continue;
         };
         let fill = unplaced_fill(app, seg);
+        let occupied = if fill.occupied == fill.unoccupied {
+            None
+        } else {
+            declared
+                .get_or_insert_with(|| declared_parameter_octets(app, config))
+                .get(seg_id)
+        };
         let written = placed.get(seg_id);
         for (i, octet) in image.iter_mut().enumerate() {
             if !written.is_some_and(|w| w.contains(&i)) {
-                *octet = fill;
+                *octet = if occupied.is_some_and(|o| o.contains(&i)) {
+                    fill.occupied
+                } else {
+                    fill.unoccupied
+                };
             }
         }
     }
@@ -324,7 +378,14 @@ pub fn compute_parameter_image_placed_with(
         mark(&mut placed, slot.slot.segment, range);
     }
 
-    apply_erased_fill(app, &mut images, &placed);
+    // The static path places module parameters by the declared instances,
+    // which `declared_parameter_octets` reads without a configuration.
+    apply_erased_fill(
+        app,
+        &crate::dynamic::DynamicConfig::default(),
+        &mut images,
+        &placed,
+    );
     Ok((images, placed))
 }
 
@@ -893,7 +954,7 @@ fn dynamic_image(
             image.resize(size as usize, 0);
         }
     }
-    apply_erased_fill(app, &mut images, placed);
+    apply_erased_fill(app, config, &mut images, placed);
     Ok(images)
 }
 
@@ -4354,6 +4415,52 @@ mod tests {
             ),
         ] {
             assert_eq!(dataless_with(op)?, vec![fill, 0x80, fill, fill], "{op}");
+        }
+        Ok(())
+    }
+
+    /// A hidden 8-bit parameter (default `0x12`, no block shows it) at octet 2
+    /// of a data-less segment holds `00` under `Mode` 0, whatever the `Fill`,
+    /// and the fill under `Mode` 1 (`syn-relseg-dataless-hidden`, issue
+    /// #1084). Octets no parameter occupies keep the fill.
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_hidden_octets_hold_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for (mode, fill, expected) in [
+            (0, 165, [0xA5, 0x80, 0x00, 0xA5]),
+            (0, 0, [0x00, 0x80, 0x00, 0x00]),
+            (1, 165, [0xA5, 0x80, 0xA5, 0xA5]),
+            (1, 0, [0x00, 0x80, 0x00, 0x00]),
+        ] {
+            let xml = format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+              <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
+              <LoadProcedures><LoadProcedure MergeId="2"><LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="{mode}" Fill="{fill}" /></LoadProcedure></LoadProcedures>
+              <ParameterTypes>
+               <ParameterType Id="M-1_A-1_PT-0" Name="b"><TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" /></ParameterType>
+               <ParameterType Id="M-1_A-1_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+              </ParameterTypes>
+              <Parameters>
+               <Parameter Id="M-1_A-1_P-0" Name="on" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="1" BitOffset="0" /></Parameter>
+               <Parameter Id="M-1_A-1_P-1" Name="hidden" ParameterType="M-1_A-1_PT-1" Value="18"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter>
+              </Parameters>
+              <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-0" RefId="M-1_A-1_P-0" /><ParameterRef Id="M-1_A-1_P-1_R-1" RefId="M-1_A-1_P-1" /></ParameterRefs>
+             </Static>
+             <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1"><ParameterRefRef RefId="M-1_A-1_P-0_R-0" /></ParameterBlock></ChannelIndependentBlock></Dynamic>
+             </ApplicationProgram></KNX>"#
+            );
+            let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+            assert!(uses_dynamic_image(&app));
+            assert!(!app.downloads_invisible_parameters());
+            let (images, placed) =
+                compute_parameter_image_placed(&app, &no_overrides(), &no_bases())?;
+            assert_eq!(images["M-1_A-1_RS-1"], expected, "Mode={mode} Fill={fill}");
+            assert_eq!(placed.get("M-1_A-1_RS-1"), Some(&BTreeSet::from([1usize])));
+            assert_eq!(
+                compute_dynamic_parameter_image(&app, &no_overrides())?,
+                images
+            );
         }
         Ok(())
     }

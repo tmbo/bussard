@@ -170,6 +170,8 @@ impl<'a> FlashInputs<'a> {
     /// The plan is refused (another mask, an unsupported device or op, a
     /// KNXnet/IP parameter without a value in `[knxnet]`).
     pub fn plan(&self, mask: u16) -> Result<FlashPlan, PlanError> {
+        // One evaluation of the Dynamic section for both lowerings.
+        let memo = bussard_product::dynamic::DynamicMemo::new(self.app);
         let mut plan = bussard_download::plan_flash(
             self.app,
             &self.device,
@@ -179,10 +181,11 @@ impl<'a> FlashInputs<'a> {
             self.template_ops.as_deref(),
             &self.table_images,
             &self.object_flags,
-            &bussard_product::dynamic::DynamicMemo::new(self.app),
+            &memo,
         )?;
         // A parameter-only download runs the mask's `par` procedure where it
-        // has one (issue #1052); only it pays for the second lowering.
+        // has one (issues #1052, #1085); only it pays for the second
+        // lowering, on the same inputs.
         if self.parameters_only {
             bussard_download::add_par_procedure(
                 &mut plan,
@@ -193,7 +196,7 @@ impl<'a> FlashInputs<'a> {
                 self.par_template_ops.as_deref(),
                 &self.table_images,
                 &self.object_flags,
-                &bussard_product::dynamic::DynamicMemo::new(self.app),
+                &memo,
             );
         }
         // A property-only procedure (an IP interface, issue #390) writes the

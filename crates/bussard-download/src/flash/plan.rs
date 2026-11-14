@@ -417,9 +417,9 @@ pub fn plan_flash(
 }
 
 /// Adds to `plan` (a [`plan_flash`] of the same inputs) the lowering of the
-/// mask's parameter-only procedure `par_ops` (issue #1052): what
+/// mask's parameter-only procedure `par_ops` (issues #1052, #1085): what
 /// [`FlashPlan::parameters_only`] then runs for a System B program spliced
-/// into the master template whose parameters all live in properties. The
+/// into the master template, with parameters in memory or in properties. The
 /// application's blocks are filtered to the ops whose `AppliesTo` includes
 /// `par` (KNX 3/5/3 §3.9.3.6; the E802 and E804 sweep captures). A no-op for
 /// any other plan, and without `par_ops` (a mask whose master data and
@@ -632,6 +632,9 @@ fn plan_flash_as(
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
     let mut last_written_image: Option<ImageRef> = None;
+    // The objects whose base pointer the parameter-only procedure read
+    // before its unload (issue #1052): only those are compared after it.
+    let mut table_references_read: BTreeSet<u32> = BTreeSet::new();
     // Track the image streamed into each object index, so a `LoadImageProp{obj}`
     // that targets a table object verifies that object's own MCB against the
     // bytes written to it — not the last object written. Real multi-object System
@@ -1339,14 +1342,25 @@ fn plan_flash_as(
                 prop_id: Some(TABLE_REFERENCE),
                 ..
             } if download == Download::Par => {
+                table_references_read.insert(*obj_idx);
                 steps.push(FlashStep::ReadTableReference { obj_idx: *obj_idx });
             }
+            // Only the master's placeholder (no value, or all zeros) stands
+            // for the value read before; a compare with a value of its own,
+            // or of an object whose base pointer was not read, is an
+            // ordinary property compare (issue #1085).
             LoadOp::CompareProp {
                 obj_idx: Some(obj_idx),
                 obj_type: None,
                 prop_id: Some(TABLE_REFERENCE),
+                inline_data,
                 ..
-            } if download == Download::Par => {
+            } if download == Download::Par
+                && table_references_read.contains(obj_idx)
+                && inline_data
+                    .as_ref()
+                    .is_none_or(|d| d.iter().all(|b| *b == 0)) =>
+            {
                 steps.push(FlashStep::CompareTableReference { obj_idx: *obj_idx });
             }
 
@@ -1571,6 +1585,7 @@ fn plan_flash_as(
         par_procedure: false,
         par_steps: None,
         from_par_procedure: false,
+        par_fallback: None,
         parameters_only: false,
         kept,
         unoccupied,
@@ -1890,7 +1905,44 @@ pub(super) fn assemble_ops(
                     .extend(ops.map(|(_, op)| op.clone()));
             }
         }
-        let template = if loads_application_program_2(&blocks) {
+        // Whether Application Program 2 is loaded is the complete download's
+        // fact, not the `par` filter's: KNX 3/5/3 §3.9.3.6 runs object 5's
+        // rows whenever it is loaded, even when its blocks hold `full` ops
+        // only (issue #1085).
+        let loads_ap2 = match download {
+            Download::Full => loads_application_program_2(&blocks),
+            Download::Par => {
+                let full = |lp: &LoadProcedure, i: usize| {
+                    !(lp.lists_partial_downloads() && lp.is_partial_only(i))
+                };
+                let ap2_id = |p: &LoadProcedure| {
+                    p.merge_id
+                        .as_deref()
+                        .and_then(|m| m.parse::<u32>().ok())
+                        .filter(|id| AP2_MERGE_IDS.contains(id))
+                };
+                let mut full_blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+                for p in &non_empty {
+                    if let Some(id) = ap2_id(p) {
+                        full_blocks
+                            .entry(id)
+                            .or_default()
+                            .extend(taken_ops(app, p, config, &full)?);
+                    }
+                }
+                // The complete download takes a companion block whole.
+                for p in &companion_blocks {
+                    if let Some(id) = ap2_id(p) {
+                        full_blocks
+                            .entry(id)
+                            .or_default()
+                            .extend(p.ops.iter().cloned());
+                    }
+                }
+                loads_application_program_2(&full_blocks)
+            }
+        };
+        let template = if loads_ap2 {
             template.to_vec()
         } else if download == Download::Par {
             par_program_1_only(template)

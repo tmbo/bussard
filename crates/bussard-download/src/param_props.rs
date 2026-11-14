@@ -308,7 +308,7 @@ impl FlashPlan {
     /// #1052): its own steps for a parameter-only plan built from it, the
     /// lowering it carries for a full plan, `None` otherwise.
     fn par_procedure_writes(&self) -> Option<&[crate::flash::FlashStep]> {
-        if self.is_built_from_par_procedure() {
+        if self.procedure_kind() == crate::flash::ProcedureKind::ParametersByPar {
             Some(&self.steps)
         } else {
             self.par_procedure()
