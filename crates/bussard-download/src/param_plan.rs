@@ -541,8 +541,7 @@ fn parameter_writes<K: Ord + Copy>(
 }
 
 /// The offset and length of the region a System B parameter write's segment
-/// is read back as: the write's own `(offset, len)` (the whole image when
-/// the write starts at the segment base, held tail included), or for a segment the
+/// is read back as: the write's own `(offset, len)`, or for a segment the
 /// download writes in part (issue #411) the whole image from the segment
 /// base, kept octets included, so every write of it and the parameters it
 /// keeps decode from one region.
@@ -553,15 +552,6 @@ fn whole_region(plan: &FlashPlan, offset: u32, image: &ImageRef) -> (u32, usize)
             .image_bytes(&image.segment_id)
             .map_or(image.len, <[u8]>::len);
         (start, len)
-    } else if offset == 0 && image.offset == 0 {
-        // A write cut short of its image whose tail the filled allocation
-        // holds (issue #1065) is read back whole: the held octets carry
-        // parameter values too.
-        let len = plan
-            .image_bytes(&image.segment_id)
-            .map_or(image.len, <[u8]>::len)
-            .max(image.len);
-        (offset, len)
     } else {
         (offset, image.len)
     }
@@ -688,7 +678,15 @@ pub async fn read_parameter_regions<Ch: L4Channel>(
             continue;
         };
         match read_memory_range(l4, addr, len).await {
-            Ok(bytes) => {
+            Ok(mut bytes) => {
+                // The held tail of the write (issue #1065,
+                // [`crate::flash::HeldTail`]) is the allocation's fill: read
+                // back right after a filling download, kept by the device on
+                // a parameter-only one. It decodes as the fill and never
+                // shows as a change the parameter-only download cannot write.
+                if let Some(tail) = plan.held_tail_of(image) {
+                    bytes.resize(tail.end - image.offset, tail.fill);
+                }
                 out.insert(
                     image.segment_id.clone(),
                     ParamRegion {

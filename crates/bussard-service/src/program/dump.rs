@@ -387,8 +387,13 @@ pub fn write_dump(
                 // A write of part of a segment (issue #411) streams only its
                 // part; the rest of the allocation is `kept` (below).
                 let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
-                let part =
-                    (image.offset != 0 || image.len != whole).then_some((image.offset, image.len));
+                // A held tail (issue #1065) is the device's content too: the
+                // dump carries it, so the oracle compares those octets; the
+                // write itself stops at the op's `Size` (`held_tails`).
+                let len = plan
+                    .held_tail_of(image)
+                    .map_or(image.len, |tail| tail.end - image.offset);
+                let part = (image.offset != 0 || len != whole).then_some((image.offset, len));
                 let (rec, mask) = image_record(
                     dir,
                     &mut used,
@@ -824,6 +829,15 @@ pub fn write_dump(
             "address": k.address,
             "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
             "label": k.label(),
+        })).collect::<Vec<_>>(),
+        // The octets past a write's `Size` its filling allocation holds
+        // (issue #1065): not written, read back after a filling allocation.
+        "held_tails": plan.held_tails().iter().map(|t| json!({
+            "segment_id": t.segment,
+            "range": [t.start, t.end],
+            "fill": t.fill,
+            "write_len": t.len,
+            "read_back": "after the write, when the allocation fills; kept by the device otherwise",
         })).collect::<Vec<_>>(),
     });
     let path = dir.join("plan.json");

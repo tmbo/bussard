@@ -872,6 +872,7 @@ pub(super) fn plan_flash_sys7(
         par_fallback: None,
         parameters_only: false,
         kept,
+        held_tails: Vec::new(),
         unoccupied: Vec::new(),
     })
 }

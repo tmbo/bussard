@@ -116,14 +116,15 @@ async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() ->
         vec![0x77],
         "nothing wrote octet 15"
     );
-    let failed = match outcome {
-        Ok(outcome) => !outcome.ok(),
-        Err(_) => true,
-    };
-    assert!(
-        failed,
-        "a device without the fill at the held tail must not verify"
-    );
+    // The held tail is read back right after the write, before the
+    // restart: the flash fails there, naming the octet.
+    match outcome {
+        Err(err) => assert!(err.to_string().contains("memory verify failed"), "{err}"),
+        Ok(outcome) => {
+            return Err(format!("a device without the fill verified: {outcome:?}").into());
+        }
+    }
+    assert_eq!(dev.restarts, 0, "the check runs before the restart");
     Ok(())
 }
 
@@ -168,6 +169,78 @@ async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult
     assert!(
         outcome.ok(),
         "the MCB check and the read-back pass: {outcome:?}"
+    );
+    Ok(())
+}
+
+/// The plan records the held tail per write step (issue #1065): segment,
+/// write length, range and fill, independent of any kept octets.
+#[test]
+fn test_plan_flash_write_rel_mem_tail_is_plan_state() -> TestResult {
+    let plan = plan()?;
+    let tails = plan.held_tails();
+    assert_eq!(tails.len(), 1, "{tails:?}");
+    let tail = &tails[0];
+    assert_eq!(
+        (tail.offset, tail.len, tail.start, tail.end, tail.fill),
+        (0, 15, 15, 16, 0)
+    );
+    assert!(plan.kept().is_empty());
+    let image = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
+                Some(image.clone())
+            }
+            _ => None,
+        })
+        .ok_or("a parameter write")?;
+    assert_eq!(plan.held_tail_of(&image), Some(tail));
+    // Another write of the same segment with another length has none.
+    let other = bussard_download::ImageRef {
+        len: 16,
+        ..image.clone()
+    };
+    assert_eq!(plan.held_tail_of(&other), None);
+    Ok(())
+}
+
+/// The parameter-only download keeps the memory (`Mode` 0): nothing fills
+/// and nothing writes the held tail, so whatever the device holds there is
+/// kept, never a pending change, never a failure (issue #1065).
+#[tokio::test]
+async fn test_parameters_only_write_rel_mem_tail_is_device_held() -> TestResult {
+    let full = plan()?;
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(&mut session, &full, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "the full flash verifies: {outcome:?}");
+    // Something rewrote the held octet since (the application at start).
+    gw.with_device(ia("1.1.1")?, |d| d.memory.insert(BASE + 15, 0x77))?;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
+    let partial = full.parameters_only(&regions)?;
+    // No pending change for the octet it cannot write.
+    assert_eq!(partial.changed_octets(), 0);
+    let outcome = flash(&mut session, &partial, FlashOptions::default(), |_| {}).await?;
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "the parameter-only download verifies: {outcome:?}"
+    );
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(
+        dev.read_mem(BASE + 15, 1),
+        vec![0x77],
+        "kept as the device holds it"
     );
     Ok(())
 }

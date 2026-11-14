@@ -353,6 +353,7 @@ impl FlashPlan {
             par_fallback: fallback,
             parameters_only: true,
             kept,
+            held_tails: self.held_tails.clone(),
             unoccupied: self.unoccupied.clone(),
         })
     }

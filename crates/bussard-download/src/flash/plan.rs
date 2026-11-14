@@ -583,6 +583,8 @@ fn plan_flash_as(
     // The octets a `<choose>` branch leaves unwritten stay as the device holds
     // them, as in ETS's download (issue #411, [`KeptOctets`]).
     let kept = kept_from(app, &ops, &branch_gaps);
+    // The held tails of the writes cut short of their image (issue #1065).
+    let mut held_tails: Vec<super::HeldTail> = Vec::new();
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -1115,6 +1117,16 @@ fn plan_flash_as(
                         ),
                     });
                 }
+                if let (Some(size), Some((fill, _))) = (held_write, prefill) {
+                    held_tails.push(super::HeldTail {
+                        segment: segment_id.clone(),
+                        offset: part_start,
+                        len,
+                        start: size,
+                        end: bytes.len(),
+                        fill,
+                    });
+                }
                 images.insert(segment_id.clone(), bytes);
                 let image = ImageRef {
                     segment_id,
@@ -1589,6 +1601,7 @@ fn plan_flash_as(
         par_fallback: None,
         parameters_only: false,
         kept,
+        held_tails,
         unoccupied,
     };
     // Issue #1071: a complete download that only writes properties is the
