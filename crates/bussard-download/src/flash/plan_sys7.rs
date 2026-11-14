@@ -749,6 +749,36 @@ pub(super) fn plan_flash_sys7(
                     advisory: false,
                 });
             }
+            // A Master Reset before the load (issue #1065): the Hager 0701
+            // `M-0009_A-E0ED-10-0B6F` resets the links (erase code 6) and the
+            // parameters (5) right after its preconditions. ETS sends each
+            // as the confirmed A_Restart with the op's erase code and
+            // channel, then reconnects (`captures/ets-sweep/
+            // M-0009_A-E0ED-10-0B6F/plain-defaults/ops.txt`, ops 10 to 17),
+            // the same step System B runs (KNX 3/5/2 §3.7.1.2.3, #611). The
+            // download that follows writes every load-state machine, so
+            // nothing the reset erased is left to the device. A reset after
+            // the load has begun is refused: it would erase what the steps
+            // before it wrote, and no capture shows ETS resuming there.
+            LoadOp::MasterReset {
+                erase_code,
+                channel_number,
+            } => {
+                if sys7_load_begun(&steps) {
+                    return Err(PlanError::UnsupportedOp {
+                        op: format!(
+                            "LdCtrlMasterReset after the System 7 load has begun (step {step_no}): \
+                             it would erase what the steps before it wrote"
+                        ),
+                    });
+                }
+                // One octet each on the wire; absent, the confirmed restart
+                // (1) of the whole device (0), as on System B.
+                steps.push(FlashStep::MasterReset {
+                    erase_code: erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8,
+                    channel_number: channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8,
+                });
+            }
             LoadOp::Raw { name, attrs } if name == "LdCtrlCompareMem" => {
                 let (address, expected) =
                     parse_compare_mem(attrs).ok_or_else(|| PlanError::UnresolvableImage {
@@ -2022,6 +2052,25 @@ pub(super) fn mem_type_for_addr(addr: u32, profile: &bussard_mgmt::Sys7Profile) 
     }
 }
 
+/// Whether a lowered System 7 procedure has begun the load: a load-state
+/// event, an allocation or task record, or a memory write.
+fn sys7_load_begun(steps: &[FlashStep]) -> bool {
+    steps.iter().any(|s| {
+        matches!(
+            s,
+            FlashStep::Sys7Unload { .. }
+                | FlashStep::Sys7StartLoading { .. }
+                | FlashStep::Sys7AbsSegment { .. }
+                | FlashStep::Sys7TaskSegment { .. }
+                | FlashStep::Sys7TaskCtrl1 { .. }
+                | FlashStep::Sys7TaskPtr { .. }
+                | FlashStep::Sys7TaskCtrl2 { .. }
+                | FlashStep::Sys7LoadCompleted { .. }
+                | FlashStep::WriteMem { .. }
+        )
+    })
+}
+
 /// A human label for a System 7 op that this engine cannot lower.
 pub(super) fn sys7_op_label(op: &LoadOp) -> String {
     match op {
@@ -2034,7 +2083,6 @@ pub(super) fn sys7_op_label(op: &LoadOp) -> String {
             "LdCtrlWriteRelMem (System 7 is absolute-addressed)".to_string()
         }
         LoadOp::WriteProp { .. } => "LdCtrlWriteProp (not in the System 7 corpus)".to_string(),
-        LoadOp::MasterReset { .. } => "LdCtrlMasterReset (not in the System 7 corpus)".to_string(),
         LoadOp::MapError { .. } => "LdCtrlMapError (not in the System 7 corpus)".to_string(),
         other => format!("{other:?}"),
     }

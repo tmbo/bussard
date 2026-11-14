@@ -2075,7 +2075,7 @@ async fn check_kept_images_before_par_procedure<C: Connector>(
 ///   and sends no Basic Restart instead.
 /// - No answer: the device may have rebooted without one; the bounded
 ///   reboot poll decides, as for the confirmed restart at the end.
-async fn master_reset_confirmed<C: Connector>(
+pub(super) async fn master_reset_confirmed<C: Connector>(
     session: &mut Session<C>,
     erase_code: u8,
     channel_number: u8,

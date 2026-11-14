@@ -1106,5 +1106,15 @@ class ModuleInChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
+class System7MasterReset(unittest.TestCase):
+    """syn-s7-master-reset (#1065): LdCtrlMasterReset in a System 7 procedure."""
+
+    def test_render_master_reset_on_system_7(self) -> None:
+        s = tomllib.loads((HERE / "syn-s7-master-reset" / "product.toml").read_text(encoding="utf-8"))
+        xml = app_xml(s)
+        self.assertIn('<LdCtrlConnect />\n                <LdCtrlMasterReset EraseCode="6" ChannelNumber="0" />', xml)
+        self.assertIn('<LdCtrlMasterReset EraseCode="5" ChannelNumber="0" />', xml)
+
+
 if __name__ == "__main__":
     unittest.main()

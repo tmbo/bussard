@@ -62,6 +62,7 @@ next to it, and zips it on demand.
 | [`syn-s7-hidden-default-p11`](syn-s7-hidden-default-p11/product.toml) | `NEST-EGGOLD` | 0705 | hidden parameter on System 7 in schema project/11 | #448 |
 | [`syn-s7-lsm5`](syn-s7-lsm5/product.toml) | `NEST-TWIG5` | 0701 | TaskSegment on LsmIdx 5 (0701) | #489 |
 | [`syn-s7-lsm5-0705`](syn-s7-lsm5-0705/product.toml) | `NEST-TWIG5G` | 0705 | TaskSegment on LsmIdx 5 (0705) | #489 |
+| [`syn-s7-master-reset`](syn-s7-master-reset/product.toml) | `NEST-RESET7` | 0701 | LdCtrlMasterReset erase codes 6 and 5 before the load (0701) | #1065, #546, #611 |
 | [`syn-s7-no-comobjects`](syn-s7-no-comobjects/product.toml) | `NEST-SILENT` | 0701 | com objects only in a block not reached at defaults (0701) | #562, #475 |
 | [`syn-s7-pei80`](syn-s7-pei80/product.toml) | `NEST-CLAW` | 0701 | PeiType 128 on 0701 | #483 |
 | [`syn-s7-pid204`](syn-s7-pid204/product.toml) | `NEST-PLUME` | 0701 | LdCtrlWriteProp PID 204 with Count 2 on the application object (0701) | #692 |
@@ -142,7 +143,7 @@ Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
 `LdCtrlWriteProp` (`object`, `prop_id`, optional `start_element`, `count`, `verify`,
 `inline_data` in hex; without `inline_data` the value is what the parameters
 placed in that property compose, so a parameter must be placed there). A System 7 product procedure
-also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
+also takes `LdCtrlMasterReset` (#1065), `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
 `LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`), and
 `LdCtrlDelay` (`milliseconds`, #615). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
@@ -404,6 +405,7 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 | `syn-trailing-writeprop` | the #1054 VM session | `capture.py syn-trailing-writeprop`, then `--variant partial` |
 | `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
 | `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
+| `syn-s7-master-reset` | the #1065 VM session | `capture.py syn-s7-master-reset` |
 | `syn-bcu2-0021` | the first BCU 2 VM session (#525); bussard refuses BCU 2 | `capture.py syn-bcu2-0021` |
 
 A secure product (`[application.security]`) is captured the way

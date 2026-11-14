@@ -39,7 +39,9 @@ impl StepExecutor for System7<'_> {
     /// idempotent).
     fn reboot(&self, step: &FlashStep) -> Reboot {
         match step {
-            FlashStep::Restart => Reboot::SelfReconnecting,
+            // A Master Reset reboots the device and reconnects itself
+            // (issue #1065), as on System B.
+            FlashStep::Restart | FlashStep::MasterReset { .. } => Reboot::SelfReconnecting,
             FlashStep::Sys7PreDownloadRestart { .. } => Reboot::Replayed,
             _ => Reboot::No,
         }
@@ -274,6 +276,17 @@ impl StepExecutor for System7<'_> {
             // (issue #524); a device that declines it streams as before and
             // `flash` warns.
             FlashStep::EnableVerifyMode => session.arm_verify_mode(),
+            // The confirmed Master Reset of a procedure that resets the
+            // device before its load (issue #1065): the planner places it
+            // ahead of every load step, so after the reboot there is no
+            // load state or allocation to re-establish, unlike System B's.
+            FlashStep::MasterReset {
+                erase_code,
+                channel_number,
+            } => {
+                super::execute::master_reset_confirmed(session, *erase_code, *channel_number)
+                    .await?;
+            }
             other => match run_shared_step(session, other).await {
                 Some(result) => result?,
                 // System B steps never appear in a System 7 plan.
