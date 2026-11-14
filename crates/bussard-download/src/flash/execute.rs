@@ -1145,13 +1145,17 @@ impl StepExecutor for SystemB<'_> {
                         // it does not rewrite (issue #1052): its check names
                         // the object that holds it, as ETS reads it (E804
                         // ops 458 to 461), with no write to infer it from.
-                        Some(_) if plan.is_built_from_par_procedure() => resolve_object_target_opt(
-                            Some(*obj_idx),
-                            object_table,
-                            app_obj,
-                            plan.spliced_from_template,
-                        )
-                        .unwrap_or(app_obj),
+                        Some(_)
+                            if plan.procedure_kind() == super::ProcedureKind::ParametersByPar =>
+                        {
+                            resolve_object_target_opt(
+                                Some(*obj_idx),
+                                object_table,
+                                app_obj,
+                                plan.spliced_from_template,
+                            )
+                            .unwrap_or(app_obj)
+                        }
                         Some(img) => mcb_read_object(
                             &plan.steps,
                             plan.spliced_from_template,
@@ -1471,10 +1475,41 @@ impl StepExecutor for SystemB<'_> {
                 if let Some(obj) =
                     resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
                 {
-                    let actual =
-                        super::session::read_table_reference_resumable(session, obj).await?;
+                    // The base the latest allocation of the object read
+                    // (a master reset's re-allocation included) is the
+                    // check's read: ETS reads PID 7 once there (E804 op 30,
+                    // `syn-minimal/partial` op 18). Without an allocation
+                    // the device is read.
+                    let actual = match self.segment_bases.get(&obj) {
+                        Some(&read) => read,
+                        None => {
+                            super::session::read_table_reference_resumable(session, obj).await?
+                        }
+                    };
                     let expected = self.table_references.get(&obj).copied();
-                    if Some(actual) != expected {
+                    // A parameter image written into the object follows:
+                    // its write finds the moved base and writes the whole
+                    // image there with a warning, as the cut did (issue
+                    // #1085; no capture shows ETS's answer to a moved base),
+                    // so the device is not left loading.
+                    let rewritten = plan.steps.iter().any(|s| {
+                        matches!(s, FlashStep::WriteRelMem { image, target, .. }
+                            if image.kind == ImageKind::Parameters
+                                && plan.baseline.contains_key(&image.segment_id)
+                                && resolve_object_target_opt(
+                                    *target,
+                                    object_table,
+                                    app_obj,
+                                    plan.spliced_from_template,
+                                ) == Some(obj))
+                    });
+                    if Some(actual) != expected && rewritten {
+                        self.warnings.push(format!(
+                            "the base pointer of object {obj} moved from {} to {actual:#X} \
+                             between the unload and the load of the parameter-only download",
+                            expected.map_or("an unread value".to_string(), |e| format!("{e:#X}"))
+                        ));
+                    } else if Some(actual) != expected {
                         return Err(WriteError::PropCompareMismatch {
                             address: session.l4().target(),
                             object_index: obj,
@@ -1589,7 +1624,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     } else {
         BTreeSet::new()
     };
-    if plan.is_built_from_par_procedure() {
+    if plan.procedure_kind() == super::ProcedureKind::ParametersByPar {
         check_kept_images_before_par_procedure(session, plan, &object_table, app_obj).await?;
     }
 

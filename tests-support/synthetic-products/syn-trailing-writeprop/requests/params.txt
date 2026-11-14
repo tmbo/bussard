@@ -70,7 +70,6 @@ load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
 alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=16 fill=False fill_byte=0x00
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
-prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 prop-desc-read obj4/PID_201 obj=4 pid=201 pid_name=PID_201 prop_index=0
 prop-write obj4/PID_201 count=1 index=1 len=1 sha=dbc1b4c9
 prop-desc-read obj4/PID_202 obj=4 pid=202 pid_name=PID_202 prop_index=0
