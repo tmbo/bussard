@@ -575,8 +575,13 @@ fn plan_flash_as(
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
     let config = memo.evaluate_for(app, overrides);
-    let (ops, spliced_from_template, branch_gaps) =
-        assemble_ops(app, template_ops, &config, download)?;
+    let (ops, op_tags, spliced_from_template, branch_gaps) =
+        assemble_ops_tagged(app, template_ops, &config, download)?;
+    // The complete download's ops and their tags, for the declarations a
+    // parameter-only download's `par` filter drops (issue #1049); assembled
+    // on first use.
+    let full_ops: std::cell::OnceCell<std::result::Result<TaggedOps, PlanError>> =
+        std::cell::OnceCell::new();
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
@@ -664,6 +669,9 @@ fn plan_flash_as(
     // The property-located parameters' values, resolved once for every
     // property write of the plan, declared or not (issue #945).
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
+    // The parameters set away from their defaults: only their placement can
+    // refuse a write (issue #1049).
+    let changed = super::declare::Changed::new(app, &property_params, overrides, memo);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
     // What the procedure has left in the device's properties so far: after
@@ -710,9 +718,124 @@ fn plan_flash_as(
         }
         // The declaration a write to a declared property follows, looked up
         // once (issue #945).
-        let declared_write = super::declare::declaration_for(&declared, step_no, op).cloned();
+        // A write carrying InlineData to a property the procedure declares
+        // only later is lowered as declared too (issue #1049).
+        let mut declared_write = super::declare::effective_declaration(
+            &declared,
+            step_no,
+            op,
+            ops.get(i + 1..).unwrap_or_default(),
+        )?;
+        // The parameter-only download lowers such a write as the complete
+        // download does, also when its `par` filter drops the declaration:
+        // at the index the op's tag has in the complete download. When that
+        // cannot be found out, a changed parameter in the property refuses
+        // the plan; at the defaults the write is lowered as undeclared.
+        if declared_write.is_none()
+            && download == Download::Par
+            && let LoadOp::WriteProp {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(prop_id),
+                inline_data: Some(inline),
+                ..
+            } = op
+            && !inline.is_empty()
+        {
+            let full = full_ops.get_or_init(|| {
+                assemble_ops_tagged(app, template_ops, &config, Download::Full)
+                    .map(|(ops, tags, ..)| (ops, tags))
+            });
+            // An op without a tag (the master template's) or one the complete
+            // download does not hold is a lookup that failed, as an error is.
+            let found = match full {
+                Ok((full, tags)) => match op_tags.get(i).copied().flatten() {
+                    Some(tag) => match tags.iter().position(|t| *t == Some(tag)) {
+                        Some(at) => {
+                            super::declare::declaration_at(full, at, op).map_err(|e| e.to_string())
+                        }
+                        None => Err("the complete download does not hold this write".to_string()),
+                    },
+                    None => Err("the write comes from the master template".to_string()),
+                },
+                Err(e) => Err(e.to_string()),
+            };
+            declared_write = match found {
+                Ok(decl) => decl,
+                Err(e) => {
+                    let object =
+                        super::plan_props::prop_object(step_no, *obj_idx, *obj_type, *occurrence)?;
+                    match changed.in_property(object, *prop_id) {
+                        Some(who) => {
+                            return Err(PlanError::PropertyParameter(format!(
+                                "the parameter {who} is set away from its default and placed in \
+                                 {object} PID {prop_id}, and the complete download's declaration \
+                                 of that property, which the parameter-only download needs to \
+                                 place it, cannot be found: {e}"
+                            )));
+                        }
+                        None => None,
+                    }
+                }
+            };
+        }
+        // A write to a declared property is lowered once, here: a write
+        // before its declaration that the declared lowering refuses plans
+        // as main did (undeclared) while its property holds defaults
+        // (`settle_declared_later`, issue #1049).
+        let declared_target = super::declare::declaration_for(&declared, step_no, op).is_some();
+        let mut declared_lowered: Option<Option<FlashStep>> = None;
+        if let Some(decl) = declared_write.clone()
+            && let LoadOp::WriteProp {
+                prop_id,
+                inline_data,
+                ..
+            } = op
+        {
+            let prop = prop_id.unwrap_or(decl.prop_id);
+            let name = format!("the declared {} PID {prop}", decl.object);
+            // The template; `lower_declared_write_prop` lays the parameters
+            // placed in the property over it, once.
+            let lowered = maybe_substitute_app_id(
+                &name,
+                prop,
+                inline_data.as_deref(),
+                program_ids.for_object(decl.object),
+                || super::declare::is_placed(&name, decl.object, prop, &property_params, app),
+            )
+            .map_err(|reason| PlanError::UnsupportedWriteProp {
+                step: step_no,
+                reason,
+            })
+            .and_then(|inline| {
+                super::declare::lower_declared_write_prop(
+                    step_no,
+                    op,
+                    &decl,
+                    inline.as_deref(),
+                    &property_params,
+                    app,
+                    typed_objects_by_list,
+                )
+            });
+            declared_lowered = super::declare::settle_declared_later(
+                lowered,
+                declared_target,
+                decl.object,
+                prop,
+                &changed,
+            )?;
+            if declared_lowered.is_none() {
+                declared_write = None;
+            }
+        }
         let lowered_from = steps.len();
-        let declared_target = declared_write.is_some();
+        // `declared_target`: whether ETS has a type for the property at this
+        // op. Only a declaration made before it gives one: ETS reads the
+        // description of a property written before its declaration
+        // (`M-0009_A-E0D1-11-99AD` object 6 PID 208, the ETS sweep capture),
+        // so a held step there still reads it (issue #1049).
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
@@ -1187,37 +1310,23 @@ fn plan_flash_as(
             // A write to a declared property: `Count` elements of the declared
             // type, the value the parameters compose (issue #938), the
             // template's application-id placeholder replaced by the one rule
-            // for it (issues #945, #957, #964).
-            LoadOp::WriteProp {
-                prop_id,
-                inline_data,
-                ..
-            } if declared_write.is_some() => {
-                let Some(decl) = declared_write else { continue };
-                let prop = prop_id.unwrap_or(decl.prop_id);
-                let name = format!("the declared {} PID {prop}", decl.object);
-                // The template; `lower_declared_write_prop` lays the
-                // parameters placed in the property over it, once.
-                let substituted = maybe_substitute_app_id(
-                    &name,
-                    prop,
-                    inline_data.as_deref(),
-                    program_ids.for_object(decl.object),
-                    || super::declare::is_placed(&name, decl.object, prop, &property_params, app),
-                )
-                .map_err(|reason| PlanError::UnsupportedWriteProp {
-                    step: step_no,
-                    reason,
-                })?;
-                steps.extend(super::declare::lower_declared_write_prop(
-                    step_no,
-                    op,
-                    &decl,
-                    substituted.as_deref(),
-                    &property_params,
-                    app,
-                    typed_objects_by_list,
-                )?);
+            // for it (issues #945, #957, #964), lowered above.
+            LoadOp::WriteProp { .. } if declared_write.is_some() => {
+                let Some(mut lowered) = declared_lowered.take() else {
+                    continue;
+                };
+                // A write that comes before its declaration keeps the
+                // undeclared System B arm's `Verify` rule (not honoured,
+                // issue #390); only its composition follows the later
+                // declaration (issue #1049). No capture shows ETS reading
+                // such a write back: the one in hand, E802's object 9 write,
+                // carries `Verify="false"`.
+                if !declared_target
+                    && let Some(FlashStep::WriteProp { verify, .. }) = lowered.as_mut()
+                {
+                    *verify = false;
+                }
+                steps.extend(lowered);
             }
 
             LoadOp::WriteProp {
@@ -1264,52 +1373,47 @@ fn plan_flash_as(
 
                 match inline_data {
                     Some(value) if !value.is_empty() => {
-                        // The PID 13 placeholder's parameters are laid over its
-                        // template as on the declared arm (the one rule,
-                        // `maybe_substitute_app_id`), and the step says the
-                        // value is theirs (issue #669), so a parameter change
-                        // rewrites it.
-                        let (value, from_parameters) = if placeholder {
-                            match super::declare::placed_value(
-                                &name,
-                                object,
-                                prop_id,
-                                &property_params,
-                                app,
-                                &value,
-                            )
-                            .map_err(|reason| {
-                                PlanError::UnsupportedWriteProp {
-                                    step: step_no,
-                                    reason,
-                                }
-                            })? {
-                                Some(composed) => (composed, true),
-                                None => (value, false),
-                            }
-                        } else {
-                            (value, false)
+                        // The parameters placed in the property are laid
+                        // over the InlineData (the one rule of an undeclared
+                        // InlineData write, `overlay_undeclared_inline`, issue #1049),
+                        // and the step says the value is theirs (issue
+                        // #669), so a parameter change rewrites it; the PID
+                        // 13 placeholder takes them over the application id
+                        // (`maybe_substitute_app_id`, issue #964).
+                        let target = super::plan_props::WriteTarget {
+                            object,
+                            prop_id,
+                            start_element: *start_element,
+                            count: *count,
                         };
+                        let (value, from_parameters) = super::declare::overlay_undeclared_inline(
+                            &name,
+                            super::declare::InlineWrite {
+                                target,
+                                inline: &value,
+                                placeholder,
+                            },
+                            &property_params,
+                            &changed,
+                            app,
+                        )
+                        .map_err(|reason| PlanError::UnsupportedWriteProp {
+                            step: step_no,
+                            reason,
+                        })?;
                         // A value-carrying WriteProp must be executable to keep the
                         // "only a fully-executable FlashPlan reaches flash" invariant:
                         // the one rule of an undeclared write (its `Count`, the
                         // services' reach, issue #964) refuses a shape the executor
                         // cannot address rather than dropping the value at execute
                         // time. Without `Count` it is one element; with it, `Count`
-                        // elements in requests of at most 15, as ETS writes the
-                        // undeclared `ObjIdx="9" PropId="208" Count="124"` with
-                        // 124 octets of InlineData of `M-0009_A-E802-13-7620`
-                        // (`count=15 index=1` to `count=4 index=121`, ops 46 to
-                        // 54), where the old one-element shape sent 124 octets
-                        // in one request.
+                        // elements in requests of at most 15 (the executor's split,
+                        // issue #947). A write its procedure declares later takes
+                        // the declared arm above (issue #1049), so the
+                        // `M-0009_A-E802-13-7620` object 9 write no longer comes here.
                         steps.push(super::plan_props::write_prop_step(
                             step_no,
-                            super::plan_props::WriteTarget {
-                                object,
-                                prop_id,
-                                start_element: *start_element,
-                                count: *count,
-                            },
+                            target,
                             value,
                             from_parameters,
                             // `Verify` is not honoured on this arm: the master
@@ -1338,6 +1442,8 @@ fn plan_flash_as(
                             step_no,
                             op,
                             values,
+                            &property_params,
+                            &changed,
                             app,
                             typed_objects_by_list,
                         )?);
@@ -1567,6 +1673,13 @@ fn plan_flash_as(
     }
 
     let form = super::restart_form(app);
+    // No parameter placed in a property the procedure writes is left off
+    // the device (issue #1049).
+    // The parameter-only procedure's own gaps are `ParameterNotInProcedure`'s
+    // (partial.rs); it is planned beside a complete download that checks.
+    if download == Download::Full {
+        super::declare::check_parameter_coverage(&steps, &property_params, &changed, app)?;
+    }
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);
@@ -1838,7 +1951,40 @@ pub(super) fn assemble_ops(
     config: &bussard_product::dynamic::DynamicConfig,
     download: Download,
 ) -> std::result::Result<AssembledOps, PlanError> {
-    use super::plan_props::taken_ops;
+    let (ops, _, spliced, gaps) = assemble_ops_tagged(app, template_ops, config, download)?;
+    Ok((ops, spliced, gaps))
+}
+
+/// Where an assembled op comes from: its load procedure (by address, within
+/// one program) and its index there; `None` for a master-template op.
+/// The same op of two downloads of one program carries the same tag
+/// (issue #1049).
+pub(super) type OpTag = Option<(usize, usize)>;
+
+/// Assembled ops and their [`OpTag`]s.
+pub(super) type TaggedOps = (Vec<LoadOp>, Vec<OpTag>);
+
+/// [`assemble_ops`]'s result with each op's [`OpTag`].
+pub(super) type AssembledTaggedOps = (
+    Vec<LoadOp>,
+    Vec<OpTag>,
+    bool,
+    BTreeMap<u32, Vec<(u32, u32)>>,
+);
+
+/// [`assemble_ops`] with each op's [`OpTag`].
+///
+/// # Errors
+///
+/// As [`assemble_ops`].
+pub(super) fn assemble_ops_tagged(
+    app: &ApplicationProgram,
+    template_ops: Option<&[LoadOp]>,
+    config: &bussard_product::dynamic::DynamicConfig,
+    download: Download,
+) -> std::result::Result<AssembledTaggedOps, PlanError> {
+    use super::plan_props::{taken_ops, taken_ops_indexed};
+    let tag_of = |lp: &LoadProcedure| std::ptr::from_ref(lp) as usize;
     // The parameter-only procedure runs an application op whose `AppliesTo`
     // names `par`, or that has none (issue #1052): MergeId 7's no-`AppliesTo`
     // checks and write run in ETS's partial download of `M-0009_A-E804-10-98AD`
@@ -1873,7 +2019,7 @@ pub(super) fn assemble_ops(
         .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
-        return Ok((Vec::new(), false, BTreeMap::new()));
+        return Ok((Vec::new(), Vec::new(), false, BTreeMap::new()));
     }
     if let Some(p) = companion_blocks.iter().find(|p| !p.chooses.is_empty()) {
         return Err(PlanError::UndecidableCondition {
@@ -1893,14 +2039,17 @@ pub(super) fn assemble_ops(
     if all_merged && let Some(template) = template_ops {
         // App blocks keyed by parsed MergeId. A block whose id is not numeric
         // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
-        let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+        let mut blocks: BTreeMap<u32, Vec<(LoadOp, OpTag)>> = BTreeMap::new();
         let (mut every_branch, mut taken) = (Vec::new(), Vec::new());
         for p in &non_empty {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                let ops = taken_ops(app, p, config, &in_download)?;
+                let ops = taken_ops_indexed(app, p, config, &in_download)?;
                 every_branch.extend(p.ops.iter());
-                taken.extend(ops.iter().cloned());
-                blocks.entry(id).or_default().extend(ops);
+                taken.extend(ops.iter().map(|(_, op)| op.clone()));
+                blocks
+                    .entry(id)
+                    .or_default()
+                    .extend(ops.into_iter().map(|(i, op)| (op, Some((tag_of(p), i)))));
             }
         }
         let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
@@ -1916,7 +2065,7 @@ pub(super) fn assemble_ops(
                 blocks
                     .entry(id)
                     .or_default()
-                    .extend(ops.map(|(_, op)| op.clone()));
+                    .extend(ops.map(|(i, op)| (op.clone(), Some((tag_of(p), i)))));
             }
         }
         // Whether Application Program 2 is loaded is the complete download's
@@ -1924,7 +2073,12 @@ pub(super) fn assemble_ops(
         // rows whenever it is loaded, even when its blocks hold `full` ops
         // only (issue #1085).
         let loads_ap2 = match download {
-            Download::Full => loads_application_program_2(&blocks),
+            Download::Full => loads_application_program_2(
+                &blocks
+                    .iter()
+                    .map(|(id, ops)| (*id, ops.iter().map(|(op, _)| op.clone()).collect()))
+                    .collect(),
+            ),
             Download::Par => {
                 let full = |lp: &LoadProcedure, i: usize| {
                     !(lp.lists_partial_downloads() && lp.is_partial_only(i))
@@ -1963,7 +2117,7 @@ pub(super) fn assemble_ops(
         } else {
             application_program_1_only(template)
         };
-        let mut out = Vec::new();
+        let (mut out, mut tags) = (Vec::new(), Vec::new());
         for op in &template {
             match op {
                 LoadOp::Merge { merge_id } => {
@@ -1972,24 +2126,33 @@ pub(super) fn assemble_ops(
                         .and_then(|m| m.parse::<u32>().ok())
                         .and_then(|id| blocks.get(&id))
                     {
-                        out.extend(ops.iter().cloned());
+                        for (op, tag) in ops {
+                            out.push(op.clone());
+                            tags.push(*tag);
+                        }
                     }
                     // Unmatched or id-less marker: drop it.
                 }
-                other => out.push(other.clone()),
+                other => {
+                    out.push(other.clone());
+                    tags.push(None);
+                }
             }
         }
-        return Ok((out, true, gaps));
+        return Ok((out, tags, true, gaps));
     }
 
     let blocks = self_contained_blocks(app);
-    let mut out = Vec::new();
+    let (mut out, mut tags) = (Vec::new(), Vec::new());
     for p in &blocks {
-        out.extend(taken_ops(app, p, config, &in_download)?);
+        for (i, op) in taken_ops_indexed(app, p, config, &in_download)? {
+            out.push(op);
+            tags.push(Some((tag_of(p), i)));
+        }
     }
     let gaps =
         super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
-    Ok((out, false, gaps))
+    Ok((out, tags, false, gaps))
 }
 
 /// Lowers a load-state control naming its object by type (`ObjType`) to
@@ -5548,6 +5711,497 @@ mod tests {
                 assert_eq!(writes, vec![(expected.clone(), true)], "{ops}");
             }
         }
+        Ok(())
+    }
+
+    /// A `u8` parameter `P-<n>` with default `value`, placed at `offset` of
+    /// PID 208 of `object` (`ObjectIndex="9"` or `ObjectType="60001"`).
+    fn placed_u8(n: u32, value: u8, offset: u32, object: &str) -> String {
+        format!(
+            r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-{n}" Name="p{n}" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="{value}"><Property {object} PropertyId="208" Offset="{offset}" BitOffset="0" /></Parameter>"#
+        )
+    }
+
+    /// Object 9 by index, as [`placed_u8`] names it.
+    const OBJ9: &str = r#"ObjectIndex="9""#;
+
+    /// One PID 208 write of a plan: value, `from_parameters`, start, count.
+    type Pid208Write = (Vec<u8>, bool, u16, u16);
+
+    /// The PID 208 writes of a plan, or the reason it is refused.
+    type PlannedOrRefused = Result<Vec<Pid208Write>, String>;
+
+    /// The PID 208 writes the plan of `ops` over `params` makes, the
+    /// parameters `P-<n>` of `shown` shown in the Dynamic section and
+    /// `overrides` set, or its `UnsupportedWriteProp` reason.
+    fn pid_208_writes(
+        ops: &str,
+        params: &[String],
+        shown: &[u32],
+        overrides: &[(&str, &str)],
+    ) -> Result<PlannedOrRefused, Box<dyn std::error::Error>> {
+        let app = ops_app_showing(
+            &format!(r#"{ops}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+            &params.concat(),
+            shown,
+            false,
+        )?;
+        let overrides: BTreeMap<String, String> = overrides
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let planned = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &overrides,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        );
+        Ok(match planned {
+            Ok(plan) => Ok(writes_to(&plan, 208)
+                .into_iter()
+                .filter_map(|s| match s {
+                    FlashStep::WriteProp {
+                        value,
+                        from_parameters,
+                        start_element,
+                        count,
+                        ..
+                    } => Some((value, from_parameters, start_element, count)),
+                    _ => None,
+                })
+                .collect()),
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => Err(reason),
+            Err(refused @ PlanError::PropertyParameter(_)) => Err(refused.to_string()),
+            Err(other) => return Err(other.into()),
+        })
+    }
+
+    /// The refusal reason of `planned`, an error when it planned.
+    fn refused(planned: PlannedOrRefused) -> Result<String, Box<dyn std::error::Error>> {
+        planned.err().ok_or_else(|| "expected a refusal".into())
+    }
+
+    /// An `LdCtrlDeclarePropDesc` of object 9 PID 208 of type `pdt`.
+    fn declare_208(pdt: &str, max: u32) -> String {
+        format!(
+            r#"<LdCtrlDeclarePropDesc ObjIdx="9" PropId="208" PropType="{pdt}" MaxElements="{max}" Writable="true" />"#
+        )
+    }
+
+    #[test]
+    fn test_plan_flash_lays_placed_parameters_over_a_write_declared_later() -> TestResult {
+        // Issue #1049: `M-0009_A-E802-13-7620` writes object 9 PID 208 with
+        // 124 octets of InlineData one op before it declares the property,
+        // and places "Emission" (`P-676`) at octet 83. ETS wrote the set 01
+        // over the template's 02. Such a write is lowered as declared, so
+        // the order of the two ops does not change the plan. The template's
+        // 05 differs from the default 2, so the default case tells the
+        // overlay from the template.
+        let param = placed_u8(1, 2, 3, OBJ9);
+        let declare = declare_208("PDT_UNSIGNED_CHAR", 4);
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="4" Verify="false" InlineData="AA000005" />"#;
+        for (set, expected) in [(None, 0x02), (Some("1"), 0x01), (Some("0"), 0x00)] {
+            let overrides: Vec<(&str, &str)> = set.map(|v| ("P-1_R-1", v)).into_iter().collect();
+            let before = pid_208_writes(
+                &format!("{write}{declare}"),
+                std::slice::from_ref(&param),
+                &[1],
+                &overrides,
+            )?;
+            let after = pid_208_writes(
+                &format!("{declare}{write}"),
+                std::slice::from_ref(&param),
+                &[1],
+                &overrides,
+            )?;
+            assert_eq!(
+                before,
+                Ok(vec![(vec![0xAA, 0x00, 0x00, expected], true, 1, 4)]),
+                "{set:?}"
+            );
+            assert_eq!(before, after, "{set:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_plans_a_write_before_its_declaration_as_after_it() -> TestResult {
+        // Issue #1049: the Hager shape, 10 octets of InlineData with
+        // `Count="1"` to a property declared with one `PDT_UNSIGNED_CHAR`
+        // element, plans the same before and after the declaration: one
+        // element, the parameter's octet.
+        let param = placed_u8(1, 7, 0, OBJ9);
+        let declare = declare_208("PDT_UNSIGNED_CHAR", 1);
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="1" InlineData="00000000000000000000" />"#;
+        let before = pid_208_writes(
+            &format!("{write}{declare}"),
+            std::slice::from_ref(&param),
+            &[1],
+            &[],
+        )?;
+        let after = pid_208_writes(
+            &format!("{declare}{write}"),
+            std::slice::from_ref(&param),
+            &[1],
+            &[],
+        )?;
+        assert_eq!(before, Ok(vec![(vec![7], true, 1, 1)]));
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_takes_the_declaration_a_write_follows() -> TestResult {
+        // Issue #1049: two declarations of different types. The latest one
+        // before the write sizes it; without one before, the first one
+        // after. Two elements from element 2: of `PDT_UNSIGNED_INT` octets 2
+        // to 5 (P-1 at octet 3), of `PDT_GENERIC_02` the same, and of
+        // `PDT_UNSIGNED_CHAR` the InlineData does not fit Count.
+        let param = [placed_u8(1, 7, 3, OBJ9)];
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="2" Count="2" InlineData="11112222" />"#;
+        let int = declare_208("PDT_UNSIGNED_INT", 8);
+        let char_ = declare_208("PDT_UNSIGNED_CHAR", 8);
+        let composed = Ok(vec![(vec![0x11, 0x07, 0x22, 0x22], true, 2, 2)]);
+        assert_eq!(
+            pid_208_writes(&format!("{char_}{int}{write}"), &param, &[1], &[])?,
+            composed
+        );
+        assert_eq!(
+            pid_208_writes(&format!("{int}{write}{char_}"), &param, &[1], &[])?,
+            composed
+        );
+        assert_eq!(
+            pid_208_writes(&format!("{write}{int}{char_}"), &param, &[1], &[])?,
+            composed
+        );
+        let reason = refused(pid_208_writes(
+            &format!("{int}{char_}{write}"),
+            &param,
+            &[1],
+            &[],
+        )?)?;
+        assert!(reason.contains("InlineData"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_lays_placed_parameters_over_an_undeclared_write_from_element_1() -> TestResult
+    {
+        // Issue #1049: without any declaration a write from element 1 starts
+        // at octet 0 whatever its element size, so the overlay is safe; the
+        // template's 33 differs from the default 7.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1133" />"#;
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 7, 1, OBJ9)], &[1], &[])?,
+            Ok(vec![(vec![0x11, 0x07], true, 1, 2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_plans_an_undeclared_write_past_element_1_as_main_at_defaults() -> TestResult
+    {
+        // Issue #1049: past element 1 an undeclared write's octets are
+        // unknown. At the defaults it goes out as it is, as on main; a
+        // changed parameter no write of known extent covers is refused,
+        // named; one inside an element-1 chunk of the same property is
+        // carried by that chunk.
+        let late = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" />"#;
+        let params = [placed_u8(1, 7, 5, OBJ9)];
+        assert_eq!(
+            pid_208_writes(late, &params, &[1], &[])?,
+            Ok(vec![(vec![0x11, 0x11, 0x22, 0x22], false, 3, 2)])
+        );
+        let reason = refused(pid_208_writes(late, &params, &[1], &[("P-1_R-1", "8")])?)?;
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"") && reason.contains("octet 5"),
+            "{reason}"
+        );
+        let first = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="3333" />"#;
+        assert_eq!(
+            pid_208_writes(
+                &format!("{first}{late}"),
+                &[placed_u8(1, 7, 1, OBJ9)],
+                &[1],
+                &[("P-1_R-1", "8")]
+            )?,
+            Ok(vec![
+                (vec![0x33, 0x08], true, 1, 2),
+                (vec![0x11, 0x11, 0x22, 0x22], false, 3, 2)
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_keeps_the_inline_data_for_an_unreached_parameter() -> TestResult {
+        // Issue #1049 with #1024: in a property no declaration names, an
+        // unreached parameter keeps the base; the InlineData goes out as it
+        // is and the step is not the parameters'.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1133" />"#;
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 7, 1, OBJ9)], &[], &[])?,
+            Ok(vec![(vec![0x11, 0x33], false, 1, 2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_lays_a_parameter_over_an_undeclared_write_by_type() -> TestResult {
+        // Issue #1049: a write naming its object by type, the parameter
+        // placed under the same type.
+        let write =
+            r#"<LdCtrlWriteProp ObjType="60001" PropId="208" Count="2" InlineData="1133" />"#;
+        assert_eq!(
+            pid_208_writes(
+                write,
+                &[placed_u8(1, 7, 1, r#"ObjectType="60001""#)],
+                &[1],
+                &[]
+            )?,
+            Ok(vec![(vec![0x11, 0x07], true, 1, 2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_changed_parameter_bussard_cannot_resolve() -> TestResult {
+        // Issue #1049 (#948, #964): a parameter placed by type while the
+        // write names the object by index. At its default the InlineData
+        // goes out as on main, also beside a parameter placed by index;
+        // set away from it, the write is refused naming the parameter.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1122" />"#;
+        let by_type = r#"ObjectType="60001""#;
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 9, 1, by_type)], &[1], &[])?,
+            Ok(vec![(vec![0x11, 0x22], false, 1, 2)])
+        );
+        assert_eq!(
+            pid_208_writes(
+                write,
+                &[placed_u8(1, 0x11, 0, OBJ9), placed_u8(2, 9, 1, by_type)],
+                &[1, 2],
+                &[]
+            )?,
+            Ok(vec![(vec![0x11, 0x22], true, 1, 2)])
+        );
+        let reason = refused(pid_208_writes(
+            write,
+            &[placed_u8(1, 9, 1, by_type)],
+            &[1],
+            &[("P-1_R-1", "5")],
+        )?)?;
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"") && reason.contains("names the object by type"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_covers_a_property_written_in_chunks() -> TestResult {
+        // Issue #1049: a property written in two chunks covers a parameter
+        // in either; a chunk no parameter writes into is not the
+        // parameters'. A parameter no write covers plans as on main at its
+        // default and is refused, named, once it is changed.
+        let declare = declare_208("PDT_UNSIGNED_CHAR", 4);
+        let first = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1111" />"#;
+        let second = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="2222" />"#;
+        let both = [placed_u8(1, 7, 0, OBJ9), placed_u8(2, 9, 3, OBJ9)];
+        assert_eq!(
+            pid_208_writes(&format!("{declare}{first}{second}"), &both, &[1, 2], &[])?,
+            Ok(vec![
+                (vec![0x07, 0x11], true, 1, 2),
+                (vec![0x22, 0x09], true, 3, 2)
+            ])
+        );
+        assert_eq!(
+            pid_208_writes(
+                &format!("{declare}{first}{second}"),
+                &[placed_u8(1, 7, 0, OBJ9)],
+                &[1],
+                &[],
+            )?,
+            Ok(vec![
+                (vec![0x07, 0x11], true, 1, 2),
+                (vec![0x22, 0x22], false, 3, 2)
+            ])
+        );
+        assert_eq!(
+            pid_208_writes(&format!("{declare}{first}"), &both, &[1, 2], &[])?,
+            Ok(vec![(vec![0x07, 0x11], true, 1, 2)])
+        );
+        let reason = refused(pid_208_writes(
+            &format!("{declare}{first}"),
+            &both,
+            &[1, 2],
+            &[("P-2_R-2", "5")],
+        )?)?;
+        assert_eq!(
+            reason,
+            "cannot flash: the parameter param@P-2_R-2 \"p2\" is placed in object 9 PID 208 at \
+             octet 3, and no write of the load procedure covers it with a known extent, \
+             so its value cannot be downloaded; set it back to its default"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_changed_parameter_in_a_property_never_written() -> TestResult {
+        // Issue #1049: coverage starts from the changed parameters. One in a
+        // property the plan does not write plans as on main at its default
+        // and is refused, named, once changed.
+        let ops = r#"<LdCtrlWriteProp ObjIdx="9" PropId="209" InlineData="00" />"#;
+        let params = [placed_u8(1, 7, 0, OBJ9)];
+        assert_eq!(pid_208_writes(ops, &params, &[1], &[])?, Ok(vec![]));
+        let reason = refused(pid_208_writes(ops, &params, &[1], &[("P-1_R-1", "8")])?)?;
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"")
+                && reason.contains("object 9 PID 208 at octet 0"),
+            "{reason}"
+        );
+        // An override spelled otherwise than the default but writing the
+        // same octets is no change.
+        assert_eq!(
+            pid_208_writes(ops, &params, &[1], &[("P-1_R-1", "07")])?,
+            Ok(vec![])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_plans_a_write_declared_later_as_main_when_the_declared_arm_refuses()
+    -> TestResult {
+        // Issue #1049: a count-less write before a declaration of three
+        // elements is one the declared lowering refuses (it could mean more
+        // than one element). At the defaults it plans as main did
+        // (undeclared, one element of the InlineData); with the parameter
+        // changed the refusal stands.
+        let ops = format!(
+            r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" InlineData="1122" />{}"#,
+            declare_208("PDT_UNSIGNED_CHAR", 3)
+        );
+        let params = [placed_u8(1, 0x11, 0, OBJ9)];
+        assert_eq!(
+            pid_208_writes(&ops, &params, &[1], &[])?,
+            Ok(vec![(vec![0x11, 0x22], true, 1, 1)])
+        );
+        let reason = refused(pid_208_writes(&ops, &params, &[1], &[("P-1_R-1", "8")])?)?;
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"")
+                && reason.contains("Count")
+                && reason.contains("at its default the write plans as before"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_lowers_a_par_write_against_the_complete_declaration() -> TestResult {
+        // Issue #1049: the parameter-only download lowers a write declared
+        // later as the complete download does, also when its `par` filter
+        // drops the declaration; and it leaves the coverage check to the
+        // complete download.
+        let ops = format!(
+            r#"<LdCtrlWriteProp AppliesTo="full,par" ObjIdx="9" PropId="208" Count="1" InlineData="00000000000000000000" />{}<LdCtrlLoadCompleted LsmIdx="4" />"#,
+            r#"<LdCtrlDeclarePropDesc AppliesTo="full" ObjIdx="9" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="1" Writable="true" />"#
+        );
+        let app = ops_app_showing(&ops, &placed_u8(1, 7, 0, OBJ9), &[1], false)?;
+        let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+        let mut writes = Vec::new();
+        for download in [Download::Full, Download::Par] {
+            let plan = plan_flash_as(
+                &app,
+                "1.1.4",
+                0x07B0,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &memo,
+                download,
+            )?;
+            writes.push(writes_to(&plan, 208));
+        }
+        assert_eq!(writes[0], writes[1]);
+        assert!(matches!(
+            writes[0].as_slice(),
+            [FlashStep::WriteProp { value, .. }] if value == &[7]
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_ignores_an_unreached_parameter_on_an_undeclared_write() -> TestResult {
+        // Issue #1049 with #1024: an unreached parameter in a property no
+        // declaration names composes nothing, so a write past element 1, or
+        // one beside a placement by type, goes out as plain InlineData.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" />"#;
+        assert_eq!(
+            pid_208_writes(write, &[placed_u8(1, 7, 5, OBJ9)], &[], &[])?,
+            Ok(vec![(vec![0x11, 0x11, 0x22, 0x22], false, 3, 2)])
+        );
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" InlineData="1122" />"#;
+        assert_eq!(
+            pid_208_writes(
+                write,
+                &[
+                    placed_u8(1, 7, 0, OBJ9),
+                    placed_u8(2, 9, 1, r#"ObjectType="60001""#)
+                ],
+                &[2],
+                &[],
+            )?,
+            Ok(vec![(vec![0x11, 0x22], false, 1, 2)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_does_not_verify_a_write_before_its_declaration() -> TestResult {
+        // Issue #1049: a `Verify="true"` write that precedes its declaration
+        // keeps the undeclared System B arm's rule (#390, not honoured);
+        // after the declaration the declared arm honours it.
+        let declare = declare_208("PDT_UNSIGNED_CHAR", 2);
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="2" Verify="true" InlineData="1122" />"#;
+        for (ops, expected) in [
+            (format!("{write}{declare}"), false),
+            (format!("{declare}{write}"), true),
+        ] {
+            let app = ops_app_showing(
+                &format!(r#"{ops}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+                &placed_u8(1, 7, 0, OBJ9),
+                &[1],
+                false,
+            )?;
+            let verify: Vec<bool> = writes_to(&plan_ops(&app)?, 208)
+                .into_iter()
+                .filter_map(|s| match s {
+                    FlashStep::WriteProp { verify, .. } => Some(verify),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(verify, vec![expected], "{ops}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_declared_later_write_past_the_element_index() -> TestResult {
+        // Issue #1049: the element bound holds before anything is sized
+        // from `StartElement`.
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="4294967295" Count="1" InlineData="11" />"#;
+        let reason = refused(pid_208_writes(
+            &format!("{write}{}", declare_208("PDT_UNSIGNED_CHAR", 1)),
+            &[placed_u8(1, 7, 0, OBJ9)],
+            &[1],
+            &[],
+        )?)?;
+        assert!(reason.contains("12-bit"), "{reason}");
         Ok(())
     }
 

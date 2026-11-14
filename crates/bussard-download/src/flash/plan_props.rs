@@ -15,7 +15,7 @@
 use super::{AppIdentity, FlashPlan, FlashStep, PlanError, PropObject};
 use bussard_product::application::{ApplicationProgram, LoadGuard, LoadOp, LoadProcedure};
 use bussard_product::dynamic::{DynamicConfig, WhenTest, taken_branches};
-use bussard_product::{PropertyObjectRef, PropertyValues};
+use bussard_product::{PropertyObjectRef, PropertyParameters, PropertyValues};
 use std::collections::BTreeMap;
 
 /// The mask whose property-only procedures bussard plans although it does
@@ -133,6 +133,24 @@ pub(super) fn taken_ops(
     config: &DynamicConfig,
     in_download: &dyn Fn(&LoadProcedure, usize) -> bool,
 ) -> Result<Vec<LoadOp>, PlanError> {
+    Ok(taken_ops_indexed(app, lp, config, in_download)?
+        .into_iter()
+        .map(|(_, op)| op)
+        .collect())
+}
+
+/// [`taken_ops`], each op with its index in `lp`, so a filtered download
+/// can find the same op in another download of the procedure (issue #1049).
+///
+/// # Errors
+///
+/// As [`taken_ops`].
+pub(super) fn taken_ops_indexed(
+    app: &ApplicationProgram,
+    lp: &LoadProcedure,
+    config: &DynamicConfig,
+    in_download: &dyn Fn(&LoadProcedure, usize) -> bool,
+) -> Result<Vec<(usize, LoadOp)>, PlanError> {
     let mut out = Vec::with_capacity(lp.ops.len());
     for (i, op) in lp.ops.iter().enumerate() {
         if !in_download(lp, i) {
@@ -146,7 +164,7 @@ pub(super) fn taken_ops(
             }
         }
         if taken {
-            out.push(op.clone());
+            out.push((i, op.clone()));
         }
     }
     Ok(out)
@@ -384,10 +402,13 @@ pub(super) fn may_hold(
     }
 }
 
-/// Lowers an `LdCtrlWriteProp` with its `Count` and `Verify` (the System 7
-/// and property-only planners, and the System B planner for a write without
-/// `InlineData`, issue #669; a System B write with `InlineData` keeps its own
-/// lowering).
+/// Lowers an `LdCtrlWriteProp` to a property the procedure does not declare,
+/// with its `Count` and `Verify`: on the System 7 and property-only
+/// planners, and on the System B planner for a write without `InlineData`
+/// (issue #669). The System B planner lowers an undeclared write with
+/// `InlineData` itself, with `Verify` not honoured (issue #390); both lay
+/// the parameters over the `InlineData` by the one rule
+/// ([`super::declare::overlay_undeclared_inline`], issue #1049).
 ///
 /// A write without `InlineData` on a property no parameter of `app` is stored
 /// in lowers to [`FlashStep::DescribeProp`]: ETS reads the property's
@@ -396,6 +417,9 @@ pub(super) fn may_hold(
 /// for is sized as ETS sizes it by the description ([`DescribedSize`], issue
 /// #947): `Count` elements, one element, or the description read alone.
 ///
+/// A write with `InlineData` carries the parameters `params` places in the
+/// property laid over it ([`super::declare::overlay_undeclared_inline`], issue #1049).
+///
 /// `typed_by_list` is the plan's [`FlashPlan::typed_objects_by_list`]: an
 /// object named by type is then written at a listed index on the plain
 /// services, so its PID is held to 8 bits ([`check_addressable`]).
@@ -403,12 +427,14 @@ pub(super) fn may_hold(
 /// # Errors
 ///
 /// [`PlanError::UnsupportedWriteProp`] when a parameter is stored in the
-/// property but its value has no source, and the refusals of
-/// [`write_prop_step`].
+/// property but its value has no source, the refusals of
+/// [`super::declare::overlay_undeclared_inline`], and those of [`write_prop_step`].
 pub(super) fn lower_write_prop(
     step: usize,
     op: &LoadOp,
     values: &PropertyValues,
+    params: &PropertyParameters<'_>,
+    changed: &super::declare::Changed<'_, '_>,
     app: &ApplicationProgram,
     typed_by_list: bool,
 ) -> Result<FlashStep, PlanError> {
@@ -436,7 +462,27 @@ pub(super) fn lower_write_prop(
     let name = format!("{object} PID {prop_id}");
     let mut count = *count;
     let (value, from_parameters) = match inline_data.as_ref().filter(|d| !d.is_empty()) {
-        Some(data) => (data.clone(), false),
+        // The parameters placed in the property laid over the InlineData,
+        // the one rule of an undeclared InlineData write (issue #1049); on
+        // the System 7 and property-only planners without a capture of its
+        // own, checked by the read-back of the written property.
+        Some(data) => super::declare::overlay_undeclared_inline(
+            &name,
+            super::declare::InlineWrite {
+                target: WriteTarget {
+                    object,
+                    prop_id,
+                    start_element: *start_element,
+                    count,
+                },
+                inline: data,
+                placeholder: false,
+            },
+            params,
+            changed,
+            app,
+        )
+        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?,
         None => match parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id) {
             Some(value) if start_element.unwrap_or(1) <= 1 && !declared(app, object, prop_id) => {
                 match sized_by_description(count, value.len()) {
@@ -867,21 +913,25 @@ pub(super) fn plan_flash_properties(
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
-    let values = bussard_product::compute_property_values(app, &config).map_err(|e| {
-        PlanError::UnsupportedWriteProp {
+    let params = bussard_product::PropertyParameters::resolve(app, &config);
+    // The parameters set away from their defaults: only their placement can
+    // refuse a write (issue #1049).
+    let changed = super::declare::Changed::new(app, &params, overrides, memo);
+    let values = params
+        .values()
+        .map_err(|e| PlanError::UnsupportedWriteProp {
             step: 0,
             reason: format!("composing the property values from the parameters: {e}"),
-        }
-    })?;
+        })?;
     let mut steps = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         let step = i + 1;
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
-            LoadOp::WriteProp { .. } => {
-                steps.push(lower_write_prop(step, op, &values, app, false)?)
-            }
+            LoadOp::WriteProp { .. } => steps.push(lower_write_prop(
+                step, op, &values, &params, &changed, app, false,
+            )?),
             LoadOp::CompareProp { .. } => steps.push(lower_compare_prop(step, op)?),
             other => {
                 return Err(PlanError::UnsupportedOp {
@@ -890,6 +940,9 @@ pub(super) fn plan_flash_properties(
             }
         }
     }
+    // No parameter placed in a property the procedure writes is left off
+    // the device (issue #1049).
+    super::declare::check_parameter_coverage(&steps, &params, &changed, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);
@@ -935,6 +988,12 @@ mod tests {
     use bussard_product::application::LoadGuard;
     use bussard_product::application::parse_application_program;
     use bussard_product::dynamic::DynamicMemo;
+
+    /// The property parameters of `app` at its defaults.
+    fn no_params(app: &ApplicationProgram) -> bussard_product::PropertyParameters<'_> {
+        let config = DynamicMemo::new(app).evaluate_for(app, &BTreeMap::new());
+        bussard_product::PropertyParameters::resolve(app, &config)
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1076,6 +1135,55 @@ mod tests {
     }
 
     #[test]
+    fn test_lower_write_prop_lays_placed_parameters_over_inline_data() -> TestResult {
+        // Issue #1049: the System 7 and property-only planners share the
+        // System B rule for an undeclared InlineData write: the parameters
+        // placed in the property (octets 0 and 15 of object 12 PID 208) are
+        // laid over the InlineData, and the step says the value is theirs.
+        // The program declares the property (later in its procedure), so
+        // the unreached parameters place their defaults (issue #1024).
+        let app = element_app(
+            r#"<LdCtrlDeclarePropDesc ObjIdx="12" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="16" Writable="true" />"#,
+        )?;
+        let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
+        let values = bussard_product::compute_property_values(&app, &config)?;
+        let op = LoadOp::WriteProp {
+            obj_idx: Some(12),
+            obj_type: None,
+            prop_id: Some(208),
+            inline_data: Some(vec![0x55; 16]),
+            start_element: None,
+            count: Some(16),
+            verify: Some(false),
+            occurrence: None,
+        };
+        let mut expected = vec![0x55; 16];
+        expected[0] = 9;
+        expected[15] = 1;
+        assert_eq!(
+            lower_write_prop(
+                1,
+                &op,
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
+            FlashStep::WriteProp {
+                object: PropObject::Index(12),
+                prop_id: 208,
+                value: expected,
+                start_element: 1,
+                count: 16,
+                verify: false,
+                from_parameters: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_lower_write_prop_writes_the_elements_from_its_start() -> TestResult {
         // Issue #951: ETS writes `count=1 index=16 len=1` for the count-less
         // `StartElement="16"` write of `M-0009_A-E0EE-10-ADF8`, the element
@@ -1087,7 +1195,15 @@ mod tests {
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
         assert_eq!(
-            lower_write_prop(1, op, &values, &app, false)?,
+            lower_write_prop(
+                1,
+                op,
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(12),
                 prop_id: 208,
@@ -1106,7 +1222,15 @@ mod tests {
         let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
-        match lower_write_prop(1, op, &values, &app, false) {
+        match lower_write_prop(
+            1,
+            op,
+            &values,
+            &no_params(&app),
+            &super::super::declare::Changed::none(),
+            &app,
+            false,
+        ) {
             Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
                 assert!(reason.contains("does not make up"), "{reason}");
             }
@@ -1117,7 +1241,15 @@ mod tests {
         let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
-        match lower_write_prop(1, op, &values, &app, false) {
+        match lower_write_prop(
+            1,
+            op,
+            &values,
+            &no_params(&app),
+            &super::super::declare::Changed::none(),
+            &app,
+            false,
+        ) {
             Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
                 assert!(reason.contains("size of its elements"), "{reason}");
             }
@@ -1146,7 +1278,15 @@ mod tests {
             })
             .ok_or("the label write is taken")?;
         assert_eq!(
-            lower_write_prop(2, label, &values, &app, false)?,
+            lower_write_prop(
+                2,
+                label,
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(6),
                 prop_id: 60,
@@ -1169,7 +1309,15 @@ mod tests {
                 )
             })
             .ok_or("the inline write is unguarded")?;
-        match lower_write_prop(3, inline, &values, &app, false)? {
+        match lower_write_prop(
+            3,
+            inline,
+            &values,
+            &no_params(&app),
+            &super::super::declare::Changed::none(),
+            &app,
+            false,
+        )? {
             FlashStep::WriteProp {
                 count,
                 value,
@@ -1201,7 +1349,15 @@ mod tests {
             occurrence: None,
         };
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &guarded_app()?, false),
+            lower_write_prop(
+                1,
+                &op,
+                &PropertyValues::new(),
+                &no_params(&guarded_app()?),
+                &super::super::declare::Changed::none(),
+                &guarded_app()?,
+                false
+            ),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         Ok(())
@@ -1263,7 +1419,15 @@ mod tests {
         let mut values = PropertyValues::new();
         values.insert((PropertyObjectRef::Index(8), 64), vec![0; 256]);
         assert_eq!(
-            lower_write_prop(31, &ise_write(64, 500), &values, &guarded_app()?, false)?,
+            lower_write_prop(
+                31,
+                &ise_write(64, 500),
+                &values,
+                &no_params(&guarded_app()?),
+                &super::super::declare::Changed::none(),
+                &guarded_app()?,
+                false
+            )?,
             FlashStep::DescribeProp {
                 object: PropObject::Index(8),
                 prop_id: 64,
@@ -1280,7 +1444,15 @@ mod tests {
         let mut values = PropertyValues::new();
         values.insert((PropertyObjectRef::Index(8), 69), vec![0, 0, 0, 1]);
         assert_eq!(
-            lower_write_prop(35, &ise_write(69, 64), &values, &guarded_app()?, false)?,
+            lower_write_prop(
+                35,
+                &ise_write(69, 64),
+                &values,
+                &no_params(&guarded_app()?),
+                &super::super::declare::Changed::none(),
+                &guarded_app()?,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(8),
                 prop_id: 69,
@@ -1299,7 +1471,15 @@ mod tests {
         // DC22 op 75: 988 elements of 4 octets.
         let mut values = PropertyValues::new();
         values.insert((PropertyObjectRef::Index(8), 64), vec![7; 3952]);
-        match lower_write_prop(31, &ise_write(64, 988), &values, &guarded_app()?, false)? {
+        match lower_write_prop(
+            31,
+            &ise_write(64, 988),
+            &values,
+            &no_params(&guarded_app()?),
+            &super::super::declare::Changed::none(),
+            &guarded_app()?,
+            false,
+        )? {
             FlashStep::WriteProp {
                 count,
                 value,
@@ -1335,7 +1515,15 @@ mod tests {
         let app = guarded_app()?;
         let op = dataless_write(None, Some(50001), 211);
         assert_eq!(
-            lower_write_prop(21, &op, &PropertyValues::new(), &app, false)?,
+            lower_write_prop(
+                21,
+                &op,
+                &PropertyValues::new(),
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::DescribeProp {
                 object: PropObject::Type {
                     object_type: 50001,
@@ -1347,7 +1535,15 @@ mod tests {
         );
         let op = dataless_write(Some(6), None, 61);
         assert_eq!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app, false)?,
+            lower_write_prop(
+                1,
+                &op,
+                &PropertyValues::new(),
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::DescribeProp {
                 object: PropObject::Index(6),
                 prop_id: 61,
@@ -1364,13 +1560,29 @@ mod tests {
         let app = guarded_app()?;
         let op = dataless_write(Some(6), None, 60);
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app, false),
+            lower_write_prop(
+                1,
+                &op,
+                &PropertyValues::new(),
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            ),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         // Named by type, the object cannot be told apart from index 6: refused.
         let op = dataless_write(None, Some(17), 60);
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app, false),
+            lower_write_prop(
+                1,
+                &op,
+                &PropertyValues::new(),
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            ),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         Ok(())
@@ -1400,7 +1612,15 @@ mod tests {
         let value: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), value.clone())]);
         assert_eq!(
-            lower_write_prop(32, &count_write(64, 500), &values, &app, false)?,
+            lower_write_prop(
+                32,
+                &count_write(64, 500),
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(8),
                 prop_id: 64,
@@ -1419,7 +1639,15 @@ mod tests {
         // Element 4096 is past the 12-bit start index of the last request.
         let app = guarded_app()?;
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4096])]);
-        match lower_write_prop(7, &count_write(64, 4096), &values, &app, false) {
+        match lower_write_prop(
+            7,
+            &count_write(64, 4096),
+            &values,
+            &no_params(&app),
+            &super::super::declare::Changed::none(),
+            &app,
+            false,
+        ) {
             Err(PlanError::UnsupportedWriteProp { step: 7, reason }) => {
                 assert!(reason.contains("Count 4096"), "{reason}");
             }
@@ -1428,7 +1656,15 @@ mod tests {
         // 4095 elements end on the last addressable element.
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4095])]);
         assert!(matches!(
-            lower_write_prop(7, &count_write(64, 4095), &values, &app, false)?,
+            lower_write_prop(
+                7,
+                &count_write(64, 4095),
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp { count: 4095, .. }
         ));
         Ok(())
@@ -1442,7 +1678,15 @@ mod tests {
         let app = guarded_app()?;
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![7; 948])]);
         assert!(matches!(
-            lower_write_prop(28, &count_write(64, 237), &values, &app, false)?,
+            lower_write_prop(
+                28,
+                &count_write(64, 237),
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 count: 237,
                 from_parameters: true,
@@ -1453,7 +1697,15 @@ mod tests {
         // ETS reads the description and writes nothing
         // (`M-007C_A-000E-20-E64D` op 130, `M-007C_A-0010-20-5E04` op 130).
         assert_eq!(
-            lower_write_prop(30, &count_write(68, 64), &values, &app, false)?,
+            lower_write_prop(
+                30,
+                &count_write(68, 64),
+                &values,
+                &no_params(&app),
+                &super::super::declare::Changed::none(),
+                &app,
+                false
+            )?,
             FlashStep::DescribeProp {
                 object: PropObject::Index(8),
                 prop_id: 68,
