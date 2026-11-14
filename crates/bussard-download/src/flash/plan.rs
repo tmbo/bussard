@@ -1569,6 +1569,16 @@ fn plan_flash_as(
         kept,
         unoccupied,
     };
+    // Issue #1071: a complete download that only writes properties is the
+    // mask 0021 shape (issue #390); on a System B mask it would skip every
+    // load state machine, so it is refused, naming the shape.
+    if download == Download::Full && plan.has_property_only_steps() && !plan.is_property_only() {
+        return Err(PlanError::PropertyOnlyShape {
+            app: app.id.clone(),
+            device: device.to_string(),
+            device_mask,
+        });
+    }
     plan.refresh_unoccupied();
     Ok(plan)
 }
@@ -5343,9 +5353,9 @@ mod tests {
             (true, vec![0x00, 0xFA, 0x25, 0x00, 0x07]),
         ] {
             for ops in [
-                r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" InlineData="0000000000" />"#,
+                r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" InlineData="0000000000" /><LdCtrlLoadCompleted LsmIdx="4" />"#,
                 r#"<LdCtrlDeclarePropDesc ObjIdx="4" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
-                   <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" />"#,
+                   <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" /><LdCtrlLoadCompleted LsmIdx="4" />"#,
             ] {
                 let plan = plan_ops(&ops_app_showing(ops, param, &[1], identity)?)?;
                 let writes: Vec<(Vec<u8>, bool)> = writes_to(&plan, 13)
@@ -5393,7 +5403,7 @@ mod tests {
         // in the property ETS reads its description and writes nothing
         // (`M-00A6_A-0033-20-BFA6`); with one placed it writes the parameter
         // (`M-00A6_A-0014-10-2517` re-swept on knx-sim with #843, one octet).
-        let op = r#"<LdCtrlWriteProp ObjType="50001" PropId="211" Verify="false" />"#;
+        let op = r#"<LdCtrlWriteProp ObjType="50001" PropId="211" Verify="false" /><LdCtrlLoadCompleted LsmIdx="4" />"#;
         let typed = PropObject::Type {
             object_type: 50001,
             occurrence: 0,
@@ -5454,7 +5464,7 @@ mod tests {
         // two one-octet elements, not one two-octet element. `Verify` stays
         // the echo validation ETS does on that arm (issue #390).
         let app = ops_app(
-            r#"<LdCtrlWriteProp ObjType="50215" PropId="205" Count="2" Verify="true" InlineData="5A5A" />"#,
+            r#"<LdCtrlWriteProp ObjType="50215" PropId="205" Count="2" Verify="true" InlineData="5A5A" /><LdCtrlLoadCompleted LsmIdx="4" />"#,
             "",
             true,
         )?;

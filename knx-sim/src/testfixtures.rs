@@ -126,6 +126,9 @@ pub fn synthetic_mdt_sys7_product() -> crate::prod::ProductData {
         property_only: false,
         security_capacity: Default::default(),
         factory_properties: Vec::new(),
+        pei_type: None,
+        abs_segment_steps: Vec::new(),
+        absolute_segments: Vec::new(),
     }
 }
 
@@ -164,6 +167,9 @@ pub fn synthetic_system_b_product() -> crate::prod::ProductData {
         property_only: false,
         security_capacity: Default::default(),
         factory_properties: Vec::new(),
+        pei_type: None,
+        abs_segment_steps: Vec::new(),
+        absolute_segments: Vec::new(),
     }
 }
 
@@ -184,4 +190,39 @@ macro_rules! knxprod_or_skip {
             }
         }
     }};
+}
+
+/// A synthetic BCU 2 product (mask `0021`, bussard issue #525), built in
+/// memory: the procedure shape most corpus BCU 2 programs share (three LSMs,
+/// the address table at 0116h, the association table after it, the
+/// application in zero page RAM, RAM 2 and EEPROM with the system table at
+/// 0100h), with made-up addresses and sizes under the test manufacturer.
+pub fn synthetic_bcu2_product() -> crate::prod::ProductData {
+    use crate::prod::AbsSegmentStep;
+    let step = |lsm_index: u8, address: u16, size: u16, mem_type: u8| AbsSegmentStep {
+        lsm_index,
+        seg_type: 0,
+        address,
+        size,
+        access: 0x32,
+        mem_type,
+        seg_flags: 0,
+    };
+    let mut product = synthetic_mdt_sys7_product();
+    product.application_id = "M-00FA_A-2A01-10-0000".into();
+    product.application_number = 0x2A01;
+    product.application_version = 0x10;
+    product.mask_version = "MV-0021".into();
+    product.hardware_type_marker = None;
+    product.task_segment_lsms = Some(vec![1, 2, 3]);
+    product.pei_type = Some(0);
+    product.abs_segment_steps = vec![
+        step(1, 0x0116, 0x20, 3),
+        step(2, 0x0136, 0x20, 3),
+        step(3, 0x00C8, 0x18, 1),
+        step(3, 0x0972, 0x10, 2),
+        step(3, 0x0100, 0x16, 3),
+        step(3, 0x0156, 0x40, 3),
+    ];
+    product
 }

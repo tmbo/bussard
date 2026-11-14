@@ -567,6 +567,13 @@ fn parse_application_program(
     let mut app_number: u32 = 0;
     let mut app_version: u32 = 0;
     let mut mask_version = String::new();
+    let mut pei_type: Option<u8> = None;
+    let mut abs_segment_steps: Vec<super::model::AbsSegmentStep> = Vec::new();
+    let mut absolute_segments: Vec<super::model::AbsoluteSegment> = Vec::new();
+    // Transient state while parsing a `Code/AbsoluteSegment` (children
+    // `<Data>` and `<Mask>`): which child is open.
+    let mut cur_abs: Option<super::model::AbsoluteSegment> = None;
+    let mut abs_child: Option<&'static str> = None;
     let mut security_capacity = super::model::SecurityCapacity::default();
     let mut in_app = false;
 
@@ -669,6 +676,7 @@ fn parse_application_program(
                     app_number = parse_u32(&e, "ApplicationNumber")?.unwrap_or(0);
                     app_version = parse_u32(&e, "ApplicationVersion")?.unwrap_or(0);
                     mask_version = attr(&e, "MaskVersion").unwrap_or_default();
+                    pei_type = parse_u32(&e, "PeiType")?.and_then(|v| u8::try_from(v).ok());
                     // The Data Secure table capacities (bussard issue #537).
                     let rows = |key: &str| -> Result<Option<u16>, ProdError> {
                         Ok(parse_u32(&e, key)?.map(|n| u16::try_from(n).unwrap_or(u16::MAX)))
@@ -780,6 +788,54 @@ fn parse_application_program(
                 b"Data" if cur_segment.is_some() => {
                     in_data = true;
                     data_text.clear();
+                }
+                // A `Code/AbsoluteSegment` (bussard issue #525): the image at a
+                // fixed address. `LdCtrlAbsSegment` is a load control, not this.
+                b"AbsoluteSegment" if in_app => {
+                    let seg = super::model::AbsoluteSegment {
+                        address: parse_u32(&e, "Address")?
+                            .and_then(|v| u16::try_from(v).ok())
+                            .unwrap_or(0),
+                        size: parse_u32(&e, "Size")?
+                            .and_then(|v| u16::try_from(v).ok())
+                            .unwrap_or(0),
+                        data: Vec::new(),
+                        mask: Vec::new(),
+                    };
+                    if is_empty_element {
+                        absolute_segments.push(seg);
+                    } else {
+                        cur_abs = Some(seg);
+                    }
+                }
+                b"Data" if cur_abs.is_some() => {
+                    abs_child = Some("Data");
+                    data_text.clear();
+                }
+                b"Mask" if cur_abs.is_some() => {
+                    abs_child = Some("Mask");
+                    data_text.clear();
+                }
+                b"LdCtrlAbsSegment" if in_app => {
+                    let byte = |key: &str| -> Result<u8, ProdError> {
+                        Ok(parse_u32(&e, key)?
+                            .and_then(|v| u8::try_from(v).ok())
+                            .unwrap_or(0))
+                    };
+                    let word = |key: &str| -> Result<u16, ProdError> {
+                        Ok(parse_u32(&e, key)?
+                            .and_then(|v| u16::try_from(v).ok())
+                            .unwrap_or(0))
+                    };
+                    abs_segment_steps.push(super::model::AbsSegmentStep {
+                        lsm_index: byte("LsmIdx")?,
+                        seg_type: byte("SegType")?,
+                        address: word("Address")?,
+                        size: word("Size")?,
+                        access: byte("Access")?,
+                        mem_type: byte("MemType")?,
+                        seg_flags: byte("SegFlags")?,
+                    });
                 }
                 b"LoadProcedure" if in_app => {
                     let merge_id = parse_u32(&e, "MergeId")?;
@@ -1077,10 +1133,28 @@ fn parse_application_program(
                 }
                 _ => {}
             },
-            Event::Text(t) if in_data => {
+            Event::Text(t) if in_data || abs_child.is_some() => {
                 data_text.push_str(&String::from_utf8_lossy(t.as_ref()));
             }
             Event::End(e) => match e.name().as_ref() {
+                b"Data" | b"Mask" if abs_child.is_some() => {
+                    let trimmed: String =
+                        data_text.chars().filter(|c| !c.is_whitespace()).collect();
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(trimmed)?;
+                    if let Some(seg) = cur_abs.as_mut() {
+                        if abs_child == Some("Data") {
+                            seg.data = bytes;
+                        } else {
+                            seg.mask = bytes;
+                        }
+                    }
+                    abs_child = None;
+                }
+                b"AbsoluteSegment" => {
+                    if let Some(seg) = cur_abs.take() {
+                        absolute_segments.push(seg);
+                    }
+                }
                 b"Data" if in_data => {
                     in_data = false;
                     if let Some(seg) = cur_segment.as_mut() {
@@ -1310,6 +1384,9 @@ fn parse_application_program(
         property_only: property_ops && !other_ops,
         security_capacity,
         factory_properties: Vec::new(),
+        pei_type,
+        abs_segment_steps,
+        absolute_segments,
     }))
 }
 

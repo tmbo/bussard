@@ -142,7 +142,9 @@ impl Device {
         // catches a tool wrongly sending 63-byte chunks; a real device refuses it.
         // A device that advertises a longer APDU in PID 56 (bussard issue #996)
         // takes the longer memory op that APDU carries, on an extended frame.
-        if self.profile.is_system7()
+        // A BCU 2 takes standard frames with at most 12 memory octets too
+        // (its maximum APDU is 15 octets, bussard issue #525).
+        if (self.profile.is_system7() || self.profile.is_system2())
             && matches!(apdu.apci, Apci::MemoryRead(_) | Apci::MemoryWrite(_))
         {
             let count = apdu.memory_count() as usize;
@@ -288,6 +290,8 @@ impl Device {
         }
         let key = u32::from_be_bytes([apdu.data[1], apdu.data[2], apdu.data[3], apdu.data[4]]);
         let granted = match self.profile.system7().and_then(|p| p.bcu_key) {
+            // A BCU 2 grants the level of the matching key, else free access.
+            _ if self.is_bcu2() => self.bcu2_authorize_level(key).unwrap_or(3),
             // Keyed device: match the key (free-access key always accepted).
             Some(required) if key != required && key != FREE_ACCESS_KEY => 15,
             _ => 0,

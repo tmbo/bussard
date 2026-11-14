@@ -83,7 +83,9 @@ def results_path(variant: str) -> Path:
     return HERE / "results" / VARIANTS[variant]
 
 
-SIM_MASKS = {"07B0", "0705", "0701", "0021"}
+# The masks knx-sim plays: System B, System 7 and, since #525, the BCU 2
+# masks of System 2.
+SIM_MASKS = {"07B0", "0705", "0701", "0020", "0021", "0025"}
 
 
 def product_path(file: str) -> Path:

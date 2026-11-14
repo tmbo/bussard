@@ -215,7 +215,8 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
         f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{options}{knxnet_sim(product)}"
-        f"{secure_sim(product, app, activated=base)}{replay}"
+        f"{secure_sim(product, app, activated=base and VARIANTS.get(variant, {}).get('base_activates', True))}"
+        f"{replay}"
     )
 
 
@@ -816,9 +817,20 @@ VARIANTS: dict[str, dict] = {
                       "the device the first one activated, with ETS's tool key, #1054; on syn-minimal and "
                       "syn-secure-fill over a programmed System B device, where ETS sends no factory reset, "
                       "#1056, #1081)"},
-    "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal"),
+    "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal", "syn-secure-fill"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
-                         "over it; the capture is the second download (#488)"},
+                         "over it; the capture is the second download (#488; on syn-secure-fill another "
+                         "Data Secure application first, whether ETS sends a factory reset there, #1081)"},
+    "partial-twice": {"products": ("syn-property-param", "syn-minimal"),
+                      "doc": "a defaults download, then two partial downloads in one ETS session, each after "
+                             "its own parameter change (changes.toml `step`); the capture is the second partial "
+                             "download: which octets of the par WriteRelMem ETS writes when only a property "
+                             "parameter (syn-property-param) or only the first memory parameter (syn-minimal) "
+                             "changed since the last partial download (#1091)"},
+    "apply-params": {"products": ("syn-minimal", "syn-secure"),
+                     "doc": "the application with two links, then a third link added AND a parameter changed, "
+                            "and ETS's partial download; the capture is the partial download, compared with "
+                            "`bussard apply`: what ETS sends and how many restarts for a combined change (#1095)"},
     "partial": {"products": ("syn-minimal", "syn-property-param", "syn-property-nopar", "syn-trailing-writeprop",
                              "syn-s7-0705", "syn-secure"),
                 "doc": "a defaults download, a parameter changed in ETS's parameter editor, then ETS's "
@@ -853,12 +865,19 @@ VARIANTS: dict[str, dict] = {
                            "knx-sim does not answer yet: ETS ends \"Entladen(Alle): fehlgeschlagen\" and nothing is "
                            "committed (#1120). No oracle row, as `unload`",
                     "row": False, "sim": {"prog_mode": True}},
-    "assign": {"products": ("syn-minimal",),
+    "unload-reload": {"products": ("syn-secure-fill", "syn-minimal"),
+                      "doc": "a defaults download, ETS's \"Entladen\" of the application only, then the "
+                             "application again; the capture is the last download, the first two its base: "
+                             "whether ETS sends a factory reset (erase code 7) into an unloaded secure-capable "
+                             "device (#1081, #1056)"},
+    "assign": {"products": ("syn-minimal", "syn-secure-fill"),
                "doc": "the individual address assigned to a device in programming mode (ETS's \"Physikalische "
                       "Adresse\" download; knx-sim starts the device at 15.15.255 with `prog_mode: true`), then "
                       "the application; the capture is the application download, the assignment is its base "
-                      "(#1056, #779, #572)",
-               "sim": {"address": "15.15.255", "prog_mode": True}},
+                      "(#1056, #779, #572; on syn-secure-fill whether ETS sends a factory reset after an "
+                      "address assignment, #1081). The base leaves a secure device in factory state, so its "
+                      "loopback sim does not start activated",
+               "sim": {"address": "15.15.255", "prog_mode": True}, "base_activates": False},
     "bare-restart": {"products": ("syn-master-reset",),
                      "doc": "the application download into a device without the Master Reset: knx-sim "
                             "`master_reset: refuse` answers the confirmed A_Restart with error code 2 "
@@ -873,7 +892,7 @@ UNLOAD_MODES = {"unload": "application", "unload-full": "full"}
 # `other-app`: the application loaded first, a sibling of the same mask with
 # the smallest delta.
 OTHER_APP = {"syn-s7-0705": "syn-s7-hidden-default", "syn-s7-0701": "syn-s7-lsm5",
-             "syn-minimal": "syn-hidden-default"}
+             "syn-minimal": "syn-hidden-default", "syn-secure-fill": "syn-secure"}
 # `links`: (object number, group address) in the order the driver links them.
 # The first address of an object that transmits is its sending address.
 LINKS = {"syn-minimal": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")],
@@ -884,6 +903,8 @@ LINKS = {"syn-minimal": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")],
 GA_SECURITY = {"syn-secure": {"1/0/2": "off"}}
 # `apply` (#829): the links of the first download, then the link added before
 # the partial download.
+# `apply-params` (#1095) uses the same links, with the step's parameter
+# changes from changes.toml.
 APPLY_LINKS = {"syn-minimal": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
                "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
                "syn-s7-0705": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
@@ -909,9 +930,10 @@ def param_changes(product: str, variant: str) -> list[dict]:
     changes = table.get(product, {}).get(variant, [])
     for i, ch in enumerate(changes):
         missing = {"page", "label", "kind", "value"} - ch.keys()
-        if missing or ch.get("expect", "shown") not in EXPECT or ("key" in ch) != ("model" in ch):
+        if missing or ch.get("expect", "shown") not in EXPECT or ("key" in ch) != ("model" in ch) \
+                or not (isinstance(ch.get("step", 1), int) and ch.get("step", 1) >= 1):
             raise SystemExit(f"{CHANGES}: {product}.{variant} change #{i + 1} needs page, label, kind, value, "
-                             f"key with model, and expect one of {', '.join(EXPECT)}: {ch}")
+                             f"key with model, expect one of {', '.join(EXPECT)} and a step from 1: {ch}")
     return [dict(ch) for ch in changes]
 
 
@@ -1019,12 +1041,21 @@ def variant_steps(product: str, variant: str) -> list[dict]:
         raise SystemExit(f"{variant} runs on {', '.join(VARIANTS[variant]['products'])}, not {product}")
     one = {"product": product, "mode": "application", "links": [], "params": []}
     changes = param_changes(product, variant)
+
+    def of_step(n: int) -> list[dict]:
+        # The changes of the n-th parameter-changing step (changes.toml `step`).
+        return [ch for ch in changes if ch.get("step", 1) == n]
+    apply_links = APPLY_LINKS.get(product, ([], []))
     steps = {
         "no-ga": [{**one, "objects": True}],
         "links": [{**one, "links": LINKS.get(product, []), "objects": True}],
         "reload": [dict(one), dict(one)],
         "other-app": [{**one, "product": OTHER_APP.get(product, "")}, dict(one)],
         "partial": [dict(one), {**one, "mode": "partial", "params": changes}],
+        "partial-twice": [dict(one), {**one, "mode": "partial", "params": of_step(1)},
+                          {**one, "mode": "partial", "params": of_step(2)}],
+        "apply-params": [{**one, "links": apply_links[0], "objects": True},
+                         {**one, "mode": "partial", "links": apply_links[1], "params": changes, "objects": True}],
         "calc-input": [{**one, "params": changes}],
         "calc-overflow": [{**one, "params": changes}],
         "params": [{**one, "params": changes}],
@@ -1033,6 +1064,7 @@ def variant_steps(product: str, variant: str) -> list[dict]:
         "bare-restart": [dict(one)],
         "unload": [dict(one), {**one, "mode": "unload"}],
         "unload-full": [dict(one), {**one, "mode": "unload-full"}],
+        "unload-reload": [dict(one), {**one, "mode": "unload"}, dict(one)],
         "assign": [{**one, "mode": "address"}, dict(one)],
     }[variant]
     for i, step in enumerate(steps):
@@ -1050,9 +1082,9 @@ def variant_options(product: str, variant: str) -> str:
         return device_state(product, variant)
     if variant in ("links", "calc-input", "calc-overflow", "params"):
         return f"dir={rel}/model"
-    if variant in ("partial", "apply"):
+    if variant in ("partial", "partial-twice", "apply", "apply-params"):
         mask = tomllib.loads((CATALOGUE / product / "product.toml").read_text())["application"]["mask"]
-        run = "params" if variant == "partial" else "apply"
+        run = "params" if variant.startswith("partial") else "apply"
         return f"run={run} base={rel}/base.pcapng dir={rel}/model lsm={lsm_access(str(mask))}"
     return ""
 
