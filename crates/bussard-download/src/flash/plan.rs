@@ -575,16 +575,13 @@ fn plan_flash_as(
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
     let config = memo.evaluate_for(app, overrides);
-    let (ops, spliced_from_template, branch_gaps) =
-        assemble_ops(app, template_ops, &config, download)?;
-    // The complete download's ops, for the declarations a parameter-only
-    // download's `par` filter drops (issue #1049).
-    let full_ops = match download {
-        Download::Par => assemble_ops(app, template_ops, &config, Download::Full)
-            .ok()
-            .map(|assembled| assembled.0),
-        Download::Full => None,
-    };
+    let (ops, op_tags, spliced_from_template, branch_gaps) =
+        assemble_ops_tagged(app, template_ops, &config, download)?;
+    // The complete download's ops and their tags, for the declarations a
+    // parameter-only download's `par` filter drops (issue #1049); assembled
+    // on first use.
+    let full_ops: std::cell::OnceCell<std::result::Result<TaggedOps, PlanError>> =
+        std::cell::OnceCell::new();
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
@@ -672,7 +669,7 @@ fn plan_flash_as(
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
     // The parameters set away from their defaults: only their placement can
     // refuse a write (issue #1049).
-    let changed = super::declare::changed_parameters(app, &property_params, overrides, memo);
+    let changed = super::declare::Changed::new(app, &property_params, overrides, memo);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
     // What the procedure has left in the device's properties so far: after
@@ -728,26 +725,103 @@ fn plan_flash_as(
             ops.get(i + 1..).unwrap_or_default(),
         )?;
         // The parameter-only download lowers such a write as the complete
-        // download does, also when its `par` filter drops the declaration.
+        // download does, also when its `par` filter drops the declaration:
+        // at the index the op's tag has in the complete download. When that
+        // cannot be found out, a changed parameter in the property refuses
+        // the plan; at the defaults the write is lowered as undeclared.
         if declared_write.is_none()
-            && let Some(full) = full_ops.as_deref()
-            && matches!(op, LoadOp::WriteProp { inline_data: Some(d), .. } if !d.is_empty())
+            && download == Download::Par
+            && let LoadOp::WriteProp {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(prop_id),
+                inline_data: Some(inline),
+                ..
+            } = op
+            && !inline.is_empty()
         {
-            let nth = ops
-                .get(..i)
-                .unwrap_or_default()
-                .iter()
-                .filter(|o| *o == op)
-                .count();
-            declared_write = super::declare::declaration_in(full, op, nth)?;
+            let full = full_ops.get_or_init(|| {
+                assemble_ops_tagged(app, template_ops, &config, Download::Full)
+                    .map(|(ops, tags, ..)| (ops, tags))
+            });
+            let found = match full {
+                Ok((full, tags)) => match op_tags.get(i).copied().flatten() {
+                    Some(tag) => match tags.iter().position(|t| *t == Some(tag)) {
+                        Some(at) => super::declare::declaration_at(full, at, op),
+                        None => Ok(None),
+                    },
+                    None => Ok(None),
+                },
+                Err(e) => Err(e.clone()),
+            };
+            declared_write = match found {
+                Ok(decl) => decl,
+                Err(e) => {
+                    let object =
+                        super::plan_props::prop_object(step_no, *obj_idx, *obj_type, *occurrence)?;
+                    match changed.in_property(object, *prop_id) {
+                        Some(who) => {
+                            return Err(PlanError::PropertyParameter(format!(
+                                "the parameter {who} is set away from its default and placed in \
+                                 {object} PID {prop_id}, and the complete download's declaration \
+                                 of that property, which the parameter-only download needs to \
+                                 place it, cannot be found: {e}"
+                            )));
+                        }
+                        None => None,
+                    }
+                }
+            };
+        }
+        // A write lowered against a declaration that comes after it plans as
+        // main did (undeclared) when the declared lowering would refuse it
+        // and every parameter in its property holds its default; only a
+        // changed parameter makes that refusal stand (issue #1049).
+        let declared_target = super::declare::declaration_for(&declared, step_no, op).is_some();
+        if !declared_target
+            && let Some(decl) = declared_write.as_ref()
+            && let LoadOp::WriteProp {
+                prop_id,
+                inline_data,
+                ..
+            } = op
+        {
+            let prop = prop_id.unwrap_or(decl.prop_id);
+            let name = format!("the declared {} PID {prop}", decl.object);
+            let refused = maybe_substitute_app_id(
+                &name,
+                prop,
+                inline_data.as_deref(),
+                program_ids.for_object(decl.object),
+                || super::declare::is_placed(&name, decl.object, prop, &property_params, app),
+            )
+            .map_err(|reason| PlanError::UnsupportedWriteProp {
+                step: step_no,
+                reason,
+            })
+            .and_then(|inline| {
+                super::declare::lower_declared_write_prop(
+                    step_no,
+                    op,
+                    decl,
+                    inline.as_deref(),
+                    &property_params,
+                    app,
+                    typed_objects_by_list,
+                )
+            })
+            .is_err();
+            if refused && changed.in_property(decl.object, prop).is_none() {
+                declared_write = None;
+            }
         }
         let lowered_from = steps.len();
-        // Whether ETS has a type for the property at this op: only a
-        // declaration made before it gives one. ETS reads the description of
-        // a property written before its declaration (`M-0009_A-E0D1-11-99AD`
-        // object 6 PID 208, the ETS sweep capture), so a held step there
-        // still reads it (issue #1049).
-        let declared_target = super::declare::declaration_for(&declared, step_no, op).is_some();
+        // `declared_target`: whether ETS has a type for the property at this
+        // op. Only a declaration made before it gives one: ETS reads the
+        // description of a property written before its declaration
+        // (`M-0009_A-E0D1-11-99AD` object 6 PID 208, the ETS sweep capture),
+        // so a held step there still reads it (issue #1049).
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
@@ -1871,7 +1945,40 @@ pub(super) fn assemble_ops(
     config: &bussard_product::dynamic::DynamicConfig,
     download: Download,
 ) -> std::result::Result<AssembledOps, PlanError> {
-    use super::plan_props::taken_ops;
+    let (ops, _, spliced, gaps) = assemble_ops_tagged(app, template_ops, config, download)?;
+    Ok((ops, spliced, gaps))
+}
+
+/// Where an assembled op comes from: its load procedure (by address, within
+/// one program) and its index there; `None` for a master-template op.
+/// The same op of two downloads of one program carries the same tag
+/// (issue #1049).
+pub(super) type OpTag = Option<(usize, usize)>;
+
+/// Assembled ops and their [`OpTag`]s.
+pub(super) type TaggedOps = (Vec<LoadOp>, Vec<OpTag>);
+
+/// [`assemble_ops`]'s result with each op's [`OpTag`].
+pub(super) type AssembledTaggedOps = (
+    Vec<LoadOp>,
+    Vec<OpTag>,
+    bool,
+    BTreeMap<u32, Vec<(u32, u32)>>,
+);
+
+/// [`assemble_ops`] with each op's [`OpTag`].
+///
+/// # Errors
+///
+/// As [`assemble_ops`].
+pub(super) fn assemble_ops_tagged(
+    app: &ApplicationProgram,
+    template_ops: Option<&[LoadOp]>,
+    config: &bussard_product::dynamic::DynamicConfig,
+    download: Download,
+) -> std::result::Result<AssembledTaggedOps, PlanError> {
+    use super::plan_props::{taken_ops, taken_ops_indexed};
+    let tag_of = |lp: &LoadProcedure| std::ptr::from_ref(lp) as usize;
     // The parameter-only procedure runs an application op whose `AppliesTo`
     // names `par`, or that has none (issue #1052): MergeId 7's no-`AppliesTo`
     // checks and write run in ETS's partial download of `M-0009_A-E804-10-98AD`
@@ -1906,7 +2013,7 @@ pub(super) fn assemble_ops(
         .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
-        return Ok((Vec::new(), false, BTreeMap::new()));
+        return Ok((Vec::new(), Vec::new(), false, BTreeMap::new()));
     }
     if let Some(p) = companion_blocks.iter().find(|p| !p.chooses.is_empty()) {
         return Err(PlanError::UndecidableCondition {
@@ -1926,14 +2033,17 @@ pub(super) fn assemble_ops(
     if all_merged && let Some(template) = template_ops {
         // App blocks keyed by parsed MergeId. A block whose id is not numeric
         // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
-        let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+        let mut blocks: BTreeMap<u32, Vec<(LoadOp, OpTag)>> = BTreeMap::new();
         let (mut every_branch, mut taken) = (Vec::new(), Vec::new());
         for p in &non_empty {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                let ops = taken_ops(app, p, config, &in_download)?;
+                let ops = taken_ops_indexed(app, p, config, &in_download)?;
                 every_branch.extend(p.ops.iter());
-                taken.extend(ops.iter().cloned());
-                blocks.entry(id).or_default().extend(ops);
+                taken.extend(ops.iter().map(|(_, op)| op.clone()));
+                blocks
+                    .entry(id)
+                    .or_default()
+                    .extend(ops.into_iter().map(|(i, op)| (op, Some((tag_of(p), i)))));
             }
         }
         let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
@@ -1949,7 +2059,7 @@ pub(super) fn assemble_ops(
                 blocks
                     .entry(id)
                     .or_default()
-                    .extend(ops.map(|(_, op)| op.clone()));
+                    .extend(ops.map(|(i, op)| (op.clone(), Some((tag_of(p), i)))));
             }
         }
         // Whether Application Program 2 is loaded is the complete download's
@@ -1957,7 +2067,12 @@ pub(super) fn assemble_ops(
         // rows whenever it is loaded, even when its blocks hold `full` ops
         // only (issue #1085).
         let loads_ap2 = match download {
-            Download::Full => loads_application_program_2(&blocks),
+            Download::Full => loads_application_program_2(
+                &blocks
+                    .iter()
+                    .map(|(id, ops)| (*id, ops.iter().map(|(op, _)| op.clone()).collect()))
+                    .collect(),
+            ),
             Download::Par => {
                 let full = |lp: &LoadProcedure, i: usize| {
                     !(lp.lists_partial_downloads() && lp.is_partial_only(i))
@@ -1996,7 +2111,7 @@ pub(super) fn assemble_ops(
         } else {
             application_program_1_only(template)
         };
-        let mut out = Vec::new();
+        let (mut out, mut tags) = (Vec::new(), Vec::new());
         for op in &template {
             match op {
                 LoadOp::Merge { merge_id } => {
@@ -2005,24 +2120,33 @@ pub(super) fn assemble_ops(
                         .and_then(|m| m.parse::<u32>().ok())
                         .and_then(|id| blocks.get(&id))
                     {
-                        out.extend(ops.iter().cloned());
+                        for (op, tag) in ops {
+                            out.push(op.clone());
+                            tags.push(*tag);
+                        }
                     }
                     // Unmatched or id-less marker: drop it.
                 }
-                other => out.push(other.clone()),
+                other => {
+                    out.push(other.clone());
+                    tags.push(None);
+                }
             }
         }
-        return Ok((out, true, gaps));
+        return Ok((out, tags, true, gaps));
     }
 
     let blocks = self_contained_blocks(app);
-    let mut out = Vec::new();
+    let (mut out, mut tags) = (Vec::new(), Vec::new());
     for p in &blocks {
-        out.extend(taken_ops(app, p, config, &in_download)?);
+        for (i, op) in taken_ops_indexed(app, p, config, &in_download)? {
+            out.push(op);
+            tags.push(Some((tag_of(p), i)));
+        }
     }
     let gaps =
         super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
-    Ok((out, false, gaps))
+    Ok((out, tags, false, gaps))
 }
 
 /// Lowers a load-state control naming its object by type (`ObjType`) to
@@ -5809,9 +5933,48 @@ mod tests {
         assert_eq!(
             reason,
             "cannot flash: the parameter param@P-2_R-2 \"p2\" is placed in object 9 PID 208 at \
-             octet 3, and no write of the load procedure covers that octet with a known extent, \
+             octet 3, and no write of the load procedure covers it with a known extent, \
              so its value cannot be downloaded; set it back to its default"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_changed_parameter_in_a_property_never_written() -> TestResult {
+        // Issue #1049: coverage starts from the changed parameters. One in a
+        // property the plan does not write plans as on main at its default
+        // and is refused, named, once changed.
+        let ops = r#"<LdCtrlWriteProp ObjIdx="9" PropId="209" InlineData="00" />"#;
+        let params = [placed_u8(1, 7, 0, OBJ9)];
+        assert_eq!(pid_208_writes(ops, &params, &[1], &[])?, Ok(vec![]));
+        let reason = refused(pid_208_writes(ops, &params, &[1], &[("P-1_R-1", "8")])?)?;
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"")
+                && reason.contains("object 9 PID 208 at octet 0"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_plans_a_write_declared_later_as_main_when_the_declared_arm_refuses()
+    -> TestResult {
+        // Issue #1049: a count-less write before a declaration of three
+        // elements is one the declared lowering refuses (it could mean more
+        // than one element). At the defaults it plans as main did
+        // (undeclared, one element of the InlineData); with the parameter
+        // changed the refusal stands.
+        let ops = format!(
+            r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" InlineData="1122" />{}"#,
+            declare_208("PDT_UNSIGNED_CHAR", 3)
+        );
+        let params = [placed_u8(1, 0x11, 0, OBJ9)];
+        assert_eq!(
+            pid_208_writes(&ops, &params, &[1], &[])?,
+            Ok(vec![(vec![0x11, 0x22], true, 1, 1)])
+        );
+        let reason = refused(pid_208_writes(&ops, &params, &[1], &[("P-1_R-1", "8")])?)?;
+        assert!(reason.contains("Count"), "{reason}");
         Ok(())
     }
 

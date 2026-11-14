@@ -133,6 +133,24 @@ pub(super) fn taken_ops(
     config: &DynamicConfig,
     in_download: &dyn Fn(&LoadProcedure, usize) -> bool,
 ) -> Result<Vec<LoadOp>, PlanError> {
+    Ok(taken_ops_indexed(app, lp, config, in_download)?
+        .into_iter()
+        .map(|(_, op)| op)
+        .collect())
+}
+
+/// [`taken_ops`], each op with its index in `lp`, so a filtered download
+/// can find the same op in another download of the procedure (issue #1049).
+///
+/// # Errors
+///
+/// As [`taken_ops`].
+pub(super) fn taken_ops_indexed(
+    app: &ApplicationProgram,
+    lp: &LoadProcedure,
+    config: &DynamicConfig,
+    in_download: &dyn Fn(&LoadProcedure, usize) -> bool,
+) -> Result<Vec<(usize, LoadOp)>, PlanError> {
     let mut out = Vec::with_capacity(lp.ops.len());
     for (i, op) in lp.ops.iter().enumerate() {
         if !in_download(lp, i) {
@@ -146,7 +164,7 @@ pub(super) fn taken_ops(
             }
         }
         if taken {
-            out.push(op.clone());
+            out.push((i, op.clone()));
         }
     }
     Ok(out)
@@ -416,7 +434,7 @@ pub(super) fn lower_write_prop(
     op: &LoadOp,
     values: &PropertyValues,
     params: &PropertyParameters<'_>,
-    changed: &BTreeMap<String, String>,
+    changed: &super::declare::Changed<'_, '_>,
     app: &ApplicationProgram,
     typed_by_list: bool,
 ) -> Result<FlashStep, PlanError> {
@@ -898,7 +916,7 @@ pub(super) fn plan_flash_properties(
     let params = bussard_product::PropertyParameters::resolve(app, &config);
     // The parameters set away from their defaults: only their placement can
     // refuse a write (issue #1049).
-    let changed = super::declare::changed_parameters(app, &params, overrides, memo);
+    let changed = super::declare::Changed::new(app, &params, overrides, memo);
     let values = params
         .values()
         .map_err(|e| PlanError::UnsupportedWriteProp {
@@ -1147,7 +1165,7 @@ mod tests {
                 &op,
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1181,7 +1199,7 @@ mod tests {
                 op,
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1208,7 +1226,7 @@ mod tests {
             op,
             &values,
             &no_params(&app),
-            &BTreeMap::new(),
+            &super::super::declare::Changed::none(),
             &app,
             false,
         ) {
@@ -1227,7 +1245,7 @@ mod tests {
             op,
             &values,
             &no_params(&app),
-            &BTreeMap::new(),
+            &super::super::declare::Changed::none(),
             &app,
             false,
         ) {
@@ -1264,7 +1282,7 @@ mod tests {
                 label,
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1295,7 +1313,7 @@ mod tests {
             inline,
             &values,
             &no_params(&app),
-            &BTreeMap::new(),
+            &super::super::declare::Changed::none(),
             &app,
             false,
         )? {
@@ -1335,7 +1353,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&guarded_app()?),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &guarded_app()?,
                 false
             ),
@@ -1405,7 +1423,7 @@ mod tests {
                 &ise_write(64, 500),
                 &values,
                 &no_params(&guarded_app()?),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &guarded_app()?,
                 false
             )?,
@@ -1430,7 +1448,7 @@ mod tests {
                 &ise_write(69, 64),
                 &values,
                 &no_params(&guarded_app()?),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &guarded_app()?,
                 false
             )?,
@@ -1457,7 +1475,7 @@ mod tests {
             &ise_write(64, 988),
             &values,
             &no_params(&guarded_app()?),
-            &BTreeMap::new(),
+            &super::super::declare::Changed::none(),
             &guarded_app()?,
             false,
         )? {
@@ -1501,7 +1519,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1521,7 +1539,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1546,7 +1564,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             ),
@@ -1560,7 +1578,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             ),
@@ -1598,7 +1616,7 @@ mod tests {
                 &count_write(64, 500),
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1625,7 +1643,7 @@ mod tests {
             &count_write(64, 4096),
             &values,
             &no_params(&app),
-            &BTreeMap::new(),
+            &super::super::declare::Changed::none(),
             &app,
             false,
         ) {
@@ -1642,7 +1660,7 @@ mod tests {
                 &count_write(64, 4095),
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1664,7 +1682,7 @@ mod tests {
                 &count_write(64, 237),
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,
@@ -1683,7 +1701,7 @@ mod tests {
                 &count_write(68, 64),
                 &values,
                 &no_params(&app),
-                &BTreeMap::new(),
+                &super::super::declare::Changed::none(),
                 &app,
                 false
             )?,

@@ -387,7 +387,7 @@ pub(super) fn plan_flash_sys7(
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
     // The parameters set away from their defaults: only their placement can
     // refuse a write (issue #1049).
-    let changed = super::declare::changed_parameters(app, &property_params, overrides, memo);
+    let changed = super::declare::Changed::new(app, &property_params, overrides, memo);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
