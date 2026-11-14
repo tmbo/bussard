@@ -330,9 +330,10 @@ pub(super) async fn resident_matches<C: Connector>(
     }
     for v in &check.values {
         let elem = v.value.len() / usize::from(v.count);
-        let read = read_property_value_resumable(session, v.object, v.prop_id, v.start, v.count, elem)
-            .await
-            .map_err(|e| format!("object {} PID {}: not read ({e})", v.object, v.prop_id))?;
+        let read =
+            read_property_value_resumable(session, v.object, v.prop_id, v.start, v.count, elem)
+                .await
+                .map_err(|e| format!("object {} PID {}: not read ({e})", v.object, v.prop_id))?;
         if read != v.value {
             return Err(format!(
                 "object {} PID {} holds another value",
@@ -774,7 +775,10 @@ mod tests {
         let mut differs = plan.clone();
         let wrong = BTreeMap::from([(4u8, (len, crc ^ 1))]);
         assert!(differs.skip_resident_matches(&wrong, 4, loaded).is_empty());
-        assert_eq!(differs.steps, plan.steps, "a different image: the full plan");
+        assert_eq!(
+            differs.steps, plan.steps,
+            "a different image: the full plan"
+        );
 
         let matching = BTreeMap::from([(4u8, (len, crc))]);
         let mut unloaded = plan.clone();

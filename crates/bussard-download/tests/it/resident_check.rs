@@ -125,7 +125,10 @@ fn writes_since(gw: &MockGateway, from: usize) -> TestResult<(usize, usize, Vec<
         let mcb = new
             .iter()
             .filter(|(a, d)| *a == A_PROPERTY_VALUE_READ && d.get(1) == Some(&PID_MCB_TABLE))
-            .map(|(_, d)| u16::from(d.get(2).copied().unwrap_or(0) & 0x0F) << 8 | u16::from(d.get(3).copied().unwrap_or(0)))
+            .map(|(_, d)| {
+                u16::from(d.get(2).copied().unwrap_or(0) & 0x0F) << 8
+                    | u16::from(d.get(3).copied().unwrap_or(0))
+            })
             .collect();
         (mem, props, mcb)
     })?)
@@ -153,10 +156,20 @@ async fn test_flash_writes_nothing_to_a_device_that_holds_the_download() -> Test
     let again = flash_once(&mut bus, &plan).await?;
     assert!(again.ok(), "{again:?}");
     let (mem, props, mcb) = writes_since(&gw, before)?;
-    assert_eq!((mem, props), (0, 0), "nothing written over a matching device");
-    assert!(!mcb.is_empty() && !mcb.contains(&0), "MCB elements read: {mcb:?}");
+    assert_eq!(
+        (mem, props),
+        (0, 0),
+        "nothing written over a matching device"
+    );
     assert!(
-        again.warnings.iter().any(|w| w.contains("already holds this download")),
+        !mcb.is_empty() && !mcb.contains(&0),
+        "MCB elements read: {mcb:?}"
+    );
+    assert!(
+        again
+            .warnings
+            .iter()
+            .any(|w| w.contains("already holds this download")),
         "{:?}",
         again.warnings
     );

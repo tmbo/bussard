@@ -1573,26 +1573,24 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // `FlashPlan::allows_resident_skip`), on a parameter-only download
     // (it diffs against the resident memory instead), or when the plan
     // writes state the check does not read ([`FlashPlan::resident_check`]).
-    let resident = if options.skip_matching_mcb
-        && plan.allows_resident_skip()
-        && !plan.is_parameters_only()
-    {
-        match plan.resident_check(app_obj, &object_table) {
-            Ok(check) => match resident_matches(session, &check).await {
-                Ok(()) => Some(check.loaded.keys().copied().collect::<BTreeSet<u8>>()),
+    let resident =
+        if options.skip_matching_mcb && plan.allows_resident_skip() && !plan.is_parameters_only() {
+            match plan.resident_check(app_obj, &object_table) {
+                Ok(check) => match resident_matches(session, &check).await {
+                    Ok(()) => Some(check.loaded.keys().copied().collect::<BTreeSet<u8>>()),
+                    Err(why) => {
+                        tracing::info!("resident check: {why}; the full download runs");
+                        None
+                    }
+                },
                 Err(why) => {
-                    tracing::info!("resident check: {why}; the full download runs");
+                    tracing::info!("resident check not made: {why}");
                     None
                 }
-            },
-            Err(why) => {
-                tracing::info!("resident check not made: {why}");
-                None
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     // A read the check could not finish may have left the connection
     // closed; the download opens a fresh one.
     reopen_if_closed(session).await?;
