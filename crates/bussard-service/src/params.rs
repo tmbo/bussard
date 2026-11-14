@@ -513,12 +513,20 @@ impl ParamState {
 
 /// Reads and decodes the parameter memory over an open, authorized session,
 /// keeping the memory and its decoding for a parameter write.
+///
+/// The properties the parameter-only download writes with a fixed value
+/// ([`bussard_download::ParamProperty::fixed`]) are read only when that
+/// download writes something, for its backup, or always with
+/// `fixed_properties` (a restore puts them back from its backup): a
+/// read-only `bussard plan` of an unchanged device does not pay for them
+/// (issue #1085).
 pub async fn read_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     source: &ProductSource,
     model: Option<&Model>,
     target: IndividualAddress,
     device_mask: u16,
+    fixed_properties: bool,
 ) -> ParamState {
     let Some(app) = source.app() else {
         return ParamState::noted(
@@ -585,7 +593,8 @@ pub async fn read_state<Ch: L4Channel>(
     // #706).
     // Every property the parameter write writes (issue #1052): backed up
     // before it and compared after it, as `flash --parameters-only` does.
-    let properties = crate::program::params_only::read_written_properties(l4, &plan, app).await;
+    let mut properties =
+        bussard_download::read_checked_properties_where(l4, &plan, app, false).await;
     // The group-object table the full flash writes, against the device's
     // (issue #540): a link the last flash did not know left its object's
     // Communication flag off, and `apply` reloads the table to switch it on.
@@ -609,8 +618,16 @@ pub async fn read_state<Ch: L4Channel>(
     let needs_flash = (!change.is_empty())
         .then(|| bussard_download::describe_group_object_change(&change))
         .or_else(|| bussard_download::allocation_change(app, &decoded.values, &overrides, &memo));
-    let (octets, unwritten) = plan
-        .parameters_only(&regions)
+    let partial = plan.parameters_only(&regions);
+    // The fixed writes, for the backup of a write that will run (issue
+    // #1085).
+    let writes = partial.as_ref().is_ok_and(|p| p.changed_octets() > 0)
+        || !bussard_download::changed_parameter_properties(&properties).is_empty();
+    if fixed_properties || writes {
+        properties
+            .extend(bussard_download::read_checked_properties_where(l4, &plan, app, true).await);
+    }
+    let (octets, unwritten) = partial
         .map(|partial| {
             let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
                 bussard_download::attribute_octets(

@@ -1214,7 +1214,7 @@ pub fn plan_offline(req: &OfflineRequest<'_>) -> Result<Offline, OfflineStop> {
                 ),
                 Freshness::Mismatch { reason } | Freshness::Unknown { reason } => reason.clone(),
             };
-            let par = plan.is_par_procedure();
+            let par = plan.procedure_kind() == bussard_download::ProcedureKind::CompleteByPar;
             let skipped = if !plan.is_sys7()
                 && crate::flash::skip_unchanged(choices.full, &plan, freshness)
             {

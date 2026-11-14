@@ -119,6 +119,7 @@ pub(crate) fn read_device(
         secured: presented_tool_key,
         flags_cache: reading.flags_cache,
         properties: reading.properties,
+        fixed_properties: false,
     };
     let runtime = tokio::runtime::Runtime::new()?;
     let read = runtime

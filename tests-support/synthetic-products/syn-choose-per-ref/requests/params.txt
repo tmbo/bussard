@@ -58,11 +58,13 @@ mem-read 0x60fc addr_int=24828 count=4
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x8000 addr_int=32768 count=2
 mem-read 0x8002 addr_int=32770 count=4
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 connect T_Connect
 authorize Authorize_Request key=FFFFFFFF(free-access)
 prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
 alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00
@@ -117,6 +119,7 @@ mem-read 0x603f addr_int=24639 count=63
 mem-read 0x607e addr_int=24702 count=63
 mem-read 0x60bd addr_int=24765 count=63
 mem-read 0x60fc addr_int=24828 count=4
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
 disconnect T_Disconnect
 
 memory image (1 region(s), chunking removed):

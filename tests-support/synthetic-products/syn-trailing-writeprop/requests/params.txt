@@ -55,11 +55,11 @@ prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
 prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
 prop-read obj4/PID_201 count=1 index=1
 prop-read obj4/PID_202 count=1 index=1
-prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
-prop-read obj9/PID_ROUTING_COUNT count=1 index=1
 prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
 mem-read 0x8000 addr_int=32768 count=2
 mem-read 0x8002 addr_int=32770 count=2
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj9/PID_ROUTING_COUNT count=1 index=1
 disconnect T_Disconnect
 connect T_Connect
 authorize Authorize_Request key=FFFFFFFF(free-access)
@@ -69,7 +69,6 @@ prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
 load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
 alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=16 fill=False fill_byte=0x00
-prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
 prop-desc-read obj4/PID_201 obj=4 pid=201 pid_name=PID_201 prop_index=0
 prop-write obj4/PID_201 count=1 index=1 len=1 sha=dbc1b4c9

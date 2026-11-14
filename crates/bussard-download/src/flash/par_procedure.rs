@@ -100,12 +100,6 @@ impl FlashPlan {
         self.par_procedure = changed;
         changed
     }
-
-    /// Whether [`FlashPlan::use_par_procedure`] shaped this plan: a full
-    /// download that runs the product's `par` load procedure.
-    pub fn is_par_procedure(&self) -> bool {
-        self.par_procedure
-    }
 }
 
 #[cfg(test)]
@@ -147,7 +141,10 @@ mod tests {
             (5, LoadState::Unloaded),
         ])));
         assert!(changed);
-        assert!(plan.is_par_procedure());
+        assert_eq!(
+            plan.procedure_kind(),
+            super::super::ProcedureKind::CompleteByPar
+        );
         let allocs: Vec<_> = plan
             .steps
             .iter()
@@ -209,7 +206,7 @@ mod tests {
         let steps = plan.steps.clone();
         assert!(!plan.use_par_procedure(Some(&resident(&[(5, LoadState::Unloaded)]))));
         assert_eq!(plan.steps, steps);
-        assert!(!plan.is_par_procedure());
+        assert_eq!(plan.procedure_kind(), super::super::ProcedureKind::Complete);
         Ok(())
     }
 }

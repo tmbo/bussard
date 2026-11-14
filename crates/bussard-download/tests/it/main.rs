@@ -37,6 +37,7 @@ mod typed_load_control_mock;
 mod verify_mode_system_b;
 // The fixture applications and the random value sets of bussard-prod's
 // evaluator conformance test, shared with the view acceptance test.
+mod par_memory_partial;
 #[path = "../../../bussard-product/tests/it/value_sets.rs"]
 mod value_sets;
 mod view_acceptance;
