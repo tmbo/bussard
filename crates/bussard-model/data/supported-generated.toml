@@ -12,7 +12,7 @@ coverage_floor = 95.0
 [[family]]
 mask = "0701"
 blocked = 366
-synthetic = 5
+synthetic = 6
 
 [[family]]
 mask = "0705"
