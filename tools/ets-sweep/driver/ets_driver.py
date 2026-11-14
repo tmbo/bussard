@@ -1363,7 +1363,12 @@ def merge_labels(lines: list[dict]) -> list[dict]:
 
 
 def _circle_like(t: str) -> bool:
-    return t.strip() in ("O", "o", "0", "Q", "C", "()", "@", "®", "©", "•", "◉")
+    return t.strip() in ("O", "o", "0", "Q", "C", "()", "(O)", "(o)", "(0)", "@", "®", "©", "•", "◉")
+
+
+# A radio circle OCR glued to the option word after it ('OUND', '@UND',
+# '(O)UND'): the glyphs it reads a circle as, at the start of one word.
+GLUED_CIRCLE = re.compile(r"^(\(\s*[Oo0]\s*\)|[O0Q@®©•◉])(?=[A-ZÄÖÜ0-9])")
 
 
 def ring_at(px, cx: int, cy: int) -> bool:
@@ -1444,6 +1449,13 @@ def split_at_circles(cells: list[dict], circles: list[int]) -> list[dict]:
         if len(words) > 1 and _circle_like(words[0]) and at is not None:
             # The circle read as the line's first letter ('O Rollladen ...').
             c = {**c, "text": " ".join(words[1:]), "x": at + 20, "w": c["w"] - (at + 20 - c["x"])}
+        elif words and at is not None and c["x"] < at and GLUED_CIRCLE.match(words[0]):
+            # The circle glued to a short option word ('OUND' over the
+            # circle at 1640, Hager E802 'Art der logischen Funktion',
+            # #1049): the cell starts left of the circle's centre, so no
+            # option took it and the option read ''.
+            text = GLUED_CIRCLE.sub("", c["text"], count=1).strip()
+            c = {**c, "text": text, "x": at + 20, "w": c["w"] - (at + 20 - c["x"])}
         parts = [c]
         for cx in circles:
             last = parts[-1]
@@ -1548,6 +1560,32 @@ def ocr_ink(bbox: tuple[int, int, int, int], pad: int = 12) -> list[dict]:
     return ocr(inner)
 
 
+def fill_option_texts(row: dict, read) -> None:
+    """A radio row's options whose text the row's OCR line did not give
+    (#1049: Hager E802 'Art der logischen Funktion' read options '' and
+    'ODER', so the change was set and recorded as ''): each such option's
+    span, from right of its circle to the next circle, read again on its
+    own by `read(bbox)` (magnified OCR); a short word alone in a small crop
+    reads where the whole line dropped it. The row's value follows its
+    selected option. An option still unread stays '' (`set_row` refuses
+    to set it)."""
+    opts = row.get("options") or []
+    for i, o in enumerate(opts):
+        if o.get("text"):
+            continue
+        end = opts[i + 1]["x"] - 18 if i + 1 < len(opts) else min(o["x"] + 420, PARAM_ROWS[2])
+        bbox = (o["x"] + 17, o["y"] - 22, max(end, o["x"] + 60), o["y"] + 22)
+        try:
+            cells = read(bbox)
+        except Exception:  # noqa: BLE001 - a second read is best effort
+            continue
+        text = " ".join(c["text"] for c in sorted(cells, key=lambda c: c["x"])
+                        if not _circle_like(c["text"])).strip()
+        o["text"] = GLUED_CIRCLE.sub("", text, count=1).strip()
+    if any(o.get("selected") for o in opts):
+        row["value"] = next(o["text"] for o in opts if o.get("selected"))
+
+
 def param_rows() -> list[dict]:
     """The rows of the shown parameter page: {label, n, kind, value, y, ...};
     `n` counts earlier rows of the same label on the page (Hager's three
@@ -1583,6 +1621,8 @@ def param_rows() -> list[dict]:
         row = {"label": label["text"].strip(), "y": cy, **classify_control(px, cy, on_row)}
         if row["kind"] in ("number", "text"):
             row["value"] = field_ocr(img, s, row)
+        if row["kind"] == "radio":
+            fill_option_texts(row, lambda bbox: ocr(bbox, zoom=3))
         key = _norm(row["label"])
         row["n"] = seen.get(key, 0)
         seen[key] = row["n"] + 1
@@ -2077,8 +2117,10 @@ def set_row(row: dict, req: dict, page: dict | None = None) -> tuple[str, str]:
             click(CONTROL_X + 16, row["y"])
         return value, value
     if kind == "radio":
-        value = choose_value(row, req, [o["text"] for o in row["options"]])
-        opt = next((o for o in row["options"] if _norm(o["text"]) == _norm(value)), None)
+        # An option whose text was not read is never chosen nor set: its
+        # value would be recorded as '' and map to nothing (#1049).
+        value = choose_value(row, req, [o["text"] for o in row["options"] if o["text"]])
+        opt = next((o for o in row["options"] if o["text"] and _norm(o["text"]) == _norm(value)), None)
         if opt is None:
             raise LookupError(f"{row['label']!r} has no option {value!r}: {[o['text'] for o in row['options']]}")
         click(opt["x"], opt.get("y", row["y"]))

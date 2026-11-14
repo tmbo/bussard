@@ -1,0 +1,22 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Operating mode",
+   "kind": "dropdown",
+   "value": "automatic",
+   "key": "operating-mode",
+   "model": "automatic",
+   "step": 2,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "automatic",
+   "why": null,
+   "after": "automatic",
+   "shown": "automatic"
+  }
+ ]
+}

@@ -19,12 +19,26 @@
 #           `hidden` (a later change hides it, #1049: recorded)
 #   refusal_ok  true when the editor may refuse the value (#718): the run
 #           then stops after recording what ETS did, and that is its answer
+#   step    which parameter-changing download of the variant the change
+#           belongs to, from 1 (`partial-twice`: 1 before the first partial
+#           download, 2 before the second); default 1
 #
 # A change here reaches the capture's model/ (capture.py model_template) and
 # params.json; edit it before the capture, never after.
 
 [syn-minimal]
 partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+# #1091: the second partial download after a change of the parameter at
+# offset 0 only ("every placed octet" writes 3 octets, "changed since the
+# last download" 1).
+partial-twice = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500, step = 1 },
+    { page = "General", label = "Operating mode", kind = "dropdown", value = "automatic", key = "operating-mode", model = "automatic", step = 2 },
+]
+# #1095: a link added and a parameter changed before one partial download.
+apply-params = [
     { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
 ]
 
@@ -43,6 +57,13 @@ calc-overflow = [
 [syn-property-param]
 partial = [
     { page = "General", label = "Territory mark", kind = "number", value = "7", key = "territory-mark", model = 7 },
+]
+# #1091: a memory parameter before the first partial download, only the
+# property parameter (obj 4 PID 201) before the second ("every placed octet"
+# writes 3 octets at 0x6000 again, "changed since the last download" none).
+partial-twice = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500, step = 1 },
+    { page = "General", label = "Territory mark", kind = "number", value = "7", key = "territory-mark", model = 7, step = 2 },
 ]
 
 [syn-property-nopar]
@@ -66,6 +87,9 @@ params = [
 
 [syn-secure]
 partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+apply-params = [
     { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
 ]
 
