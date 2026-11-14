@@ -1068,11 +1068,17 @@ fn plan_flash_as(
                     Some(k) => u32::try_from(k.allocated).ok(),
                     None => *size,
                 };
-                let bytes = bound_write_rel_mem(&segment_id, bytes, bound, placed.get(&segment_id))
-                    .map_err(|reason| PlanError::UnresolvableImage {
-                        step: step_no,
-                        reason,
-                    })?;
+                let bytes = bound_write_rel_mem(
+                    &segment_id,
+                    bytes,
+                    bound,
+                    placed.get(&segment_id),
+                    prefill,
+                )
+                .map_err(|reason| PlanError::UnresolvableImage {
+                    step: step_no,
+                    reason,
+                })?;
                 let (part_start, len) = match kept_here {
                     Some(_) => {
                         let start = usize::try_from(offset.unwrap_or(0))
@@ -2624,13 +2630,24 @@ fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> boo
 /// read-back all use the cut image, so they agree on the length. A `Size`
 /// at or above the image length, or none, keeps the image as it is.
 ///
-/// A parameter value placed at or past `Size` refuses: cutting it would drop
-/// a configured value without a word.
+/// A parameter octet at or past `Size` refuses: cutting it would drop a
+/// configured value without a word. Unless the allocation holds it already:
+/// an `LdCtrlRelSegment` with `Mode` bit 0 fills the allocated octets with
+/// `Fill` (Management Procedures 03_05_02 §3.31.3.4), so a cut octet inside
+/// the allocation (`prefill`: the fill byte and the allocated size) that
+/// holds the fill byte is on the device without being written (issue
+/// #1065). The Gira push-button rockers `M-0008_A-1161-23-518D-O000A` and
+/// `A-1162-21-2E13-O000A` place the 32-bit `_Allg_Download` (`C3 00 00 00`)
+/// in the last four octets of a segment allocated with `Mode="1" Fill="0"`,
+/// and write one octet less; ETS wrote `C3` at octet 1140 (3992) and nothing
+/// past 1143 (3995). The octet rests on the same fill a sparse write over the
+/// segment relies on, which the read-back samples (issue #1081).
 pub(super) fn bound_write_rel_mem(
     segment_id: &str,
     mut bytes: Vec<u8>,
     size: Option<u32>,
     placed: Option<&std::collections::BTreeSet<usize>>,
+    prefill: Option<(u8, u32)>,
 ) -> std::result::Result<Vec<u8>, String> {
     let Some(size) = size.and_then(|s| usize::try_from(s).ok()) else {
         return Ok(bytes);
@@ -2638,11 +2655,20 @@ pub(super) fn bound_write_rel_mem(
     if size >= bytes.len() {
         return Ok(bytes);
     }
-    if let Some(&octet) = placed.and_then(|p| p.range(size..).next()) {
+    let held = |octet: usize| {
+        prefill.is_some_and(|(fill, allocated)| {
+            usize::try_from(allocated).is_ok_and(|a| octet < a) && bytes.get(octet) == Some(&fill)
+        })
+    };
+    if let Some(&octet) = placed.and_then(|p| p.range(size..).find(|&&o| !held(o))) {
         return Err(format!(
             "segment {segment_id} image is {} octets, its LdCtrlWriteRelMem writes {size}, \
-             but a parameter value sits at octet {octet}",
-            bytes.len()
+             but a parameter value sits at octet {octet}{}",
+            bytes.len(),
+            match prefill {
+                Some((fill, _)) => format!(" and is not the allocation's fill {fill:#04X}"),
+                None => " and the allocation does not fill the segment".to_string(),
+            }
         ));
     }
     bytes.truncate(size);
@@ -3081,6 +3107,42 @@ mod tests {
     /// parameter streams the fill when its allocation pre-fills it (the Gira
     /// `M-0008_A-6010-20-4D55`: ETS allocates 256 octets with fill `00` and
     /// writes none; the executor streams only what differs from the fill).
+    /// A parameter octet past the write's `Size` is cut only where the
+    /// filled allocation holds it (issue #1065, the Gira rocker shape).
+    #[test]
+    fn test_bound_write_rel_mem_cut_octet_held_by_the_fill() -> TestResult {
+        let image = vec![0x11, 0xC3, 0x00, 0x00, 0x00];
+        let placed: std::collections::BTreeSet<usize> = (1..5).collect();
+        let bound = |image: Vec<u8>, prefill: Option<(u8, u32)>| {
+            bound_write_rel_mem("RS", image, Some(4), Some(&placed), prefill)
+        };
+        // Mode 1, Fill 0, all five octets allocated: octet 4 is the fill.
+        assert_eq!(
+            bound(image.clone(), Some((0, 5)))?,
+            vec![0x11, 0xC3, 0x00, 0x00]
+        );
+        // Another fill byte: the device would hold 0xFF there, not 0x00.
+        let err = bound(image.clone(), Some((0xFF, 5)))
+            .err()
+            .ok_or("cut a value the fill does not hold")?;
+        assert!(
+            err.contains("octet 4") && err.contains("fill 0xFF"),
+            "{err}"
+        );
+        // No fill (Mode 0): refused as before.
+        let err = bound(image.clone(), None)
+            .err()
+            .ok_or("cut without a fill")?;
+        assert!(err.contains("does not fill"), "{err}");
+        // An octet outside the allocation is not held either.
+        assert!(bound(image.clone(), Some((0, 4))).is_err());
+        // A value octet that is not the fill byte is refused.
+        let mut tail = image;
+        tail[4] = 0x01;
+        assert!(bound(tail, Some((0, 5))).is_err());
+        Ok(())
+    }
+
     /// The image is the allocation's fill octets, so an MCB check of the
     /// object compares the device's CRC over what it holds.
     #[test]

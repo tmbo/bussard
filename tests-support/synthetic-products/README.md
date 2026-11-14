@@ -77,6 +77,7 @@ next to it, and zips it on demand.
 | [`syn-user-memory`](syn-user-memory/product.toml) | `NEST-LARDER` | 07B0 | segment above 0xFFFF without SupportsExtendedMemoryServices | #472 |
 | [`syn-user-memory-extmem`](syn-user-memory-extmem/product.toml) | `NEST-LARDERX` | 07B0 | segment above 0xFFFF with SupportsExtendedMemoryServices | #472 |
 | [`syn-writerelmem-size`](syn-writerelmem-size/product.toml) | `NEST-QUILL` | 07B0 | LdCtrlWriteRelMem Size smaller than the RelativeSegment | #564 |
+| [`syn-writerelmem-tail`](syn-writerelmem-tail/product.toml) | `NEST-TAIL` | 07B0 | parameter in the octet past LdCtrlWriteRelMem Size, held by the fill | #1065, #564 |
 <!-- catalogue:end -->
 
 ## Theme
@@ -403,6 +404,7 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 | `syn-trailing-writeprop` | the #1054 VM session | `capture.py syn-trailing-writeprop`, then `--variant partial` |
 | `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
 | `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
+| `syn-writerelmem-tail` | the #1065 VM session | `capture.py syn-writerelmem-tail` |
 
 A secure product (`[application.security]`) is captured the way
 `tools/ets-sweep/secure.py` captures a vendor one: `capture.py` starts the
