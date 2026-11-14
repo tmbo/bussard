@@ -453,7 +453,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base,
                     descriptor: obj.clone(),
-                    mcb_written: None,
+                    mcb_written: BTreeMap::new(),
                     write_extent: rel_mem_extent(product, obj.lsm_index),
                 },
             );
@@ -479,6 +479,7 @@ impl Device {
             });
         }
         let typed_objects = index_typed_objects(&mut objects, typed);
+        fill_index_gaps(&mut objects, product);
         for &object_type in &product.typed_lsm_types {
             let index = objects
                 .iter()
@@ -507,7 +508,7 @@ impl Device {
                             max_size: None,
                             image: Vec::new(),
                         },
-                        mcb_written: None,
+                        mcb_written: BTreeMap::new(),
                         write_extent: rel_mem_extent(product, index),
                     },
                 );
@@ -668,7 +669,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base: u32::from(sys7_region_base(&s7, lsm_index)),
                     descriptor,
-                    mcb_written: None,
+                    mcb_written: BTreeMap::new(),
                     write_extent: 0,
                 },
             );
@@ -827,6 +828,31 @@ impl Device {
             factory_properties: Vec::new(),
             events,
         }
+    }
+}
+
+/// Fills every free index below the highest interface object with a
+/// placeholder object that answers only `PID_OBJECT_TYPE`, of the type the
+/// product declares for that index, else a manufacturer type
+/// ([`procedure_object_type`]).
+///
+/// A device's interface objects are indexed contiguously from 0: the
+/// standard's object scans end at the first index without an object (KNX
+/// 3/5/2 §3.28.2 and §3.28.3) and `PID_IO_LIST` lists the types by index
+/// behind their count (KNX 3/5/1 §4.3.22). The product data names only the
+/// objects its load procedure addresses, so a device built from it alone had
+/// gaps: the Hager `M-0009_A-E802-13-7620` addresses objects 0 to 5 and 9 to
+/// 31, and a tool's walk stopped at object 6 and never saw 9 to 31 (bussard
+/// issue #1073). What a real device keeps at 6 to 8 is not in the product
+/// data; the placeholder makes index enumeration behave as on a device.
+fn fill_index_gaps(objects: &mut BTreeMap<u8, InterfaceObject>, product: &ProductData) {
+    let Some(&last) = objects.keys().next_back() else {
+        return;
+    };
+    for index in 0..last {
+        objects
+            .entry(index)
+            .or_insert_with(|| InterfaceObject::placeholder(procedure_object_type(product, index)));
     }
 }
 
@@ -1322,9 +1348,45 @@ mod tests {
             let pd = glass_touch_product(default)?;
             let mut dev = connected_device(&pd)?;
             assert_object_7(&mut dev, compare)?;
-            // Object 6 is not invented: no procedure step names it.
-            assert!(!dev.objects.contains_key(&6));
+            // Object 6 holds only its type (bussard issue #1073): no
+            // procedure step names it, and the indices stay contiguous.
+            let six = dev.objects.get(&6).ok_or("object 6 missing")?;
+            assert!(six.is_placeholder() && six.has_property(PID_OBJECT_TYPE));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_fill_index_gaps_makes_the_object_indices_contiguous()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #1073: the Hager `M-0009_A-E802-13-7620` procedure
+        // addresses objects 0 to 5 and 9 to 31; a walk of PID_OBJECT_TYPE
+        // stopped at object 6 and never reached 9. The same shape here: the
+        // procedure names object 9 only.
+        let xml = glass_touch_app("1").replace(r#"ObjIdx="7""#, r#"ObjIdx="9""#);
+        let pd = app_product(&xml)?;
+        let mut dev = connected_device(&pd)?;
+        // The walk from 0 finds an object at every index up to 9.
+        for index in 0u8..=9 {
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[index, 1, 0x10, 0x01]))?;
+            assert_eq!(
+                prop_response_value(&r).len(),
+                2,
+                "object {index} answers its type"
+            );
+        }
+        // The placeholders carry a manufacturer type, and the addressed
+        // object keeps its own.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50007u16.to_be_bytes().to_vec());
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &[9, 161, 0x10, 0x01, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0x01]);
+        // The index after the last object answers no object.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[10, 1, 0x10, 0x01]))?;
+        assert_eq!(
+            r.responses[0].tpdu[4], 0x00,
+            "zero-count answer past the last object"
+        );
         Ok(())
     }
 

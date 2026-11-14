@@ -145,101 +145,67 @@ pub struct ExpectedProperty {
     pub count: u16,
     /// The octets written.
     pub value: Vec<u8>,
+    /// The octets compared (`0xFF`) and the ones the device computes itself
+    /// (`0x00`, the CRC of a `PID_MCB_TABLE` entry); `None` compares all.
+    pub mask: Option<Vec<u8>>,
+}
+
+impl From<bussard_download::PropertyRange> for ExpectedProperty {
+    fn from(r: bussard_download::PropertyRange) -> Self {
+        ExpectedProperty {
+            object: r.object,
+            prop_id: r.prop_id,
+            start: r.start,
+            count: r.count,
+            value: r.value,
+            mask: r.mask,
+        }
+    }
 }
 
 impl ExpectedProperty {
-    /// The property writes of `flash` a read-back compares: every write of a
-    /// System 7 or property-only plan, the writes of a System B plan whose
-    /// value the property-located parameters compose (issue #669) or whose
-    /// property the load procedure declared (issue #945), and the
-    /// KNXnet/IP parameters of any plan. A System B plan's program-version
-    /// and other undeclared `InlineData` writes keep the read-back they had
-    /// before issue #390 (none).
+    /// The property writes of `flash` a read-back compares: what the plan
+    /// leaves on the device ([`FlashStep::written_range`], issue #1073:
+    /// every write on every system, fixed values included, a held write of
+    /// issue #951 too, without load events, the device-maintained PEI type
+    /// and the CRC of an MCB entry), and the KNXnet/IP parameters of any
+    /// plan, each on the elements no later write covers (issue #946).
     pub fn from_flash_plan(flash: &FlashPlan) -> Vec<ExpectedProperty> {
         // The KNXnet/IP parameters of a device with a KNX IP interface built
         // in (issue #455), on every plan: read back by object type 11, which
         // finds the object whatever index the executor wrote it at.
         let knxnet = flash.knxnet_ip().into_iter().flat_map(|program| {
-            program.writes.iter().map(|w| ExpectedProperty {
-                object: PropObject::Type {
-                    object_type: bussard_mgmt::knxnet::OT_KNXNET_IP_PARAMETER,
-                    occurrence: 0,
-                },
-                prop_id: u32::from(w.prop_id),
-                start: w.start,
-                count: w.count.max(1),
-                value: w.value.clone(),
-            })
+            program
+                .writes
+                .iter()
+                .map(|w| bussard_download::PropertyRange {
+                    object: PropObject::Type {
+                        object_type: bussard_mgmt::knxnet::OT_KNXNET_IP_PARAMETER,
+                        occurrence: 0,
+                    },
+                    prop_id: u32::from(w.prop_id),
+                    start: w.start,
+                    count: w.count.max(1),
+                    value: w.value.clone(),
+                    fixed: true,
+                    mask: None,
+                })
         });
-        // A System B plan reads back the writes whose value the model's
-        // property-located parameters compose (issue #669), and every write to
-        // a property an `LdCtrlDeclarePropDesc` declared whatever its value's
-        // source (issue #945): a multi-request write whose later request the
-        // device drops must not report ok. Its program-version and other
-        // undeclared `InlineData` writes keep the read-back they had before
-        // issue #390 (none).
-        let every_write = flash.is_sys7() || flash.is_property_only();
-        let knxnet: Vec<ExpectedProperty> = knxnet.collect();
-        let mut declared: Vec<(PropObject, u32)> = Vec::new();
-        let writes: Vec<ExpectedProperty> = flash
+        let writes: Vec<bussard_download::PropertyRange> = flash
             .steps
             .iter()
-            .filter_map(|step| match step {
-                FlashStep::DeclareProp {
-                    object, prop_id, ..
-                } => {
-                    declared.push((*object, *prop_id));
-                    None
-                }
-                FlashStep::WriteProp {
-                    object,
-                    prop_id,
-                    value,
-                    start_element,
-                    count,
-                    from_parameters,
-                    ..
-                } if every_write || *from_parameters || declared.contains(&(*object, *prop_id)) => {
-                    Some(ExpectedProperty {
-                        object: *object,
-                        prop_id: *prop_id,
-                        start: *start_element,
-                        count: (*count).max(1),
-                        value: value.clone(),
-                    })
-                }
-                // A write left out because the device holds the value after
-                // the parameter reset (issue #951) is read back like one:
-                // "verified" means the device holds the model's value.
-                FlashStep::FactoryHeldProp {
-                    object,
-                    prop_id,
-                    value,
-                    start_element,
-                    count,
-                    ..
-                } => Some(ExpectedProperty {
-                    object: *object,
-                    prop_id: *prop_id,
-                    start: *start_element,
-                    count: (*count).max(1),
-                    value: value.clone(),
-                }),
-                _ => None,
-            })
+            .filter_map(FlashStep::written_range)
             .chain(knxnet)
             .collect();
-        // A property the procedure writes twice holds the last value: the
-        // Berker/Hager 0701 programs write object 5 PID 51 with `01` before
-        // the download and `02` after it (issue #946,
-        // `captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults/ops.txt`
-        // ops 8 and 132), and the device reads back `02`. Each write is
-        // expected only on the elements no later write covers.
-        ExpectedProperty::held_after(&writes)
+        bussard_download::held_after(&writes)
+            .into_iter()
+            .map(ExpectedProperty::from)
+            .collect()
     }
 
     /// What `writes` (in procedure order) leave on the device:
     /// [`bussard_download::held_after`], the one overlap rule (issue #946).
+    #[cfg(test)]
     fn held_after(writes: &[ExpectedProperty]) -> Vec<ExpectedProperty> {
         let ranges: Vec<bussard_download::PropertyRange> = writes
             .iter()
@@ -250,17 +216,12 @@ impl ExpectedProperty {
                 count: w.count,
                 value: w.value.clone(),
                 fixed: false,
+                mask: w.mask.clone(),
             })
             .collect();
         bussard_download::held_after(&ranges)
             .into_iter()
-            .map(|r| ExpectedProperty {
-                object: r.object,
-                prop_id: r.prop_id,
-                start: r.start,
-                count: r.count,
-                value: r.value,
-            })
+            .map(ExpectedProperty::from)
             .collect()
     }
 
@@ -278,6 +239,7 @@ impl ExpectedProperty {
                 start: p.start_element,
                 count: p.count,
                 value: p.model,
+                mask: p.mask,
             })
             .collect()
     }
@@ -663,7 +625,8 @@ async fn compare_properties<Ch: L4Channel>(
         )
         .await
         {
-            Ok(held) if held == prop.value => {}
+            Ok(held)
+                if bussard_download::masked_equal(&prop.value, &held, prop.mask.as_deref()) => {}
             Ok(held) => out.push(
                 LeftoverKind::Property,
                 prop.name(),
@@ -1214,17 +1177,23 @@ mod tests {
     fn test_from_flash_plan_reads_back_a_system_b_parameter_property() -> TestResult {
         let plan = property_param_plan()?;
         assert!(!plan.is_sys7() && !plan.is_property_only());
-        // The parameter's property, not the template's PID_PROGRAM_VERSION.
-        assert_eq!(
-            ExpectedProperty::from_flash_plan(&plan),
-            vec![ExpectedProperty {
-                object: PropObject::Index(4),
-                prop_id: 201,
-                start: 1,
-                count: 1,
-                value: vec![0x5A],
-            }]
+        // The parameter's property, and the template's fixed
+        // PID_PROGRAM_VERSION write too (issue #1073).
+        let expected = ExpectedProperty::from_flash_plan(&plan);
+        assert!(expected.contains(&ExpectedProperty {
+            object: PropObject::Index(4),
+            prop_id: 201,
+            start: 1,
+            count: 1,
+            value: vec![0x5A],
+            mask: None,
+        }));
+        assert!(
+            expected.iter().any(|e| e.object == PropObject::Index(4)
+                && e.prop_id == u32::from(bussard_mgmt::load::PID_PROGRAM_VERSION)),
+            "{expected:?}"
         );
+        assert_eq!(expected.len(), 2, "{expected:?}");
         Ok(())
     }
 
@@ -1256,6 +1225,7 @@ mod tests {
                     start: 1,
                     count: 2,
                     value: vec![0, 0],
+                    mask: None,
                 }),
                 "{expected:?}"
             );
@@ -1267,9 +1237,10 @@ mod tests {
     }
 
     #[test]
-    fn test_from_flash_plan_reads_back_a_declared_inline_data_write() -> TestResult {
+    fn test_from_flash_plan_reads_back_a_fixed_write_declared_or_not() -> TestResult {
         // Issue #945: a write to a declared property carrying InlineData (no
-        // parameter placed in it) is read back; an undeclared one is not.
+        // parameter placed in it) is read back; since issue #1073 an
+        // undeclared one is too, and a load event is not.
         let mut plan = property_param_plan()?;
         let write = |prop_id: u32| FlashStep::WriteProp {
             object: PropObject::Index(10),
@@ -1288,15 +1259,80 @@ mod tests {
         });
         plan.steps.push(write(55));
         plan.steps.push(write(56));
+        // A PID 5 write that is no load event (an additional load control)
+        // is a property write as the executor sends it, and read back.
+        plan.steps.push(FlashStep::WriteProp {
+            object: PropObject::Index(7),
+            prop_id: u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL),
+            value: vec![0x03, 0x0B, 0, 0, 0, 0, 0, 0, 0, 0],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        });
+        plan.steps.push(FlashStep::WriteProp {
+            object: PropObject::Index(8),
+            prop_id: u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL),
+            value: vec![0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        });
         let expected = ExpectedProperty::from_flash_plan(&plan);
-        assert!(expected.contains(&ExpectedProperty {
-            object: PropObject::Index(10),
-            prop_id: 55,
-            start: 1,
-            count: 3,
-            value: vec![1, 2, 3],
-        }));
-        assert!(!expected.iter().any(|e| e.prop_id == 56), "{expected:?}");
+        for prop_id in [55, 56] {
+            assert!(
+                expected.contains(&ExpectedProperty {
+                    object: PropObject::Index(10),
+                    prop_id,
+                    start: 1,
+                    count: 3,
+                    value: vec![1, 2, 3],
+                    mask: None,
+                }),
+                "{expected:?}"
+            );
+        }
+        assert!(
+            !expected.iter().any(|e| e.object == PropObject::Index(8)),
+            "{expected:?}"
+        );
+        assert!(
+            expected.iter().any(|e| e.object == PropObject::Index(7)),
+            "{expected:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_flash_plan_reads_back_the_written_mcb_entries() -> TestResult {
+        // The executor writes a padded PID_MCB_TABLE value as its 8-octet
+        // entries (issue #89); the read-back compares those, not the padding,
+        // and not the CRC the device fills in (KNX 3/5/1 §4.2.27.1.2).
+        let mut plan = property_param_plan()?;
+        let mut value: Vec<u8> = (1..=8).collect();
+        value.extend([0, 0]);
+        plan.steps.push(FlashStep::WriteProp {
+            object: PropObject::Index(4),
+            prop_id: u32::from(bussard_mgmt::PID_MCB_TABLE),
+            value,
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        });
+        let expected = ExpectedProperty::from_flash_plan(&plan);
+        assert!(
+            expected.contains(&ExpectedProperty {
+                object: PropObject::Index(4),
+                prop_id: u32::from(bussard_mgmt::PID_MCB_TABLE),
+                start: 1,
+                count: 1,
+                value: (1..=8).collect(),
+                mask: Some(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00]),
+            }),
+            "{expected:?}"
+        );
         Ok(())
     }
 
@@ -1308,6 +1344,7 @@ mod tests {
             start,
             count,
             value: value.to_vec(),
+            mask: None,
         };
         let held = ExpectedProperty::held_after;
         // A later write of elements 1..=2 covers an earlier one of element 1.
@@ -1380,6 +1417,7 @@ mod tests {
                 start: 1,
                 count: 1,
                 value: vec![0x02],
+                mask: None,
             }]
         );
         Ok(())
@@ -1434,15 +1472,24 @@ mod tests {
             properties: ExpectedProperty::from_flash_plan(&plan),
             ..Expected::default()
         };
+        let version = expected
+            .properties
+            .iter()
+            .find(|e| e.prop_id == u32::from(bussard_mgmt::load::PID_PROGRAM_VERSION))
+            .ok_or("the program version is read back")?
+            .value
+            .clone();
         // One device holds the model's value, the other what a flash that
         // skipped the write leaves.
         for (held, verified) in [(0x5A, true), (0xFF, false)] {
-            let device = bussard_testkit::MockDevice::new("1.1.1".parse()?).with_property(
-                4,
-                201,
-                1,
-                &[held],
-            );
+            let device = bussard_testkit::MockDevice::new("1.1.1".parse()?)
+                .with_property(4, 201, 1, &[held])
+                .with_property(
+                    4,
+                    bussard_mgmt::load::PID_PROGRAM_VERSION,
+                    version.len(),
+                    &version,
+                );
             let gw = bussard_testkit::MockGateway::builder()
                 .device(device)
                 .start()
@@ -1461,7 +1508,7 @@ mod tests {
             let out = read_back(&mut l4, &expected).await;
             let _ = l4.disconnect().await;
             assert_eq!(out.verified, verified, "{:?}", out.leftovers);
-            assert_eq!(out.compared.get(Counted::Properties), Some(1));
+            assert_eq!(out.compared.get(Counted::Properties), Some(2));
             if !verified {
                 assert_eq!(out.leftovers[0].item, "object 4 PID 201");
                 assert_eq!(out.leftovers[0].device, "FF");
@@ -1503,6 +1550,7 @@ mod tests {
                     start: 1,
                     count: 1,
                     value: vec![0x0A],
+                    mask: None,
                 },
                 ExpectedProperty {
                     object: ip,
@@ -1510,6 +1558,7 @@ mod tests {
                     start: 1,
                     count: 2,
                     value: vec![192, 168, 0, 1, 10, 0, 0, 2],
+                    mask: None,
                 },
             ],
             ..Expected::default()
@@ -1522,6 +1571,258 @@ mod tests {
         assert_eq!(out.leftovers[0].kind, LeftoverKind::Property);
         assert_eq!(out.leftovers[0].item, "object type 11 PID 205");
         assert_eq!(out.leftovers[0].device, "C0A8000100000000");
+        Ok(())
+    }
+
+    /// `property_param_plan` with a fixed write to object 9 PID 51, as the
+    /// Hager 07B0 actuators carry one (`LdCtrlWriteProp ObjIdx="9"
+    /// PropId="51" InlineData="02"`, issue #1073).
+    fn plan_with_fixed_write_to_object_9() -> TestResult<FlashPlan> {
+        let mut plan = property_param_plan()?;
+        let at = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::WriteProp { prop_id: 201, .. }))
+            .ok_or("the parameter write")?;
+        plan.steps.insert(
+            at + 1,
+            FlashStep::WriteProp {
+                object: PropObject::Index(9),
+                prop_id: 51,
+                value: vec![0x02],
+                start_element: 1,
+                count: 1,
+                verify: false,
+                from_parameters: false,
+            },
+        );
+        Ok(plan)
+    }
+
+    /// The device types of objects 0 to 4, the System B objects.
+    const SYSTEM_B_TYPES: [u16; 5] = [0, 1, 2, 3, 4];
+
+    /// A System B device that walks as objects 0 to 4 (index 5 answers no
+    /// object, whatever the device holds beyond it) and holds the
+    /// properties `plan_with_fixed_write_to_object_9` writes; `object_9`
+    /// adds the object 9 PID 51 property.
+    fn gapped_device(object_9: bool) -> TestResult<bussard_testkit::MockDevice> {
+        let version = ExpectedProperty::from_flash_plan(&property_param_plan()?)
+            .into_iter()
+            .find(|e| e.prop_id == u32::from(bussard_mgmt::load::PID_PROGRAM_VERSION))
+            .ok_or("the program version")?
+            .value;
+        let device = bussard_testkit::MockDevice::system_b("1.1.1".parse()?)
+            .with_object_types(&SYSTEM_B_TYPES)
+            .with_writable_property(
+                4,
+                bussard_mgmt::load::PID_PROGRAM_VERSION,
+                version.len(),
+                &vec![0; version.len()],
+            )
+            .with_writable_property(4, 201, 1, &[0xFF]);
+        Ok(if object_9 {
+            device.with_writable_property(9, 51, 1, &[0x00])
+        } else {
+            device
+        })
+    }
+
+    /// Flashes `plan` into the device of `gw`, then runs the independent
+    /// read-back of every property the plan wrote on the same connection.
+    async fn flash_and_read_back(
+        gw: &bussard_testkit::MockGateway,
+        plan: &FlashPlan,
+    ) -> TestResult<(Result<bool, String>, WriteReadback)> {
+        let mut bus = bussard_transport::Transport::connect(
+            &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
+        )
+        .await?;
+        let l4 = Layer4Connection::connect(
+            &mut bus,
+            "1.1.1".parse()?,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
+        let mut session = bussard_download::Session::from_connection(l4);
+        let outcome = bussard_download::flash(
+            &mut session,
+            plan,
+            bussard_download::FlashOptions::default(),
+            |_| {},
+        )
+        .await
+        .map(|o| o.ok())
+        .map_err(|e| e.to_string());
+        let expected = Expected {
+            properties: ExpectedProperty::from_flash_plan(plan),
+            ..Expected::default()
+        };
+        let readback = read_back(session.l4(), &expected).await;
+        let _ = session.into_disconnect().await;
+        Ok((outcome, readback))
+    }
+
+    #[tokio::test]
+    async fn test_flash_writes_a_fixed_write_past_a_gap_in_the_object_indices() -> TestResult {
+        // Issue #1073: the walk stops at object 5, the procedure names object
+        // 9. The write goes to object 9 as ETS sends it, and the read-back
+        // confirms it.
+        let plan = plan_with_fixed_write_to_object_9()?;
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(gapped_device(true)?)
+            .start()
+            .await?;
+        let (outcome, readback) = flash_and_read_back(&gw, &plan).await?;
+        assert_eq!(outcome, Ok(true));
+        assert!(readback.verified, "{:?}", readback.leftovers);
+        assert_eq!(readback.compared.get(Counted::Properties), Some(3));
+        let dev = gw.with_device("1.1.1".parse()?, |d| d.clone())?;
+        assert_eq!(dev.property(9, 51), Some(&[0x02][..]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_flash_fails_a_fixed_write_to_an_object_the_device_lacks() -> TestResult {
+        // Issue #1073: no write is dropped because the walk did not find its
+        // object. A device without object 9 refuses the write, and the flash
+        // fails naming the object and the property; the read-back finds
+        // nothing there either.
+        let plan = plan_with_fixed_write_to_object_9()?;
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(gapped_device(false)?)
+            .start()
+            .await?;
+        let (outcome, readback) = flash_and_read_back(&gw, &plan).await?;
+        let err = outcome.err().ok_or("the flash must fail")?;
+        assert!(
+            err.contains("object 9") && err.contains("51"),
+            "names the object and the property: {err}"
+        );
+        assert!(!readback.verified);
+        assert!(
+            readback
+                .leftovers
+                .iter()
+                .any(|l| l.item == "object 9 PID 51"),
+            "{:?}",
+            readback.leftovers
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_back_fails_a_fixed_write_the_device_does_not_store() -> TestResult {
+        // Issue #1073: a device that acknowledges the fixed write (its echo
+        // is the value) and keeps what it held: the flash completes, and the
+        // read-back after it fails on object 9 PID 51.
+        const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+        const PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
+        let plan = plan_with_fixed_write_to_object_9()?;
+        let device = gapped_device(true)?.with_hook(|_, apci, data| {
+            (apci == PROPERTY_VALUE_WRITE && data.first() == Some(&9) && data.get(1) == Some(&51))
+                .then(|| {
+                    bussard_testkit::Reaction::Answer(
+                        PROPERTY_VALUE_RESPONSE,
+                        bussard_testkit::device::prop_response(9, 51, 1, 1, &[0x02]),
+                    )
+                })
+        });
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(device)
+            .start()
+            .await?;
+        let (outcome, readback) = flash_and_read_back(&gw, &plan).await?;
+        assert_eq!(outcome, Ok(true), "the device acknowledged every write");
+        assert!(!readback.verified);
+        assert_eq!(readback.leftovers.len(), 1, "{:?}", readback.leftovers);
+        assert_eq!(readback.leftovers[0].item, "object 9 PID 51");
+        assert_eq!(
+            (
+                readback.leftovers[0].device.as_str(),
+                readback.leftovers[0].model.as_str()
+            ),
+            ("00", "02")
+        );
+        Ok(())
+    }
+
+    /// `property_param_plan` with fixed writes `extra` after the parameter
+    /// write.
+    fn plan_with(extra: &[(u8, u32, &[u8])]) -> TestResult<FlashPlan> {
+        let mut plan = property_param_plan()?;
+        let at = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::WriteProp { prop_id: 201, .. }))
+            .ok_or("the parameter write")?;
+        for (i, (object, prop_id, value)) in extra.iter().enumerate() {
+            plan.steps.insert(
+                at + 1 + i,
+                FlashStep::WriteProp {
+                    object: PropObject::Index(u32::from(*object)),
+                    prop_id: *prop_id,
+                    value: value.to_vec(),
+                    start_element: 1,
+                    count: 1,
+                    verify: false,
+                    from_parameters: false,
+                },
+            );
+        }
+        Ok(plan)
+    }
+
+    #[tokio::test]
+    async fn test_read_back_accepts_the_crc_the_device_fills_into_an_mcb_entry() -> TestResult {
+        // Issue #1073 review: 685 corpus procedures seed PID_MCB_TABLE (the
+        // ETS capture of `M-0002_A-0001-01` writes `00 00 00 1a 00 32 00 00`)
+        // and the device calculates the CRC itself on the transition to
+        // Loaded (KNX 3/5/1 §4.2.27.1.2). The PEI type (PID 16) holds what
+        // the device measures (§4.2.16). A correct flash verifies; an access
+        // octet the device did not keep does not.
+        const PROPERTY_VALUE_READ: u16 = 0x3D5;
+        const PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
+        let seed = [0x00, 0x00, 0x00, 0x1A, 0x00, 0x32, 0x00, 0x00];
+        let plan = plan_with(&[(4, 27, &seed), (4, 16, &[0xFF])])?;
+        for (answer_access, verified) in [(0x32u8, true), (0xFF, false)] {
+            let device = gapped_device(false)?
+                .with_writable_property(4, 27, 8, &[0; 8])
+                .with_writable_property(4, 16, 1, &[0])
+                .with_hook(move |_, apci, data| {
+                    let read = |pid: u8| {
+                        apci == PROPERTY_VALUE_READ
+                            && data.first() == Some(&4)
+                            && data.get(1) == Some(&pid)
+                    };
+                    if read(27) {
+                        let entry = [0x00, 0x00, 0x00, 0x1A, 0x00, answer_access, 0xAB, 0xCD];
+                        return Some(bussard_testkit::Reaction::Answer(
+                            PROPERTY_VALUE_RESPONSE,
+                            bussard_testkit::device::prop_response(4, 27, 1, 1, &entry),
+                        ));
+                    }
+                    // The PEI type the device measures, not the FF written.
+                    read(16).then(|| {
+                        bussard_testkit::Reaction::Answer(
+                            PROPERTY_VALUE_RESPONSE,
+                            bussard_testkit::device::prop_response(4, 16, 1, 1, &[0x00]),
+                        )
+                    })
+                });
+            let gw = bussard_testkit::MockGateway::builder()
+                .device(device)
+                .start()
+                .await?;
+            let (outcome, readback) = flash_and_read_back(&gw, &plan).await?;
+            assert_eq!(outcome, Ok(true));
+            assert_eq!(readback.verified, verified, "{:?}", readback.leftovers);
+            if !verified {
+                assert_eq!(readback.leftovers.len(), 1, "{:?}", readback.leftovers);
+                assert_eq!(readback.leftovers[0].item, "object 4 PID 27");
+            }
+        }
         Ok(())
     }
 }

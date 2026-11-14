@@ -156,11 +156,11 @@ struct ObjectState {
     base: u32,
     #[allow(dead_code)] // retained for logging / future viz
     descriptor: LoadableObject,
-    /// The `PID_MCB_TABLE` entry a tool wrote while the object was Loading
-    /// (size, CRC control byte, access), which the device keeps and completes
-    /// with the CRC it computes (Resources 03.05.01 §4.2.27, bussard issue
-    /// #840). Cleared by an Unload.
-    mcb_written: Option<[u8; MCB_ENTRY_LEN]>,
+    /// The `PID_MCB_TABLE` entries a tool wrote while the object was Loading
+    /// (size, CRC control byte, access), by element, which the device keeps
+    /// and completes with the CRC it computes (Resources 03.05.01 §4.2.27,
+    /// bussard issues #840 and #1073). Cleared by an Unload.
+    mcb_written: BTreeMap<u16, [u8; MCB_ENTRY_LEN]>,
     /// The end of the furthest `LdCtrlWriteRelMem` the product's load
     /// procedures write into this object (offset plus size), 0 when none. A
     /// relative allocation covers at least this much.
@@ -559,7 +559,15 @@ impl Device {
                 }
             }
         }
-        if listed && let Some(index) = (0..=u8::MAX).find(|i| !self.objects.contains_key(i)) {
+        // The lowest index without an object of the product's: a
+        // placeholder there gives way (bussard issue #1073).
+        if listed
+            && let Some(index) = (0..=u8::MAX).find(|i| {
+                self.objects
+                    .get(i)
+                    .is_none_or(InterfaceObject::is_placeholder)
+            })
+        {
             self.objects.insert(index, object.clone());
         }
         self.knxnet_by_type = Some(object);
@@ -900,25 +908,45 @@ impl Device {
     /// which a tool reads as "no MCB entry" — but after a load the segment exists,
     /// so a verify step gets a real CRC over exactly the bytes the download wrote.
     fn mcb_entry_for(&self, object: u8) -> Option<Vec<u8>> {
-        // A tool that wrote the entry while Loading (ETS on the ekinex
-        // A-4945: `00000016 00 32 0000`) reads back its size, CRC control
-        // byte and access as written, and the CRC the device computed over
-        // that many octets of the segment (Resources 03.05.01 §4.2.27: the
-        // property "shall define and control" the segment's subsegmentation;
-        // the CRC is calculated on the transition to Loaded). The sim
-        // answered `00 ff` and the size of the written span instead
-        // (2026-11-04, bussard issue #840).
-        if let Some(written) = self.loadables.get(&object).and_then(|s| s.mcb_written)
+        self.mcb_entry_at(object, 1)
+    }
+
+    /// The `PID_MCB_TABLE` element `element` of `object`: a written entry
+    /// describes the subsegment after the ones the entries before it
+    /// describe (Resources 03.05.01 §4.2.27, the table "shall define and
+    /// control the subsegmentation"), and its CRC is computed over that
+    /// subsegment. ETS writes and reads four entries on the Jung
+    /// `M-0004_A-146F-11-17FA-O00F4` (sweep capture ops 19 to 22 and 71 to
+    /// 74); every element answered entry 1 before (bussard issue #1073). An
+    /// element past the written ones beyond the first answers nothing.
+    pub(super) fn mcb_entry_at(&self, object: u8, element: u16) -> Option<Vec<u8>> {
+        let written = self.loadables.get(&object).map(|s| &s.mcb_written);
+        if let Some(written) = written
+            && let Some(entry) = written.get(&element)
             && let Some(seg) = self.memory.segment_of(object)
         {
-            let size = u32::from_be_bytes([written[0], written[1], written[2], written[3]]);
+            let size_of = |e: &[u8; MCB_ENTRY_LEN]| u32::from_be_bytes([e[0], e[1], e[2], e[3]]);
+            let offset: u32 = (1..element)
+                .map(|i| written.get(&i).map_or(0, size_of))
+                .fold(0u32, u32::saturating_add);
+            let size = size_of(entry);
+            let start = offset.min(seg.len);
+            let len = size.min(seg.len - start);
             let bytes = self
                 .memory
-                .read(seg.base, usize::try_from(size.min(seg.len)).ok()?);
-            let mut entry = written;
-            entry[6..8].copy_from_slice(&mcb::crc16_aug_ccitt(&bytes).to_be_bytes());
-            return Some(entry.to_vec());
+                .read(seg.base + start, usize::try_from(len).ok()?);
+            let mut out = *entry;
+            out[6..8].copy_from_slice(&mcb::crc16_aug_ccitt(&bytes).to_be_bytes());
+            return Some(out.to_vec());
         }
+        if element != 1 {
+            return None;
+        }
+        self.mcb_entry_whole(object)
+    }
+
+    /// Entry 1 when the tool seeded none: the segment's whole written span.
+    fn mcb_entry_whole(&self, object: u8) -> Option<Vec<u8>> {
         // The MCB covers the bytes the tool actually streamed (the loaded image),
         // which may be shorter than the allocated segment — a tool that writes a
         // compact table into a larger allocation must still verify against just

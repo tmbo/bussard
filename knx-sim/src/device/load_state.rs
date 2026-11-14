@@ -159,7 +159,7 @@ impl Device {
                 self.memory.release_owner(object);
                 self.set_table_reference(object, 0);
                 if let Some(state) = self.loadables.get_mut(&object) {
-                    state.mcb_written = None;
+                    state.mcb_written.clear();
                 }
             }
             LoadEvent::AllocRelSegment { size, fill } if prior == LoadState::Loading => {

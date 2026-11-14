@@ -45,6 +45,19 @@ architecture.
   `InlineData`, with the generic PDT of that element size (a `Count="2"` write
   of 10 octets is two `PDT_GENERIC_05` elements). ETS reads that description
   before the write and skips a write that does not fit it (#692).
+  A System B device's interface objects are indexed without gaps, as on a
+  real device: an index below the highest object that the product data does
+  not describe holds a placeholder object that answers only
+  `PID_OBJECT_TYPE` (the type the product declares for it, else 50000 plus
+  the index). The Hager `M-0009_A-E802-13-7620` procedure addresses objects
+  0 to 5 and 9 to 31; objects 6 to 8 are placeholders, so a walk of the
+  object types reaches 31 (#1073). What a real device keeps there is not in
+  the product data. A KNXnet/IP parameter object placed at the lowest free
+  index takes a placeholder's place.
+  `PID_MCB_TABLE` entries a procedure writes while Loading are kept by
+  element: each describes the subsegment after the ones before it and reads
+  back with the CRC over that subsegment (#1073; the Jung
+  `M-0004_A-146F-11-17FA-O00F4` writes four).
 - A virtual bus with an **observable event stream** (`src/bus`) — the seam a
   future read-only HTML visualization will consume. Today a `TracingSink` logs
   every telegram + state change to stdout.

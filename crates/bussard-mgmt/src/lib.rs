@@ -74,10 +74,11 @@ pub use broadcast::{
 };
 pub use connection::{
     AuthorizeOutcome, CONNECTION_TIMEOUT, ConnectOptions, ConnectionSeed, L4Channel,
-    Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, MAX_SYNC_BACKOFF, MGMT_TIMEOUT_MS_ENV,
-    MaxApduAbsence, PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD,
-    STANDARD_FRAME_APDU, SyncRetry, Timeouts, describe_object_properties, probe_object_type,
-    probe_object_types, read_device_descriptor, read_device_descriptor_unsecured,
+    LEGACY_WALK_BOUND, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, MAX_SYNC_BACKOFF,
+    MGMT_TIMEOUT_MS_ENV, MaxApduAbsence, PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc,
+    SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU, SyncRetry, Timeouts, describe_object_properties,
+    probe_object_type, probe_object_types, probe_walk_index, read_device_descriptor,
+    read_device_descriptor_unsecured,
 };
 pub use error::{MgmtError, Result, SilenceKind, return_code_name};
 pub use io_list::{ObjectTableSource, PID_IO_LIST, discover_object_table, read_io_list};

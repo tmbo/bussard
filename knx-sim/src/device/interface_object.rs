@@ -319,12 +319,36 @@ impl Property {
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceObject {
     properties: BTreeMap<u8, Property>,
+    /// Stands in for an object the product data does not describe, so the
+    /// indices stay contiguous (bussard issue #1073).
+    placeholder: bool,
 }
 
 impl InterfaceObject {
     /// Create an empty interface object.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An object that answers only `PID_OBJECT_TYPE` with `object_type`: it
+    /// fills an index the product data leaves free below the highest object
+    /// (bussard issue #1073), and an object placed later at the lowest free
+    /// index (the KNXnet/IP parameter object) takes its place.
+    pub fn placeholder(object_type: u16) -> Self {
+        let mut io = Self {
+            properties: BTreeMap::new(),
+            placeholder: true,
+        };
+        io.set_property(
+            PID_OBJECT_TYPE,
+            Property::read_only(object_type.to_be_bytes().to_vec()),
+        );
+        io
+    }
+
+    /// Whether this is a [`placeholder`](Self::placeholder).
+    pub fn is_placeholder(&self) -> bool {
+        self.placeholder
     }
 
     /// Insert or replace a property.

@@ -99,6 +99,23 @@ pub(crate) async fn probe_object_types<Ch: bussard_mgmt::L4Channel>(
 pub(super) async fn discover_object_table_resumable<C: Connector>(
     session: &mut Session<C>,
 ) -> Result<(u8, Vec<(u8, u16)>), WriteError> {
+    // A table this session already discovered or was seeded with (issue
+    // #1073): device state, so nothing is sent.
+    if let Some(table) = session.l4().known_object_table().map(<[_]>::to_vec) {
+        session.remember_object_table(&table);
+        let target = session.l4().target();
+        return table
+            .iter()
+            .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+            .map(|(index, _)| (*index, table.clone()))
+            .ok_or_else(|| {
+                WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                    address: target,
+                    reason: "device is missing the application-program interface object"
+                        .to_string(),
+                })
+            });
+    }
     let mut table: Vec<(u8, u16)> = Vec::new();
     let mut app_obj: Option<u8> = None;
     let mut index: u8 = 0;
@@ -106,7 +123,7 @@ pub(super) async fn discover_object_table_resumable<C: Connector>(
     while index < bussard_mgmt::MAX_OBJECT_INDEX {
         // One index at a time through the shared, tolerant probe, so the resumable
         // walk and the one-shot `probe_object_types` terminate identically.
-        match bussard_mgmt::probe_object_type(session.l4(), index)
+        match bussard_mgmt::probe_walk_index(session.l4(), index)
             .await
             .map_err(WriteError::Mgmt)
         {
@@ -131,6 +148,7 @@ pub(super) async fn discover_object_table_resumable<C: Connector>(
             Err(e) => return Err(e),
         }
     }
+    session.remember_object_table(&table);
     let target = session.l4().target();
     match app_obj {
         Some(index) => Ok((index, table)),
@@ -226,6 +244,18 @@ pub(super) fn resolve_object_target_opt(
         // None / 0: the app object (the conformant single-object shape).
         _ => Some(app_obj),
     }
+}
+
+/// The flash result's note for a step left out because the device lists no
+/// object at the index it names (issue #1073): a master-template step for an
+/// object the device lacks ([`resolve_object_target_opt`]). It names the step
+/// and the object, so the outcome says what did not run.
+fn absent_object_note(index: usize, step: &FlashStep, object: u32) -> String {
+    format!(
+        "step {}: {} left out: the device lists no interface object {object}",
+        index + 1,
+        step_label(step, &LabelCtx::default()),
+    )
 }
 
 /// Executes a validated [`FlashPlan`] against the device over the session's
@@ -500,6 +530,8 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings
+                        .push(absent_object_note(index, step, target.unwrap_or_default()));
                     return Ok(());
                 };
                 // A parameter-only download rewrites the resident
@@ -527,6 +559,8 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings
+                        .push(absent_object_note(index, step, target.unwrap_or_default()));
                     return Ok(());
                 };
                 start_loading_resumable(session, obj, object_table).await?;
@@ -543,6 +577,8 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings
+                        .push(absent_object_note(index, step, target.unwrap_or_default()));
                     return Ok(());
                 };
                 let alloc =
@@ -570,6 +606,23 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 );
+                // A segment write to an object the device does not list has
+                // no segment of its own: its allocation was left out, and the
+                // base of another object's segment is no place for it (issue
+                // #1073). The flash fails before a byte goes out.
+                if obj.is_none() {
+                    return Err(WriteError::Mgmt(
+                        bussard_mgmt::MgmtError::MalformedResponse {
+                            address: session.l4().target(),
+                            reason: format!(
+                                "the device lists no interface object {} in its object list \
+                                 {object_table:?}, so segment {} has nowhere to be written",
+                                target.unwrap_or_default(),
+                                image.segment_id
+                            ),
+                        },
+                    ));
+                }
                 let base = obj
                     .and_then(|obj| self.segment_bases.get(&obj).copied())
                     .or(self.segment_base)
@@ -794,23 +847,16 @@ impl StepExecutor for SystemB<'_> {
                     });
                 }
             }
-            // A spliced template writes properties on obj4 and obj5 (the app
-            // id, PID 13). Skip a write to an object index the device does not
-            // expose (obj5 on a device without a PEI program), exactly like
-            // the load-control steps — otherwise the device NAKs the write to
-            // the absent object and fails the flash. A `u32::MAX`-bounded index
-            // is compared against the discovered table. A value the model's
-            // parameters compose is never skipped (issue #669): a device
-            // without its object fails the write instead.
-            FlashStep::WriteProp {
-                object,
-                from_parameters: false,
-                ..
-            } if plan.spliced_from_template
-                && !plan.is_parameters_only()
-                && object.index().is_some_and(|obj_idx| {
-                    !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
-                }) => {}
+            // A property write naming an object by index goes to that index,
+            // found by the walk or not, as ETS sends it (issue #1073): ETS
+            // walks no objects before the download and writes objects 9 to 31
+            // of `M-0009_A-E802-13-7620` by the index the procedure names
+            // (`captures/ets-sweep/M-0009_A-E802-13-7620/params-1-0/ops.txt`
+            // ops 45 to 414). The one write a device may lack the object for,
+            // object 5's program version without Application Program 2, is
+            // not in the plan (`application_program_1_only`, KNX 3/5/3
+            // §3.9.3.4). A device without the object refuses the write, and
+            // the flash fails naming the object and the property.
             // An object named by type, on a program that is not Data Secure
             // enabled: written at the index the device's interface-object
             // list gives it, with the plain services, as ETS writes the
@@ -1018,6 +1064,11 @@ impl StepExecutor for SystemB<'_> {
                         app_obj,
                         plan.spliced_from_template,
                     ) else {
+                        self.warnings.push(absent_object_note(
+                            index,
+                            step,
+                            target.unwrap_or_default(),
+                        ));
                         return Ok(());
                     };
                     // The read base is this object's segment address. Prefer the
@@ -1174,6 +1225,8 @@ impl StepExecutor for SystemB<'_> {
                     app_obj,
                     plan.spliced_from_template,
                 ) else {
+                    self.warnings
+                        .push(absent_object_note(index, step, target.unwrap_or_default()));
                     return Ok(());
                 };
                 write_load_control_resumable(session, obj, LoadControl::LoadCompleted).await?;
@@ -1408,6 +1461,9 @@ impl StepExecutor for SystemB<'_> {
                     let value =
                         super::session::read_table_reference_resumable(session, obj).await?;
                     self.table_references.insert(obj, value);
+                } else {
+                    self.warnings
+                        .push(absent_object_note(index, step, *obj_idx));
                 }
             }
             FlashStep::CompareTableReference { obj_idx } => {
@@ -1431,6 +1487,9 @@ impl StepExecutor for SystemB<'_> {
                                 .to_string(),
                         });
                     }
+                } else {
+                    self.warnings
+                        .push(absent_object_note(index, step, *obj_idx));
                 }
             }
             // System 7 steps never reach this executor: `flash_sys7` runs a

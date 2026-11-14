@@ -77,6 +77,8 @@ struct MockDevice {
     secure: Option<Arc<Mutex<bussard_secure::DataSecureSession>>>,
     /// The outer (wire) APCI of every numbered request, in order.
     wire_apcis: Vec<u16>,
+    /// The `PID_OBJECT_TYPE` reads: the object walk (issue #1073).
+    object_type_reads: usize,
     /// Requests that arrived inside a verified `A_SecureData`.
     secured_requests: usize,
     /// Plain requests an activated device dropped.
@@ -123,6 +125,7 @@ impl MockDevice {
             restarts: 0,
             secure: None,
             wire_apcis: Vec::new(),
+            object_type_reads: 0,
             secured_requests: 0,
             plain_refused: 0,
             served_apcis: Vec::new(),
@@ -303,6 +306,9 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
     }
     if req_apci == apci::A_PROPERTY_VALUE_READ {
         let (oi, pid, count, start) = decode_prop_header(data)?;
+        if pid == PID_OBJECT_TYPE {
+            dev.object_type_reads += 1;
+        }
         let empty = prop_response(oi, pid, 0, start, &[]);
         let answer = |d: &[u8]| prop_response(oi, pid, 1, start, d);
         let resp = match (oi, pid) {

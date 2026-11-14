@@ -765,6 +765,7 @@ mod tests {
             device,
             parameters: Vec::new(),
             fixed: false,
+            mask: None,
         };
         let read = prop(52, Some(vec![0]));
         let unread = prop(53, None);

@@ -413,7 +413,7 @@ fn unreadable(address: IndividualAddress, reason: String) -> TablesError {
 
 // --- Discovery and table assembly ---
 
-/// Probes interface-object indexes `0..16` for `PID_OBJECT_TYPE`, returning the
+/// Probes interface-object indexes from 0 for `PID_OBJECT_TYPE`, returning the
 /// discovered `(object index, object type)` pairs in index order.
 ///
 /// A thin wrapper over [`crate::connection::probe_object_types`], the crate's one

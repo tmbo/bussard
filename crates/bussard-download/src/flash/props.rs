@@ -405,15 +405,7 @@ pub async fn write_property_value<Ch: L4Channel>(
     Ok(())
 }
 
-/// Whether `actual` matches `expected` under `mask` (`0x00` ignores a
-/// position, a missing mask octet compares it).
-fn masked_equal(expected: &[u8], actual: &[u8], mask: Option<&[u8]>) -> bool {
-    actual.len() == expected.len()
-        && expected.iter().zip(actual).enumerate().all(|(i, (e, a))| {
-            let m = mask.and_then(|m| m.get(i)).copied().unwrap_or(0xFF);
-            (e & m) == (a & m)
-        })
-}
+use crate::param_props::masked_equal;
 
 /// `PDT_VARIABLE_LENGTH` (KNX 3/7/3 §3.3).
 const PDT_VARIABLE_LENGTH: u8 = 0x10;

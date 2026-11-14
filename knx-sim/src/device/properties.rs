@@ -242,7 +242,10 @@ impl Device {
             if count > 1 {
                 None
             } else {
-                self.mcb_entry_for(object)
+                // Start index 0 answers entry 1, as it always did here:
+                // bussard's resident-MCB pre-pass reads it that way (its
+                // standard meaning, the element count, is not modelled).
+                self.mcb_entry_at(object, start.max(1))
             }
         } else {
             self.objects
@@ -430,16 +433,16 @@ impl Device {
         // with `LdCtrlWriteProp` before it streams the segment, and the real
         // device accepts that write. Accept it on a loadable object while it is
         // Loading, echo it, and keep computing the read from the stored bytes.
-        // One 8-octet entry is kept: its size, CRC control byte and access
-        // read back as written, with the CRC the device computes (bussard
-        // issue #840, `Device::mcb_entry_for`).
+        // Each 8-octet entry is kept by element: its size, CRC control byte
+        // and access read back as written, with the CRC the device computes
+        // over its subsegment (bussard issues #840 and #1073,
+        // `Device::mcb_entry_at`).
         if pid == PID_MCB_TABLE && self.load_state(object) == Some(LoadState::Loading) {
-            if start == 1
-                && count == 1
+            if count == 1
                 && let Ok(entry) = <[u8; super::MCB_ENTRY_LEN]>::try_from(value)
                 && let Some(state) = self.loadables.get_mut(&object)
             {
-                state.mcb_written = Some(entry);
+                state.mcb_written.insert(start, entry);
             }
             let mut data = vec![
                 object,
@@ -865,6 +868,63 @@ mod tests {
         // device's own entry over the written span.
         let mcb = load_object_4(&mut dev, None)?;
         assert_eq!(mcb, vec![0, 0, 0, 4, 0x00, 0xff, crc[0], crc[1]]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_mcb_entry_at_answers_each_written_subsegment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Bussard issue #1073: the Jung `M-0004_A-146F-11-17FA-O00F4`
+        // procedure writes four entries and ETS reads each back. Entry 2
+        // describes the octets after entry 1's, with the CRC over them; it
+        // answered entry 1 before.
+        let mut dev = Device::from_product_with_overrides(
+            crate::wire::IndividualAddress::new(1, 1, 1),
+            &crate::testfixtures::synthetic_system_b_product(),
+            LoadState::Loaded,
+            ProfileOverrides::default(),
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        )?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let first = load_object_4(&mut dev, Some([0, 0, 0, 3, 0x00, 0x33, 0, 0]))?;
+        let crc1 = crc16_aug_ccitt(&[1, 2, 3]).to_be_bytes();
+        assert_eq!(first, vec![0, 0, 0, 3, 0x00, 0x33, crc1[0], crc1[1]]);
+        // The second entry, written while Loading: reload with both.
+        let event = |dev: &mut Device, e: &[u8]| -> Result<(), Box<dyn std::error::Error>> {
+            let mut payload = vec![0x04, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+            payload.extend_from_slice(e);
+            payload.resize(14, 0);
+            dev.handle_cemi(&data(dev, 0x3D7, &payload))?;
+            Ok(())
+        };
+        event(&mut dev, &[0x04])?;
+        event(&mut dev, &[0x01])?;
+        event(&mut dev, &[0x03, 0x0b, 0x00, 0x00, 0x00, 0x04])?;
+        for (element, entry) in [
+            (1u8, [0, 0, 0, 3, 0x00, 0x33, 0, 0]),
+            (2, [0, 0, 0, 1, 0x01, 0x33, 0, 0]),
+        ] {
+            let mut write = vec![0x04, PID_MCB_TABLE, 0x10, element];
+            write.extend_from_slice(&entry);
+            dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        }
+        dev.handle_cemi(&data(&dev, 0x280 | 4, &[0x60, 0x00, 1, 2, 3, 4]))?;
+        event(&mut dev, &[0x02])?;
+        let read = |dev: &mut Device, element: u8| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let r = dev.handle_cemi(&data(dev, 0x3D5, &[0x04, PID_MCB_TABLE, 0x10, element]))?;
+            Ok(prop_response_value(&r))
+        };
+        assert_eq!(
+            read(&mut dev, 1)?,
+            vec![0, 0, 0, 3, 0x00, 0x33, crc1[0], crc1[1]]
+        );
+        let crc2 = crc16_aug_ccitt(&[4]).to_be_bytes();
+        assert_eq!(
+            read(&mut dev, 2)?,
+            vec![0, 0, 0, 1, 0x01, 0x33, crc2[0], crc2[1]]
+        );
+        assert!(read(&mut dev, 3)?.is_empty(), "no third entry");
         Ok(())
     }
 

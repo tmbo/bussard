@@ -128,6 +128,8 @@ struct FlashRun {
     stderr_tail: String,
     t_connects: usize,
     requests: usize,
+    /// The `PID_OBJECT_TYPE` reads: the object walk.
+    object_type_reads: usize,
     authorizes: usize,
     memory_writes: Vec<(u32, usize)>,
     load_events: Vec<(u8, u8)>,
@@ -174,6 +176,7 @@ fn flash_yes_run(
             .to_string(),
         t_connects,
         requests: dev.wire_apcis.len(),
+        object_type_reads: dev.object_type_reads,
         authorizes: dev
             .served_apcis
             .iter()
@@ -216,7 +219,14 @@ fn test_flash_yes_takes_over_the_preflight_connection() -> TestResult {
         }
         assert_eq!(after.t_connects + 1, before.t_connects, "{tag}");
         assert_eq!(after.authorizes + 1, before.authorizes, "{tag}");
-        assert_eq!(after.requests + 1, before.requests, "{tag}");
+        // The taken-over connection keeps the object table the pre-flight
+        // walked (issue #1073): the write phase does not walk again.
+        assert!(after.object_type_reads <= before.object_type_reads, "{tag}");
+        assert_eq!(
+            after.requests + 1 + (before.object_type_reads - after.object_type_reads),
+            before.requests,
+            "{tag}"
+        );
         assert_eq!(after.memory_writes, before.memory_writes, "{tag}");
         assert_eq!(after.load_events, before.load_events, "{tag}");
         assert_eq!(after.property_writes, before.property_writes, "{tag}");
