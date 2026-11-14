@@ -1,1 +1,0 @@
-- ETS sweep driver: the import result panel's OK is found by its text (fixed position as the fallback), and the catalog reset closes a result panel before closing ETS (#422).

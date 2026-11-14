@@ -1,1 +1,0 @@
-- Parameter segment without `<Data>` allocated with `Mode` 0: a parameter the configuration does not show is now written `00`, as ETS does, instead of the declared `Fill` (`syn-relseg-dataless-hidden`: `00 00`, not `a5 a5`). Segments with `<Data>`, pre-filling (`Mode` 1) allocations and `Fill="0"` are unchanged (#1084).
