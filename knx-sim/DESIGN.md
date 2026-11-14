@@ -322,23 +322,36 @@ PID 6 reads Running (1) when the three LSMs are Loaded, RunError is FFh and
 the required PEI type equals the connected one (9/4/1 §5.1.2.6.3, p. 41),
 else Halted (0).
 
-**Choices an ETS capture must confirm** (the sweep and `syn-bcu2-0021`):
+**What the ETS captures settled** (VM session 6, 2026-11-14, ETS 6.4.1:
+`syn-bcu2-0021` and 12 corpus programs on 0020, 0021 and 0025, all Loaded
+with no refusal once the region merge below was in):
 
-- which octets ETS writes after an allocation: the corpus calibration writes
-  the octets the code segment's `<Mask>` defines (the address table mask
-  leaves out the own address, the system table mask leaves out 0101h-0109h,
-  010Dh and 0111h-0115h), in runs of at most 12;
-- the Segment Control Record ETS sends: the program's own id or the id the
-  image declares (some 0025 images name a sibling program), and zeros on
-  the table LSMs (Cookbook 2/3/1 §3);
-- that controls on LSM 5 (`AbsCObjSeg`, Cookbook 2/3/1 §2.3) never reach the
-  bus;
-- that ETS reads object 0 PID 12 and object 3 PID 13 (and perhaps 0115h,
-  the mask's `ManagementStyle`, which the sim answers from memory) and
-  writes Verify Mode before the download;
-- that an Unload keeps the segments (a partial download, `M-0004_A-9019`,
-  writes LSM 3 without allocating);
-- the Master Reset answer.
+- Before the download ETS reads the descriptor, `PID_MAX_APDU_LENGTH`, on
+  0020/0021 one octet at 0115h (`ManagementStyle`), then sends `A_Authorize`
+  with FFFFFFFFh and reads object 0 PID 11, 12 and 17. It accepts "no such
+  property" for PID 11, 17 and the APDU length. It does not read object 3
+  PID 13 and sends no `A_Key_Write`. It reads and writes Verify Mode after
+  the first allocation, before the first memory write.
+- The Segment Control Record carries the program's own id and PEI type on
+  every LSM, the table LSMs included (no zeros).
+- ETS writes only the address table's count (the own address stays) and, of
+  the system table, 0100h, 0103h-0107h, 0109h-010Ch and 010Eh-0111h (the
+  association table pointer included); it leaves 0101h-0102h, 0108h, 010Dh
+  and 0112h-0115h. Frames carry at most 12 octets.
+- `DynamicTableManagement="true"` (111 of the 135 BCU 2 application files in
+  the corpus cache): ETS allocates the address table to its content (3
+  or 4 octets with no addresses, not by mask: Piazza and Iddero 3, n501 4) and the association
+  table from there up to the next segment, ignoring the procedure's table
+  sizes. With `false` (`syn-bcu2-0021`, the MDT `A-0481` program) it takes
+  the procedure's. The stretched allocation can run past 046Fh into a range
+  only the procedure names, so adjacent regions of one memory type are
+  merged (`merge_regions`).
+- Controls on LSM 5 never reach the bus. ETS adds no restart and no Master
+  Reset; a procedure's `LdCtrlRestart` is a basic restart.
+
+**Still open:** whether an Unload keeps the segments (a partial download,
+`M-0004_A-9019`, writes LSM 3 without allocating), and the Master Reset
+answer (no capture sent one).
 
 **Not modelled** (refused, or absent with the message saying so): group
 communication on the Realisation Type 2 tables (the device stays silent on
@@ -348,7 +361,8 @@ compatibility mode (the mask's own procedure writes the system table without
 an allocation), checksum control and MCBs, the RAM clear of Profiles §4.2.9,
 the user program and PEI.
 
-**Calibration.** No ETS capture of a BCU 2 download exists yet.
+**Calibration.** `synthetic_calibration.rs` replays the committed ETS
+capture `syn-bcu2-0021/defaults` (Loaded, the image ETS wrote).
 `tests/bcu2_corpus.rs` runs each corpus BCU 2 program's own load procedure
 through a test-only executor and checks Loaded and the declared image: 90 of
 94 load (3 on 0020, 63 on 0021, 24 on 0025), 3 are property-only (#390), and
