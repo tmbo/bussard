@@ -1,0 +1,10 @@
+# The device of the apply-params variant of syn-secure (capture.py).
+address = "1.1.1"
+name = "syn-secure"
+
+[parameters]
+delay-s = 500
+
+[links]
+0.listen = ["1/0/1", "1/0/2"]
+1.send = "1/0/3"

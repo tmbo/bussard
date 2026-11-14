@@ -1,0 +1,1 @@
+- Dry-run `plan.json`: a System 7 segment whose mask owns no octet is marked `fill_only`, since the writer streams nothing for it. The oracle's operation order no longer counts a memory write there, which ETS does not send either (`M-0048_A-4828`, `A-4858`, `A-855B`, #1117).
