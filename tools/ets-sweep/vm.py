@@ -30,7 +30,12 @@ import sys
 import time
 from pathlib import Path
 
-import paramiko
+try:
+    import paramiko
+except ModuleNotFoundError:
+    # The offline tests (and CI) never open an ssh session; `connect` says
+    # what is missing if one is ever attempted without paramiko.
+    paramiko = None
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -79,6 +84,8 @@ def connect() -> paramiko.SSHClient:
     this Python ('No route to host' while /usr/bin/nc connects, 2026-11-03),
     the connection goes through /usr/bin/nc instead: a system binary is not
     subject to that check, and paramiko speaks ssh over its pipes."""
+    if paramiko is None:
+        raise SystemExit("paramiko is not installed: run this with `uv run`")
     if not HOST:
         raise SystemExit("ETS_VM_HOST not set and not in .env")
     # A failed handshake ('No existing session') ended a night's sweep once
