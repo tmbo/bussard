@@ -71,7 +71,7 @@ def ets_main_window():
     menu open, pywinauto's top window of the process is the popup itself."""
     from pywinauto import Desktop as _D
 
-    for w in _D(backend="win32").windows():
+    for w in desktop_windows(lambda: _D(backend="win32").windows()):
         try:
             if w.window_text().startswith("ETS6 - ") and w.class_name().startswith("HwndWrapper[ETS6N"):
                 return DESKTOP.window(handle=w.handle)
