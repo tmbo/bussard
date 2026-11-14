@@ -1939,6 +1939,14 @@ class TestCaptureRecapture(unittest.TestCase):
                     "loadctl": "identical", "props": capture.props_verdict(regions)}
         self.assertEqual(capture.row_options(verdicts), "loadctl=identical props=differs")
 
+    def test_row_options_of_keeps_the_first_row_of_a_capture(self):
+        # A `run=flash` second row over the same capture (#1127) must not
+        # lend its options to the first row on a re-capture (session 6:
+        # `skip=none` landed on run=params rows and the check failed).
+        text = ("1.1.1|c/x/ets.pcapng|p|A|first|100.0|loadctl=identical run=params\n"
+                "1.1.1|c/x/ets.pcapng|p|A|second|100.0|run=flash skip=none\n")
+        self.assertEqual(capture.row_options_of(text), {"c/x/ets.pcapng": ["loadctl=identical", "run=params"]})
+
     def test_write_rows_reproduces_the_committed_rows(self):
         # manifest.json is the source of truth; rows.txt is generated from it
         # (#1119). A pin flipped in rows.txt alone fails here.
