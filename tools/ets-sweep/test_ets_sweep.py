@@ -1939,6 +1939,14 @@ class TestCaptureRecapture(unittest.TestCase):
                     "loadctl": "identical", "props": capture.props_verdict(regions)}
         self.assertEqual(capture.row_options(verdicts), "loadctl=identical props=differs")
 
+    def test_row_options_of_keeps_the_first_row_of_a_capture(self):
+        # A `run=flash` second row over the same capture (#1127) must not
+        # lend its options to the first row on a re-capture (session 6:
+        # `skip=none` landed on run=params rows and the check failed).
+        text = ("1.1.1|c/x/ets.pcapng|p|A|first|100.0|loadctl=identical run=params\n"
+                "1.1.1|c/x/ets.pcapng|p|A|second|100.0|run=flash skip=none\n")
+        self.assertEqual(capture.row_options_of(text), {"c/x/ets.pcapng": ["loadctl=identical", "run=params"]})
+
     def test_write_rows_reproduces_the_committed_rows(self):
         # manifest.json is the source of truth; rows.txt is generated from it
         # (#1119). A pin flipped in rows.txt alone fails here.
@@ -2831,6 +2839,70 @@ class TestDriverDeleteDialog(unittest.TestCase):
         exc, deletes = self.catalog_add([[]], lambda req: {"deleted": True})
         self.assertEqual(type(exc).__name__, "Reached", exc)
         self.assertEqual(deletes, [])
+
+
+class TestDriverCatalogPick(unittest.TestCase):
+    """Two applications of one order number at the same version: the row is
+    picked by its application cell, not taken first (N512, #525/#1060)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    # The two local rows of `5WG1 512-1AB01` as catalog_rows read them in VM
+    # session 6 (the first verbatim from 9083's driver.json).
+    N512 = [
+        {"y": 1507, "name": "Lastschalter N Status, Verknüpf., Zeitfkt. 512,", "order": "5WG1 512-1AB01",
+         "application": "20 A8 Binär mit Status... 0.1", "version": "0.1", "online": False},
+        {"y": 1545, "name": "Lastschalter N Status, Verknüpf., Zeitfkt. 512,", "order": "5WG1 512-1AB01",
+         "application": "21 A8 Binär, Blinken b... 0.1", "version": "0.1", "online": False},
+    ]
+    APP_9083 = ["21 A8 binary, blinking on off  908301", "21 A8 Binär, Blinken bei Aus  908301"]
+    APP_9007 = ["20 A8 Binary with status 900701", "20 A8 Binär mit Status  900701"]
+
+    def pick(self, rows, applications):
+        d = self.d
+        return d.pick_catalog_row(rows, d._canon("5WG1 512-1AB01"), d._digits("0.1"), "", applications)
+
+    def test_pick_catalog_row_selects_by_application_name(self):
+        self.assertEqual(self.pick(self.N512, self.APP_9083)["y"], 1545)
+        self.assertEqual(self.pick(self.N512, self.APP_9007)["y"], 1507)
+        self.assertEqual(self.pick(list(reversed(self.N512)), self.APP_9083)["y"], 1545)
+
+    def test_pick_catalog_row_without_names_keeps_the_first(self):
+        self.assertEqual(self.pick(self.N512, [])["y"], 1507)
+
+    def test_pick_catalog_row_ambiguous_names_raise(self):
+        rows = [dict(r, application="") for r in self.N512]
+        with self.assertRaisesRegex(RuntimeError, "ambiguous catalog rows"):
+            self.pick(rows, self.APP_9083)
+
+    def test_pick_catalog_row_single_row_ignores_names(self):
+        self.assertEqual(self.pick(self.N512[:1], self.APP_9083)["y"], 1507)
+
+
+class TestApplicationNames(unittest.TestCase):
+    """sweep.application_names: the program's Name and its translations."""
+
+    def test_application_names_reads_translations(self):
+        import sweep
+        import zipfile
+
+        app = "M-0001_A-9083-01-7D38"
+        xml = (f'<KNX><ManufacturerData><Manufacturer><ApplicationPrograms>'
+               f'<ApplicationProgram Id="{app}" Name="21 A8 binary, blinking on off  908301" />'
+               f'</ApplicationPrograms><Languages><Language Identifier="de-DE"><TranslationUnit RefId="{app}">'
+               f'<TranslationElement RefId="{app}_O-0"><Translation AttributeName="Text" Text="Ausgang" />'
+               f'</TranslationElement><TranslationElement RefId="{app}">'
+               f'<Translation AttributeName="Name" Text="21 A8 Bin&#228;r, Blinken bei Aus  908301" />'
+               f'</TranslationElement></TranslationUnit></Language></Languages></Manufacturer></ManufacturerData></KNX>')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "N512.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr(f"M-0001/{app}.xml", xml)
+            self.assertEqual(sweep.application_names(path, app),
+                             ["21 A8 binary, blinking on off  908301", "21 A8 Binär, Blinken bei Aus  908301"])
+            self.assertEqual(sweep.application_names(path, "M-0001_A-9007-01-3949"), [])
 
 
 class FakeImage:

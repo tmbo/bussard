@@ -213,6 +213,14 @@ the version octet's nibbles in decimal (0x1C is `1.12`, 0xB1 is `11.1`).
 `defaults.py --relabel` applies the rule to the results already recorded,
 without the VM.
 
+**Two applications at one version.** An order number can carry two
+applications that show the same version (Siemens N512 `5WG1 512-1AB01`:
+`A-9007` and `A-9083`, both 0.1; the driver took the first and captured 9007
+for 9083, #525). `sweep.py` passes the application's names (its `Name` and
+every translation, `application_names`) to `catalog_add`, and the driver
+takes the row whose application cell (cut off at `...`) matches one of them;
+with no clear winner it raises "ambiguous catalog rows" instead of adding.
+
 What ETS needed from the sim in this part: connectionless
 `A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
 capable devices before connecting), and the device identity above. A KNX
@@ -889,3 +897,32 @@ group-address panel below the Katalog panel (one left open in
 1.1 TP Linie"), `download` and `unload` cancel "Verbindung auswählen" (ETS
 offers the interfaces it found when the sim does not answer, the owner's
 real one among them) and raise, and `link` answers the security notice.
+
+Results of VM session 6 (2026-11-14, ETS 6.4.1 build 6.4.8718, driver and
+knx-sim.exe of main acda0c7f, then knx-sim.exe with the BCU 2 region merge
+of this session, #525):
+
+- First ETS downloads into the BCU 2 simulator: `syn-bcu2-0021` (committed,
+  38 operations, row `expect=not-comparable`: bussard refuses System 2) and
+  13 corpus rows through `defaults.py --redo` (0020: `M-0048_A-491B`,
+  `M-0001_A-9007`; 0021: `M-0001_A-9083` (ETS took the sibling 9007, see
+  below), `M-0064_A-3211`, `M-0048_A-4914`, `M-0048_A-648A`,
+  `M-0001_A-9097`, `M-00E1_A-9005`; 0025: `M-00EF_A-8108`, `M-0009_A-0001`,
+  `M-0083_A-0481`, `M-017D_A-1000`, `M-0001_A-9817`). All end
+  "Programmieren(Appl.): Abgeschlossen" with LSM 1 to 3 Loaded; the oracle
+  rows are `not-comparable`. What they settle is in `knx-sim/DESIGN.md`
+  ("System 2") and #525.
+- `M-017D_A-1000` and `M-0001_A-9817` first failed ("Es wurde versucht, in
+  einen geschützten oder nicht vorhandenen Speicherbereich zu schreiben"):
+  with `DynamicTableManagement` ETS stretches the association table up to
+  the next segment, past 046Fh, and the sim refused an allocation spanning
+  two of its regions. knx-sim now merges adjacent regions of one memory type;
+  both reran captured.
+- `M-0001_A-9083` (N512): the catalogue lists two applications of
+  `5WG1 512-1AB01` with version 0.1 and `catalog_add` took the first, 9007
+  (a mask 0020 program, loaded into the 0021 sim without complaint). The
+  driver cannot pick a row by application name (the #1060 case with equal
+  versions).
+- `capture.py`: `row_options_of` keeps a capture's first row, so the options
+  of a `run=flash` second row (#1127) no longer land on the first row when
+  another product is captured.
