@@ -6,8 +6,10 @@ purpose = """
 syn-text-undeclared with the 14-octet text default "Temp ℃": no
 TextParameterEncoding, and `℃` (U+2103) has no octet in ISO 8859-1,
 Windows-1252 or ISO 8859-15. ETS 6 wrote `?` for it in the KNX Smart Touch
-S3 (`M-0085_A-0098-12-75FF`, `3F 00 00`); bussard refused the program before
-#1065 and now writes `?`. The capture confirms it on a product of our own."""
+S3 (`M-0085_A-0098-12-75FF`, `3F 00 00`). One 8-octet probe parameter per
+character class (best-fit candidates, CJK, Cyrillic, Greek, Windows-1252-only,
+ISO 8859-15-only, one astral character), each between the ASCII guards A and
+Z, so one capture shows what ETS writes for each class (#1065)."""
 construct = "TypeText default with a character no Latin code page holds, no TextParameterEncoding"
 issues = [1065, 416]
 
@@ -62,6 +64,11 @@ name = "Message"
 kind = "text"
 size_octets = 14
 
+[[parameter_type]]
+name = "Probe"
+kind = "text"
+size_octets = 8
+
 [[parameter]]
 name = "mode"
 type = "Mode"
@@ -84,6 +91,146 @@ type = "Message"
 text = "Alarm text"
 default = "Temp ℃"
 memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+# One probe per character class (#1065): the character between the ASCII
+# guards A and Z, so the octets ETS writes for it sit at offset 1 of the
+# 8-octet field, whatever their count.
+
+# control: captured as ? in M-0085_A-0098-12-75FF
+[[parameter]]
+name = "probe_celsius"
+type = "Probe"
+text = "Probe celsius"
+default = "A℃Z"
+memory = { segment = "main", offset = 17, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_l_stroke"
+type = "Probe"
+text = "Probe l stroke"
+default = "AŁZ"
+memory = { segment = "main", offset = 25, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_a_macron"
+type = "Probe"
+text = "Probe a macron"
+default = "AĀZ"
+memory = { segment = "main", offset = 33, bit_offset = 0 }
+
+# best-fit candidate (fullwidth)
+[[parameter]]
+name = "probe_fullwidth_a"
+type = "Probe"
+text = "Probe fullwidth a"
+default = "AＡZ"
+memory = { segment = "main", offset = 41, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_less_equal"
+type = "Probe"
+text = "Probe less equal"
+default = "A≤Z"
+memory = { segment = "main", offset = 49, bit_offset = 0 }
+
+# CJK
+[[parameter]]
+name = "probe_cjk"
+type = "Probe"
+text = "Probe cjk"
+default = "A中Z"
+memory = { segment = "main", offset = 57, bit_offset = 0 }
+
+# Cyrillic
+[[parameter]]
+name = "probe_cyrillic"
+type = "Probe"
+text = "Probe cyrillic"
+default = "AЖZ"
+memory = { segment = "main", offset = 65, bit_offset = 0 }
+
+# Greek
+[[parameter]]
+name = "probe_greek"
+type = "Probe"
+text = "Probe greek"
+default = "AΩZ"
+memory = { segment = "main", offset = 73, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_trade_mark"
+type = "Probe"
+text = "Probe trade mark"
+default = "A™Z"
+memory = { segment = "main", offset = 81, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_en_dash"
+type = "Probe"
+text = "Probe en dash"
+default = "A–Z"
+memory = { segment = "main", offset = 89, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_left_quote"
+type = "Probe"
+text = "Probe left quote"
+default = "A“Z"
+memory = { segment = "main", offset = 97, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_ellipsis"
+type = "Probe"
+text = "Probe ellipsis"
+default = "A…Z"
+memory = { segment = "main", offset = 105, bit_offset = 0 }
+
+# Windows-1252 0x80, ISO 8859-15 0xA4
+[[parameter]]
+name = "probe_euro"
+type = "Probe"
+text = "Probe euro"
+default = "A€Z"
+memory = { segment = "main", offset = 113, bit_offset = 0 }
+
+# Windows-1252 0x9C, ISO 8859-15 0xBD
+[[parameter]]
+name = "probe_oe"
+type = "Probe"
+text = "Probe oe"
+default = "AœZ"
+memory = { segment = "main", offset = 121, bit_offset = 0 }
+
+# ISO 8859-1 and Windows-1252 only, not ISO 8859-15
+[[parameter]]
+name = "probe_currency"
+type = "Probe"
+text = "Probe currency"
+default = "A¤Z"
+memory = { segment = "main", offset = 129, bit_offset = 0 }
+
+# ISO 8859-1 and Windows-1252 only, not ISO 8859-15
+[[parameter]]
+name = "probe_half"
+type = "Probe"
+text = "Probe half"
+default = "A½Z"
+memory = { segment = "main", offset = 137, bit_offset = 0 }
+
+# beyond U+FFFF; drop this parameter if ETS refuses the product
+[[parameter]]
+name = "probe_astral"
+type = "Probe"
+text = "Probe astral"
+default = "A😀Z"
+memory = { segment = "main", offset = 145, bit_offset = 0 }
 
 [[com_object]]
 number = 0
@@ -108,7 +255,7 @@ priority = "Low"
 [[dynamic.block]]
 name = "general"
 text = "General"
-parameters = ["mode", "delay", "alarm_text"]
+parameters = ["mode", "delay", "alarm_text", "probe_celsius", "probe_l_stroke", "probe_a_macron", "probe_fullwidth_a", "probe_less_equal", "probe_cjk", "probe_cyrillic", "probe_greek", "probe_trade_mark", "probe_en_dash", "probe_left_quote", "probe_ellipsis", "probe_euro", "probe_oe", "probe_currency", "probe_half", "probe_astral"]
 com_objects = [0, 1]
 
 # The application's part of the 07B0 mask procedure: MergeId 2 allocates the

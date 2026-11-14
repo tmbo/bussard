@@ -24,6 +24,9 @@
               <ParameterType Id="M-00FA_A-272B-10-0000_PT-Message" Name="Message">
                 <TypeText SizeInBit="112" />
               </ParameterType>
+              <ParameterType Id="M-00FA_A-272B-10-0000_PT-Probe" Name="Probe">
+                <TypeText SizeInBit="64" />
+              </ParameterType>
             </ParameterTypes>
             <Parameters>
               <Parameter Id="M-00FA_A-272B-10-0000_P-1" Name="mode" ParameterType="M-00FA_A-272B-10-0000_PT-Mode" Text="Operating mode" Value="1">
@@ -35,11 +38,79 @@
               <Parameter Id="M-00FA_A-272B-10-0000_P-3" Name="alarm_text" ParameterType="M-00FA_A-272B-10-0000_PT-Message" Text="Alarm text" Value="Temp ℃">
                 <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="3" BitOffset="0" />
               </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-4" Name="probe_celsius" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe celsius" Value="A℃Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="17" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-5" Name="probe_l_stroke" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe l stroke" Value="AŁZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="25" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-6" Name="probe_a_macron" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe a macron" Value="AĀZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="33" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-7" Name="probe_fullwidth_a" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe fullwidth a" Value="AＡZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="41" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-8" Name="probe_less_equal" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe less equal" Value="A≤Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="49" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-9" Name="probe_cjk" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe cjk" Value="A中Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="57" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-10" Name="probe_cyrillic" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe cyrillic" Value="AЖZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="65" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-11" Name="probe_greek" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe greek" Value="AΩZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="73" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-12" Name="probe_trade_mark" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe trade mark" Value="A™Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="81" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-13" Name="probe_en_dash" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe en dash" Value="A–Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="89" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-14" Name="probe_left_quote" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe left quote" Value="A“Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="97" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-15" Name="probe_ellipsis" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe ellipsis" Value="A…Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="105" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-16" Name="probe_euro" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe euro" Value="A€Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="113" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-17" Name="probe_oe" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe oe" Value="AœZ">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="121" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-18" Name="probe_currency" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe currency" Value="A¤Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="129" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-19" Name="probe_half" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe half" Value="A½Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="137" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-272B-10-0000_P-20" Name="probe_astral" ParameterType="M-00FA_A-272B-10-0000_PT-Probe" Text="Probe astral" Value="A😀Z">
+                <Memory CodeSegment="M-00FA_A-272B-10-0000_RS-04-00000" Offset="145" BitOffset="0" />
+              </Parameter>
             </Parameters>
             <ParameterRefs>
               <ParameterRef Id="M-00FA_A-272B-10-0000_P-1_R-1" RefId="M-00FA_A-272B-10-0000_P-1" />
               <ParameterRef Id="M-00FA_A-272B-10-0000_P-2_R-2" RefId="M-00FA_A-272B-10-0000_P-2" />
               <ParameterRef Id="M-00FA_A-272B-10-0000_P-3_R-3" RefId="M-00FA_A-272B-10-0000_P-3" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-4_R-4" RefId="M-00FA_A-272B-10-0000_P-4" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-5_R-5" RefId="M-00FA_A-272B-10-0000_P-5" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-6_R-6" RefId="M-00FA_A-272B-10-0000_P-6" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-7_R-7" RefId="M-00FA_A-272B-10-0000_P-7" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-8_R-8" RefId="M-00FA_A-272B-10-0000_P-8" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-9_R-9" RefId="M-00FA_A-272B-10-0000_P-9" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-10_R-10" RefId="M-00FA_A-272B-10-0000_P-10" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-11_R-11" RefId="M-00FA_A-272B-10-0000_P-11" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-12_R-12" RefId="M-00FA_A-272B-10-0000_P-12" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-13_R-13" RefId="M-00FA_A-272B-10-0000_P-13" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-14_R-14" RefId="M-00FA_A-272B-10-0000_P-14" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-15_R-15" RefId="M-00FA_A-272B-10-0000_P-15" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-16_R-16" RefId="M-00FA_A-272B-10-0000_P-16" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-17_R-17" RefId="M-00FA_A-272B-10-0000_P-17" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-18_R-18" RefId="M-00FA_A-272B-10-0000_P-18" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-19_R-19" RefId="M-00FA_A-272B-10-0000_P-19" />
+              <ParameterRef Id="M-00FA_A-272B-10-0000_P-20_R-20" RefId="M-00FA_A-272B-10-0000_P-20" />
             </ParameterRefs>
             <ComObjectTable>
               <ComObject Id="M-00FA_A-272B-10-0000_O-0" Name="switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" Priority="Low" />
@@ -67,6 +138,23 @@
                 <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-1_R-1" />
                 <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-2_R-2" />
                 <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-3_R-3" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-4_R-4" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-5_R-5" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-6_R-6" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-7_R-7" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-8_R-8" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-9_R-9" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-10_R-10" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-11_R-11" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-12_R-12" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-13_R-13" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-14_R-14" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-15_R-15" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-16_R-16" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-17_R-17" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-18_R-18" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-19_R-19" />
+                <ParameterRefRef RefId="M-00FA_A-272B-10-0000_P-20_R-20" />
                 <ComObjectRefRef RefId="M-00FA_A-272B-10-0000_O-0_R-1" />
                 <ComObjectRefRef RefId="M-00FA_A-272B-10-0000_O-1_R-2" />
               </ParameterBlock>

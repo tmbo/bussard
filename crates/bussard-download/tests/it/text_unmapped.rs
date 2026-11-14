@@ -4,8 +4,11 @@
 //!
 //! ETS 6 wrote `3F 00 00` for the default `℃` of the KNX Smart Touch S3
 //! `M-0085_A-0098-12-75FF`. The synthetic `syn-text-unmapped` carries the
-//! 14-octet default "Temp ℃" at octet 3 of its parameter segment. The flash
-//! ends with the read-back, and the device holds the octets the plan wrote.
+//! 14-octet default "Temp ℃" at octet 3 of its parameter segment, and one
+//! probe per character class for the capture that settles the rule. Until
+//! that capture, the probes whose octet depends on the code page refuse the
+//! defaults; the tests set them to ASCII. The flash ends with the read-back,
+//! and the device holds the octets the plan wrote.
 
 use std::collections::BTreeMap;
 
@@ -26,11 +29,30 @@ const BASE: u32 = 0x6000;
 /// "Temp ?" in the 14-octet field, NUL-padded.
 const TEXT: &[u8; 14] = b"Temp ?\0\0\0\0\0\0\0\0";
 
-/// The plan of `syn-text-unmapped` at its defaults.
+/// The probes (parameters 12 to 20) whose character has an octet in one
+/// candidate code page but not in another, or lies beyond U+FFFF: refused
+/// until the capture shows what ETS writes.
+const UNSETTLED_PROBES: std::ops::RangeInclusive<u32> = 12..=20;
+
+/// The plan of `syn-text-unmapped`, the unsettled probes set to ASCII.
 fn plan() -> TestResult<FlashPlan> {
     let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
     let app = product.applications.first().ok_or("one application")?;
-    plan_synthetic_07b0(&product, app, &BTreeMap::new())
+    let overrides: BTreeMap<String, String> = UNSETTLED_PROBES
+        .map(|n| (format!("P-{n}_R-{n}"), "AxZ".to_string()))
+        .collect();
+    plan_synthetic_07b0(&product, app, &overrides)
+}
+
+#[test]
+fn test_plan_flash_unsettled_probe_refuses_at_the_defaults() -> TestResult {
+    let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
+    let app = product.applications.first().ok_or("one application")?;
+    let err = plan_synthetic_07b0(&product, app, &BTreeMap::new())
+        .err()
+        .ok_or("the defaults planned")?;
+    assert!(err.to_string().contains("issue #416"), "{err}");
+    Ok(())
 }
 
 /// The parameter image the plan writes to object 4.
