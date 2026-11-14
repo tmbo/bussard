@@ -100,6 +100,29 @@ pub const STANDARD_REGIONS: [Region; 3] = [
     },
 ];
 
+/// `regions` with every pair of the same memory type that overlaps or
+/// touches joined into one. ETS 6 relocates the tables of a program with
+/// `DynamicTableManagement`: it allocates the address table to its content
+/// and the association table from there up to the next segment, so one
+/// allocation can span the standard EEPROM and a range only the product's
+/// procedure names (ETS capture of `M-0001_A-9817-01-5749`, 2026-11-14:
+/// 011Ah..048Bh, the procedure's two table segments end at 048Bh).
+fn merge_regions(mut regions: Vec<Region>) -> Vec<Region> {
+    regions.sort_by_key(|r| (r.mem_type, r.start));
+    let mut out: Vec<Region> = Vec::with_capacity(regions.len());
+    for r in regions {
+        match out.last_mut() {
+            Some(last)
+                if last.mem_type == r.mem_type && u32::from(r.start) <= u32::from(last.end) + 1 =>
+            {
+                last.end = last.end.max(r.end);
+            }
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 /// One absolute segment an LSM allocated, with its access attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Allocation {
@@ -147,7 +170,7 @@ impl Bcu2Runtime {
             }
         }
         Self {
-            regions,
+            regions: merge_regions(regions),
             keys: [crate::device::FREE_ACCESS_KEY; 4],
             allocations: Vec::new(),
             pei_actual: product.pei_type.unwrap_or(0),
@@ -712,5 +735,29 @@ mod tests {
         let rt = Bcu2Runtime::new(&product);
         assert_eq!(rt.allocation_refusal(3, 0x0516, 0x12F, 3), None);
         assert!(rt.allocation_refusal(3, 0x0516, 0x130, 3).is_some());
+    }
+
+    #[test]
+    fn test_new_merges_a_product_range_that_continues_the_eeprom() {
+        // n501 (`M-0001_A-9817-01-5749`, mask 0025): the association table
+        // segment ends at 048Bh; with dynamic table management ETS allocates
+        // 011Ah..048Bh in one record.
+        let mut product = crate::testfixtures::synthetic_bcu2_product();
+        product.abs_segment_steps = vec![crate::prod::AbsSegmentStep {
+            lsm_index: 2,
+            seg_type: 0,
+            address: 0x02D2,
+            size: 442,
+            access: 0x33,
+            mem_type: 3,
+            seg_flags: 0,
+        }];
+        let rt = Bcu2Runtime::new(&product);
+        assert_eq!(rt.allocation_refusal(2, 0x011A, 882, 3), None);
+        assert!(rt.allocation_refusal(2, 0x011A, 883, 3).is_some());
+        assert!(
+            rt.allocation_refusal(3, 0x00BD, 0x40, 1).is_some(),
+            "other memory types stay apart"
+        );
     }
 }
