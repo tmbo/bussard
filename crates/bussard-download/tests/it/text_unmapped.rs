@@ -114,3 +114,30 @@ async fn test_flash_unmapped_text_character_reads_back() -> TestResult {
     assert_eq!(dev.read_mem(BASE + 3, 14), TEXT.to_vec());
     Ok(())
 }
+
+/// A vendor default the download writes with replaced characters is named
+/// (issue #1065): every lossy probe and the alarm text, once each, and no
+/// probe whose characters Windows-1252 holds.
+#[test]
+fn test_lossy_text_notes_name_every_replaced_default() -> TestResult {
+    let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
+    let app = product.applications.first().ok_or("one application")?;
+    let plan = plan_synthetic_07b0(&product, app, &BTreeMap::new())?;
+    let notes = bussard_download::lossy_text_notes(&plan, app, &BTreeMap::new());
+    // "Temp ℃" and the probes ℃ Ł Ā Ａ ≤ 中 Ж Ω 😀.
+    assert_eq!(notes.len(), 10, "{notes:#?}");
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("\"Temp ℃\" is written as \"Temp ?\"")),
+        "{notes:#?}"
+    );
+    assert!(!notes.iter().any(|n| n.contains('€')), "{notes:#?}");
+    // A value the device file stores is the stored-value note's.
+    let overrides: BTreeMap<String, String> =
+        [("P-3_R-3".to_string(), "Temp ✓".to_string())].into();
+    let stored = plan_synthetic_07b0(&product, app, &overrides)?;
+    let notes = bussard_download::lossy_text_notes(&stored, app, &overrides);
+    assert_eq!(notes.len(), 9, "{notes:#?}");
+    Ok(())
+}

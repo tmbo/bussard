@@ -381,13 +381,10 @@ fn check_parameters(
     }
 }
 
-/// Checks a parameter value against its definition, returning the reason it is
-/// unacceptable, or `None` when it is fine.
-///
-/// Why a text value is lossy, or `None`: the characters of `value` that the
-/// parameter's code page writes as `?` (issue #1065, W051), named once each.
-/// Two values that differ only in such characters are the same device
-/// content.
+/// Why a text value is lossy, or `None`: the characters of `value` the
+/// parameter's code page does not write as themselves (a Windows best fit or
+/// `?`; issue #1065, W051), named once each. Two values that differ only in
+/// such characters are the same device content.
 pub fn text_substitution(kind: &ParamKind, value: &str) -> Option<String> {
     let ParamKind::Text { encoding, .. } = kind else {
         return None;
@@ -404,11 +401,14 @@ pub fn text_substitution(kind: &ParamKind, value: &str) -> Option<String> {
         .join(", ");
     Some(format!(
         "text {value:?} holds {list}, which the program's code page does not hold: the download \
-         writes a look-alike (Windows best fit) or `?` for each, as ETS does, and the device \
-         reads the replacement back"
+         writes a look-alike (Windows best fit) or `?` for each, as ETS does on a \
+         Western-European (Windows-1252) PC, and the device reads the replacement back"
     ))
 }
 
+/// Checks a parameter value against its definition, returning the reason it is
+/// unacceptable, or `None` when it is fine.
+///
 /// The public face of the `E017` rule, so a caller that wants to reject a bad
 /// value *before* writing it (the MCP `knx_set_parameter` tool) uses exactly the
 /// same check the validator applies afterwards.

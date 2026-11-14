@@ -89,8 +89,9 @@ pub use param_decode::{
 };
 pub use param_plan::{
     CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegions,
-    ParamValue, SYS7_NOTE, group_object_change, param_plan, planned_parameter_regions,
-    read_current_parameter_memory, read_parameter_regions, regions_memory,
+    ParamValue, SYS7_NOTE, group_object_change, lossy_text_notes, param_plan,
+    planned_parameter_regions, read_current_parameter_memory, read_parameter_regions,
+    regions_memory,
 };
 pub use param_props::{
     ParamProperty, PropertyRange, changed_parameter_properties, changed_properties, held_after,

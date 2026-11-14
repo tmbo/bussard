@@ -590,12 +590,18 @@ impl BussardMcp {
             if !force && let Some(why) = unreached_refusal(&loaded.device, &keys, &key) {
                 return Err(why);
             }
-            let value = check_parameter(&dir, loaded, &key, &value)?;
+            let (value, lossy) = check_parameter(&dir, loaded, &key, &value)?;
             // A parameter on a page that was inactive at import gets its lock
             // entry now, saved with the device file below.
             index_parameter(&mut loaded.device, &keys, &key);
             replace_parameter(&mut loaded.device, &key, value);
-            Ok(refresh_device_facts(&dir, model, ia, tiers))
+            let facts = refresh_device_facts(&dir, model, ia, tiers);
+            // Issue #1065: a text value written with replaced characters is
+            // said in the result (W051).
+            Ok(match (facts, lossy) {
+                (Some(facts), Some(lossy)) => Some(format!("{lossy}. {facts}")),
+                (facts, lossy) => lossy.or(facts),
+            })
         })
     }
 
@@ -1421,13 +1427,15 @@ fn refuse_protected_ga(protected: bool, ga: GroupAddress) -> Result<(), String> 
 }
 
 /// Checks `value` for the parameter `key` against the product model and
-/// returns it as the model stores it (an enum label becomes its code).
+/// returns it as the model stores it (an enum label becomes its code), with
+/// the W051 warning when the download writes it with replaced characters
+/// (issue #1065).
 fn check_parameter(
     dir: &Path,
     loaded: &bussard_model::LoadedDevice,
     key: &str,
     value: &str,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     let app_ref = loaded
         .device
         .product
@@ -1459,7 +1467,11 @@ fn check_parameter(
         .unwrap_or_else(|| value.to_string());
     match bussard_model::validate::parameter_value_error(&def.kind, &value) {
         Some(reason) => Err(reason),
-        None => Ok(value),
+        None => {
+            let lossy = bussard_model::validate::text_substitution(&def.kind, &value)
+                .map(|why| format!("warning W051: {key}: {why}"));
+            Ok((value, lossy))
+        }
     }
 }
 

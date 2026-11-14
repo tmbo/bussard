@@ -700,6 +700,99 @@ pub async fn read_parameter_regions<Ch: L4Channel>(
     out
 }
 
+/// The notes of the text parameters whose vendor default the image of
+/// `plan` holds with replaced characters (issue #1065): a default a program
+/// without `TextParameterEncoding` writes with a best-fit
+/// look-alike or `?` (`Text for unit` = `℃` written as `?` on the KNX Smart
+/// Touch S3). A note names the parameter, the value and what the device
+/// reads back. Only a value the image really holds is named: the slot's
+/// octets must be that value's encoding, so a value an `<Assign>` replaces
+/// or a ref the configuration does not reach gets none.
+pub fn lossy_text_notes(
+    plan: &crate::FlashPlan,
+    app: &bussard_product::ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let codec = bussard_model::text_codec::TextCodec::from_declaration(
+        app.text_parameter_encoding.as_deref(),
+    );
+    let slots: Vec<bussard_product::ParameterSlot<'_>> = if bussard_product::uses_dynamic_image(app)
+    {
+        let memo = bussard_product::dynamic::DynamicMemo::new(app);
+        bussard_product::dynamic_parameter_slots(app, &memo.evaluate_for(app, overrides))
+            .unwrap_or_default()
+    } else {
+        bussard_product::static_parameter_slots(app, overrides, &BTreeMap::new())
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|s| s.slot)
+            .collect()
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for slot in &slots {
+        let param = slot.parameter;
+        let Some(bussard_product::ParameterType::Text { size_bits }) = param
+            .parameter_type
+            .as_deref()
+            .and_then(|id| app.parameter_types.get(id))
+            .map(|d| &d.kind)
+        else {
+            continue;
+        };
+        let len = (size_bits.unwrap_or(0) / 8) as usize;
+        let Some(held) = plan
+            .image_bytes(slot.segment)
+            .and_then(|b| b.get(slot.offset..slot.offset.checked_add(len)?))
+        else {
+            continue;
+        };
+        let ref_value = slot.param_ref_id.as_deref().and_then(|r| {
+            app.parameter_refs
+                .get(&format!("{}_{r}", app.id))
+                .and_then(|pr| pr.value.as_deref())
+        });
+        // A value the device file stores is named by the stored-value
+        // note (`ignored_override_notes`, W051); this one names defaults.
+        if slot
+            .param_ref_id
+            .as_deref()
+            .is_some_and(|r| overrides.contains_key(r))
+        {
+            continue;
+        }
+        let candidates = ref_value.into_iter().chain(param.default.as_deref()).chain(
+            app.parameter_refs
+                .values()
+                .filter(|pr| pr.ref_id == param.id)
+                .filter_map(|pr| pr.value.as_deref()),
+        );
+        for value in candidates {
+            if seen.contains(param.id.as_str()) {
+                break;
+            }
+            let replaced = codec.substituted(value);
+            if replaced.is_empty() || codec.encode(value, len).ok().as_deref() != Some(held) {
+                continue;
+            }
+            seen.insert(param.id.as_str());
+            let name = param.name.as_deref().unwrap_or(&param.id);
+            let list = replaced
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!(
+                "`{name}` = {value:?} is written as {:?}: the program declares no \
+                 TextParameterEncoding, and {list} has no Windows-1252 octet, so the download \
+                 writes a look-alike or `?`, as ETS does on a Western-European (Windows-1252) PC",
+                codec.decode(held)
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -188,15 +188,44 @@ impl TextCodec {
     /// The reason, as a sentence fragment, when a character has no octet in
     /// this code page or the text needs more than `len` octets.
     pub fn encode(self, text: &str, len: usize) -> Result<Vec<u8>, String> {
-        let mut out = match self {
+        let (mut out, _) = self.convert(text)?;
+        if out.len() > len {
+            return Err(format!(
+                "text `{text}` is {} octets in {} but the field holds {len}",
+                out.len(),
+                self.name()
+            ));
+        }
+        out.resize(len, 0);
+        Ok(out)
+    }
+
+    /// `text` converted with this code page, unpadded, and the characters
+    /// it does not write as themselves (a best fit or `?`, in order, once
+    /// each; issue #1065): the one conversion [`Self::encode`] and
+    /// [`Self::substituted`] both read.
+    ///
+    /// # Errors
+    ///
+    /// The reason, as a sentence fragment, when a character has no octet in
+    /// this code page.
+    fn convert(self, text: &str) -> Result<(Vec<u8>, Vec<char>), String> {
+        let mut replaced: Vec<char> = Vec::new();
+        let mut note = |c: char| {
+            if !replaced.contains(&c) {
+                replaced.push(c);
+            }
+        };
+        let out = match self {
             TextCodec::Utf8 => text.as_bytes().to_vec(),
             _ => {
-                let mut out = Vec::with_capacity(len);
+                let mut out = Vec::with_capacity(text.len());
                 for c in text.chars() {
                     // One `?` per UTF-16 code unit for a character beyond
                     // U+FFFF, as ETS writes it (issue #1065).
                     if self == TextCodec::Undeclared && c.len_utf16() == 2 {
                         out.extend_from_slice(b"??");
+                        note(c);
                         continue;
                     }
                     let Some(b) = self.octet(c) else {
@@ -212,20 +241,15 @@ impl TextCodec {
                             ),
                         });
                     };
+                    if self.char_of(b) != Some(c) {
+                        note(c);
+                    }
                     out.push(b);
                 }
                 out
             }
         };
-        if out.len() > len {
-            return Err(format!(
-                "text `{text}` is {} octets in {} but the field holds {len}",
-                out.len(),
-                self.name()
-            ));
-        }
-        out.resize(len, 0);
-        Ok(out)
+        Ok((out, replaced))
     }
 
     /// The text a field holds: its octets up to the last non-NUL one,
@@ -250,16 +274,9 @@ impl TextCodec {
     /// once each. A value holding one is lossy: it reads back with the
     /// replacement in their place.
     pub fn substituted(self, text: &str) -> Vec<char> {
-        let mut out: Vec<char> = Vec::new();
-        if self == TextCodec::Undeclared {
-            let lossy = |c: char| c.len_utf16() == 2 || self.char_of(best_fit_1252(c)) != Some(c);
-            for c in text.chars().filter(|c| lossy(*c)) {
-                if !out.contains(&c) {
-                    out.push(c);
-                }
-            }
-        }
-        out
+        self.convert(text)
+            .map(|(_, replaced)| replaced)
+            .unwrap_or_default()
     }
 
     /// The code page's name in messages.
@@ -393,7 +410,7 @@ mod tests {
     /// `captures/synthetic/syn-text-undeclared/defaults/`): "Störung" in the
     /// 14-octet field of a program without `TextParameterEncoding`.
     #[test]
-    fn test_encode_undeclared_is_latin1_nul_padded_as_ets_writes() -> TestResult {
+    fn test_encode_undeclared_is_one_octet_per_character_nul_padded_as_ets_writes() -> TestResult {
         let octets = TextCodec::Undeclared.encode("Störung", 14)?;
         assert_eq!(
             octets,

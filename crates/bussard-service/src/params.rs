@@ -1342,6 +1342,20 @@ pub fn allocation_refusal(target: IndividualAddress, why: &str) -> String {
     )
 }
 
+/// The notes of the vendor-default text values the full flash `plan`
+/// writes with replaced characters (issue #1065; a stored value is named by
+/// [`ignored_override_notes`],
+/// [`bussard_download::lossy_text_notes`]).
+pub fn lossy_text_notes(
+    plan: &FlashPlan,
+    app: &ApplicationProgram,
+    model: Option<&Model>,
+    target: IndividualAddress,
+) -> Vec<String> {
+    let (overrides, _) = bussard_download::parameter_overrides(model, target);
+    bussard_download::lossy_text_notes(plan, app, &overrides)
+}
+
 /// The plan lines of the values the file of `target` stores for parameter
 /// refs the configuration does not show under its current values (issue
 /// #321): the image holds one slot per shown ref, so neither a parameter

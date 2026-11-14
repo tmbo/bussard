@@ -384,6 +384,15 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         Err(stop) => return stopped(target, stop, json),
     };
     let plan = &planned.plan;
+    // Issue #1065: a text value (a vendor default too) the download writes
+    // with replaced characters is named before anything is written.
+    if !json {
+        for line in
+            bussard_service::params::lossy_text_notes(plan, inputs.app(), model.as_ref(), target)
+        {
+            eprintln!("note: {line}");
+        }
+    }
     // The identity verdict (issue #228, item 5): a flash is how drift is
     // fixed, so it is not refused here.
     if !json {
