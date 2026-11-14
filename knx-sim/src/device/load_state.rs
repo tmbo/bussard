@@ -315,6 +315,23 @@ impl Device {
                 return Err(DeviceError::LoadControl(e.to_string()));
             }
         };
+        // A BCU 2 checks and applies the record against its memory map and
+        // system table (bussard issue #525); a refusal is the Error state.
+        if self.is_bcu2()
+            && prior == LoadState::Loading
+            && !matches!(step, Sys7Step::Ignored)
+            && let Err(why) = self.bcu2_load_control(lsm_index, event_record)
+        {
+            if let Some(lsm) = self.sys7.as_mut().and_then(|s| s.lsms.get_mut(&lsm_index)) {
+                lsm.fail();
+            }
+            self.emit(Event::LoadStateChanged {
+                device: self.address,
+                object: lsm_index,
+                state: LoadState::Error.to_byte(),
+            });
+            return Err(DeviceError::LoadControl(why));
+        }
         // A TaskSegment record (`03 02 <addr:2> <01> <id:5>`) ends in the
         // program id (`00 b6 45 37 03`: manufacturer, application number,
         // version) the BimM112 masks expose as the object's PID 13 (the
@@ -322,11 +339,13 @@ impl Device {
         // partial download and refuses when it is missing (Ekinex EK-E72,
         // 2026-10-28).
         let committed = !matches!(step, Sys7Step::Ignored | Sys7Step::NoOp);
-        let program_id = if committed && event_record.get(..2) == Some(&[0x03, 0x02]) {
-            event_record.get(5..10)
-        } else {
-            None
-        };
+        // (A BCU 2 placed the program id in its system table above.)
+        let program_id =
+            if committed && !self.is_bcu2() && event_record.get(..2) == Some(&[0x03, 0x02]) {
+                event_record.get(5..10)
+            } else {
+                None
+            };
         if let (Some(id), Some(obj)) = (program_id, self.objects.get_mut(&lsm_index)) {
             obj.set_property(PID_PROGRAM_VERSION, Property::read_only(id.to_vec()));
         }
@@ -344,7 +363,8 @@ impl Device {
                 // download can write into any of them.
                 let start = u32::from(start);
                 let already = self.memory.owner_covers(lsm_index, start);
-                if !(subtype == 0x02 && already) {
+                // A BCU 2 allocated (or refused) in `bcu2_load_control`.
+                if !self.is_bcu2() && !(subtype == 0x02 && already) {
                     self.memory
                         .allocate_additional(lsm_index, start, length as u32);
                 }
@@ -398,6 +418,9 @@ impl Device {
     /// BimM112), and ETS reads it before a partial download and refuses with
     /// "the loaded application does not match" on 0x00 (EK-E72, 2026-10-28).
     pub(super) fn sys7_status_bytes(&mut self, addr: u16, n: usize) -> Option<Vec<u8>> {
+        if self.is_bcu2() {
+            return None;
+        }
         let s7 = self.sys7.as_ref()?;
         let base = s7.profile.mm_lsm.status_addr;
         // The status region spans one octet per LSM index starting at `base`
