@@ -105,6 +105,16 @@ jobs:
           python3 tests-support/synthetic-products/test_generate.py
           python3 tests-support/synthetic-products/generate.py --check
 
+      # The offline tests of the capture tooling (#1119): knxtrace, and the
+      # ETS sweep's Mac-side scripts, which include the check that
+      # captures/synthetic/rows.txt is what manifest.json generates. No VM,
+      # no vendor data, no network: stdlib only (paramiko and pyyaml are
+      # imported lazily, needed only to reach the VM).
+      - name: Capture tooling tests
+        run: |
+          python3 tools/knxtrace/test_knxtrace.py
+          python3 tools/ets-sweep/test_ets_sweep.py
+
       # --all-targets makes clippy compile tests/benches/examples too, which
       # warms the exact same build graph the test job needs. Kept as its own
       # step so a clippy failure is clearly attributed.
