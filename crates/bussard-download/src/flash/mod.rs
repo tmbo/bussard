@@ -965,6 +965,26 @@ pub enum PlanError {
     #[error("application program {0:?} declares no mask version; cannot check compatibility")]
     MissingAppMask(String),
 
+    /// A complete download of a System B application whose load procedure
+    /// only writes interface-object properties: no master reset, no segment
+    /// allocation, no table load (issue #1071). bussard runs that shape only
+    /// on mask 0021 (issue #390) and refuses it on every other mask rather
+    /// than guess what the device's load state machines need.
+    #[error(
+        "the load procedure of {app} only writes interface-object properties (no master reset, \
+         no segment allocation, no table load); bussard downloads that shape only to a \
+         property-only device of mask 0021, not to {device:?} (mask {device_mask:04X}). Use ETS \
+         for this device"
+    )]
+    PropertyOnlyShape {
+        /// The application.
+        app: String,
+        /// The device's individual address.
+        device: String,
+        /// The mask the device reports.
+        device_mask: u16,
+    },
+
     /// The application has no load procedure to execute.
     #[error("application program {0:?} has no load procedures")]
     NoProcedure(String),
@@ -1793,8 +1813,17 @@ impl FlashPlan {
 
     /// Whether this plan only reads and writes interface-object properties
     /// (issue #390): a property-only procedure (the IPS 300 SREG, mask
-    /// 0021), executed by its own small executor.
+    /// 0021), executed by its own small executor. The mask decides, not only
+    /// the shape of the steps (issue #1071): on any other mask a plan of this
+    /// shape is refused by the planner ([`PlanError::PropertyOnlyShape`]).
     pub fn is_property_only(&self) -> bool {
+        self.device_mask == plan_props::PROPERTY_ONLY_MASK && self.has_property_only_steps()
+    }
+
+    /// Whether every step reads or writes an interface-object property (or
+    /// restarts), at least one of them a property step: the shape of a
+    /// property-only procedure, whatever the mask.
+    pub(crate) fn has_property_only_steps(&self) -> bool {
         self.sys7.is_none()
             && !self.steps.is_empty()
             && self.steps.iter().all(|s| {
