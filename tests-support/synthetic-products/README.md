@@ -268,6 +268,12 @@ stub master, and the application is the rendered id, since the signer's
 fingerprint never reaches the wire (`PID_PROGRAM_VERSION` carries the
 manufacturer, the application number and the version).
 
+`manifest.json` is the source of truth and `rows.txt` is generated from it:
+a pin, a coverage or a note changes in the manifest entry (`oracle`,
+`row_options`, `note`), then `python3 tools/ets-sweep/synthetic/capture.py
+--write-rows` rewrites `rows.txt` and both files are committed. CI fails
+when the two differ (`test_write_rows_reproduces_the_committed_rows`).
+
 CI replays every capture on each push (`dev/testing.md`, "CI"): the rows
 run `--check` against `bussard flash --dry-run`, knx-sim replays
 `requests.txt` and compares its memory with `image.json`
