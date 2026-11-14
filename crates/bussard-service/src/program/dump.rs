@@ -10,9 +10,10 @@
 //!   it (System 7 AbsSegments, `WriteMem`), else the target object and offset
 //!   (System B `WriteRelMem`: the device chooses the segment base), plus the
 //!   segment id, length and SHA-256 (and, for a System 7 segment, its
-//!   `write_mode`: `read-compare` or `blind`, issue #133; for a System B
-//!   segment its allocation pre-fills, the `prefill` octet and `fill_only`,
-//!   true when the executor streams none of it, issue #1088), and the octets a
+//!   `write_mode`: `read-compare` or `blind`, issue #133, and `fill_only`
+//!   when its mask owns no octet, issue #1117; for a System B segment its
+//!   allocation pre-fills, the `prefill` octet and `fill_only`, true when the
+//!   executor streams none of it, issue #1088), and the octets a
 //!   parameter placement wrote in it (`placed`: count and offset ranges, the
 //!   denominator of the oracle's coverage, issue #347); the allocation
 //!   records; and the table images with their addresses;
@@ -475,7 +476,7 @@ pub fn write_dump(
                     let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
                     let part = (image.offset != 0 || image.len != whole)
                         .then_some((image.offset, image.len));
-                    record["image"] = image_record(
+                    let (rec, mask) = image_record(
                         dir,
                         &mut used,
                         plan,
@@ -486,8 +487,20 @@ pub fn write_dump(
                         None,
                         None,
                         part,
-                    )?
-                    .0;
+                    )?;
+                    record["image"] = rec;
+                    // A segment whose mask owns no octet streams nothing: the
+                    // System 7 writer sends only the mask's owned runs, so
+                    // the allocation record goes out and no memory write
+                    // follows. ETS does the same with the 1310-octet
+                    // `MemType="2"` segment at 0x1C00 of LSM 3 in the sweep
+                    // captures `M-0048_A-4828`, `A-4858` and `A-855B`
+                    // (issue #1117).
+                    if plan.baseline(&image.segment_id).is_none()
+                        && mask.is_some_and(|m| m.iter().all(|&b| b == 0))
+                    {
+                        record["image"]["fill_only"] = json!(true);
+                    }
                     // How the executor streams it: `read-compare` reads each
                     // chunk and writes only differing ones (a mask without a
                     // Hawk VerifyMode, issue #133), `blind` writes it whole.
@@ -1038,6 +1051,67 @@ mod tests {
         assert_eq!(dumped_fill_only(1, 0)?, vec![json!(true)]);
         assert_eq!(dumped_fill_only(1, 255)?, vec![json!(false)]);
         assert_eq!(dumped_fill_only(0, 0)?, vec![Value::Null]);
+        Ok(())
+    }
+
+    /// The `fill_only` `write_dump` gives the System 7 code segment (`AS-4`
+    /// at 0x4600) of the testkit's mask 0705 application, its `<Data>`
+    /// followed by `extra` (a `<Mask>`, or nothing).
+    fn dumped_sys7_code_fill_only(extra: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        use bussard_testkit::sys7::{SYS7_APP_ID, SYS7_APP_XML};
+        let xml = SYS7_APP_XML.replace(
+            r#"<Data>CgsMDQ==</Data>"#,
+            &format!(r#"<Data>CgsMDQ==</Data>{extra}"#),
+        );
+        let app =
+            bussard_product::application::parse_application_program(SYS7_APP_ID, xml.as_bytes())?;
+        let plan = bussard_download::plan_flash(
+            &app,
+            "1.1.7",
+            0x0705,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
+        )?;
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-dump-sys7-{}-{}",
+            extra.len(),
+            std::process::id()
+        ));
+        write_dump(&dir, "1.1.7", 0x0705, &plan, &BTreeMap::new())?;
+        let text = std::fs::read_to_string(dir.join("plan.json"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let dump: Value = serde_json::from_str(&text)?;
+        let step = dump["steps"]
+            .as_array()
+            .ok_or("steps")?
+            .iter()
+            .find(|s| s["image"]["address"] == json!(0x4600))
+            .ok_or("the code segment's step")?
+            .clone();
+        Ok(step["image"]["fill_only"].clone())
+    }
+
+    #[test]
+    fn test_write_dump_marks_a_system7_segment_its_mask_owns_none_of_as_no_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1117: the System 7 writer sends only the octets the mask
+        // owns, so a segment under an all-zero `<Mask>` goes out as its
+        // allocation record and no memory write (as ETS does with the
+        // `MemType="2"` segment at 0x1C00 of `M-0048_A-4828`). One octet
+        // owned, or no mask, leaves the step unmarked.
+        assert_eq!(
+            dumped_sys7_code_fill_only("<Mask>AAAAAA==</Mask>")?,
+            json!(true)
+        );
+        assert_eq!(
+            dumped_sys7_code_fill_only("<Mask>AP8AAA==</Mask>")?,
+            Value::Null
+        );
+        assert_eq!(dumped_sys7_code_fill_only("")?, Value::Null);
         Ok(())
     }
 

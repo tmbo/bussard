@@ -1,0 +1,21 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Delay (s)",
+   "kind": "number",
+   "value": "500",
+   "key": "delay-s",
+   "model": 500,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "500",
+   "why": null,
+   "after": "500",
+   "shown": "500"
+  }
+ ]
+}

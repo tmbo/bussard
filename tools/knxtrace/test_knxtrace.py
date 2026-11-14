@@ -3210,6 +3210,42 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual([d["kind"] for d in r["load_controls"]["differences"]], ["ets-only", "ets-only"])
 
 
+    def test_statediff_end_state_skip_reads_identical(self):
+        # Issue #1127, run=flash: the base download left the device holding
+        # the image, ETS reloads it all (records, the image, the program
+        # version), bussard's resident check writes nothing. The end state
+        # is identical: memory, the final property value, the load state.
+        unload = bytes([4]) + bytes(9)
+        base = self.capture([(0x4000, b"\x02\x0a")], [self.START, self.SEG, self.DONE],
+                            props=[(1, 13, 1, 1, b"\x00\xfa\x27\x00\x10")])
+        ets = self.capture([(0x4000, b"\x02\x0a")], [unload, self.START, self.SEG, self.DONE],
+                           props=[(1, 13, 1, 1, b"\x00\xfa\x27\x00\x10")])
+        ours = self.capture([])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours, "--end-state")
+        self.assertEqual(r["system"], "flash")
+        self.assertEqual(r["verdict"], memimage.IDENTICAL, r)
+        self.assertEqual(r["properties"]["verdict"], memimage.IDENTICAL, r["properties"])
+        self.assertEqual(r["load_states"]["verdict"], memimage.IDENTICAL)
+        self.assertEqual(r["load_states"]["bussard"], {"1": "Loaded"})
+        self.assertEqual(r["execution"]["skip"], {"taken": True, "objects": 1, "kept": [1]})
+        self.assertIn("skip=taken(1 objects: obj1)", statediff.skip_text(r["execution"]))
+        # Without --end-state the program version ETS alone wrote differs
+        # (issue #1073), as a partial download judges it.
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(r["properties"]["verdict"], memimage.DIFFERS)
+
+    def test_statediff_end_state_load_state_differs(self):
+        # Issue #1127: bussard leaves the object unloaded where ETS loads it.
+        unload = bytes([4]) + bytes(9)
+        base = self.capture([(0x4000, b"\x02")], [self.START, self.SEG, self.DONE])
+        ets = self.capture([(0x4000, b"\x02")], [unload, self.START, self.SEG, self.DONE])
+        ours = self.capture([], [unload])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours, "--end-state")
+        self.assertEqual(r["verdict"], memimage.DIFFERS)
+        self.assertEqual(r["load_states"]["differences"],
+                         [{"object": 1, "bussard": "Unloaded", "ets": "Loaded"}])
+        self.assertFalse(r["execution"]["skip"]["taken"])
+
     def test_statediff_property_only_step_compares_elements(self):
         # Issue #944: a parameter-only download of a property-only program
         # writes no memory. ETS rewrites all 3 elements of obj 10 PID 55,
@@ -3522,6 +3558,34 @@ class TestSequence(unittest.TestCase):
         self.assertEqual(segs, [(0x4000, 0x4201, "lsm1"), (0x4400, 0x4440, "lsm3")])
         self.assertEqual(sequence.memory_target(0x4200, segs), "lsm1")
         self.assertEqual(sequence.memory_target(0x4440, segs), "mem 0x4400")
+
+    def test_memory_target_overlapping_segments_take_the_smallest_that_holds_the_write(self):
+        # Issue #1125: knx-sim places object 1 at its fixed base 0xA000,
+        # inside the 9974 octets of object 3 at 0x8000; ETS and bussard write
+        # object 1's 2 octets there after object 3's image.
+        segs = [(0x8000, 0x8000 + 9974, "obj3"), (0xA000, 0xA002, "obj1"), (0xC000, 0xC002, "obj2")]
+        self.assertEqual(sequence.memory_target(0xA000, segs, 2), "obj1")
+        # A chunk of object 3 that starts at 0xA000 but runs past object 1.
+        self.assertEqual(sequence.memory_target(0xA000, segs, 61), "obj3")
+        self.assertEqual(sequence.memory_target(0x9FEE, segs, 61), "obj3")
+        self.assertEqual(sequence.memory_target(0xC000, segs, 2), "obj2")
+        self.assertEqual(sequence.memory_target(0xB000, segs), "mem 0xB000")
+
+    def test_plan_operations_system7_segment_without_owned_octets_is_no_mem_write(self):
+        # Issue #1117: an AbsSegment whose mask owns no octet is its
+        # allocation record and no memory write (`fill_only` in plan.json).
+        plan = {"allocations": [{"kind": "abs-segment", "lsm": 3, "address": 0x1C00, "size": 1310},
+                                {"kind": "abs-segment", "lsm": 3, "address": 0x43FE, "size": 1146}],
+                "steps": [
+                    {"index": 1, "label": "1. [S7] alloc + stream segment (1310 bytes) to 0x1C00 on LSM 3",
+                     "load_controls": [{"data": "03001c00051ef1020000", "form": "property", "object": 3}],
+                     "image": {"address": 0x1C00, "length": 1310, "fill_only": True}},
+                    {"index": 2, "label": "2. [S7] alloc + stream segment (1146 bytes) to 0x43FE on LSM 3",
+                     "load_controls": [{"data": "030043fe047af1038000", "form": "property", "object": 3}],
+                     "image": {"address": 0x43FE, "length": 1146}},
+                ]}
+        self.assertEqual([t for t, _ in sequence.tokens(sequence.plan_operations(plan))],
+                         ["load-control obj3 abs-segment", "mem-write lsm3"])
 
     def test_compare_plan_read_compare_writes_are_no_tokens(self):
         plan = self.plan()
