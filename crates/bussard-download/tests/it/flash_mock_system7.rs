@@ -5371,3 +5371,100 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
     }
     Ok(())
 }
+
+/// A property written before a Master Reset is read back after the flash
+/// (issue #1065): the routing-count write of the Hager 0701 shape is a
+/// `written_range`, which `ExpectedProperty::from_flash_plan` compares. A
+/// load-state control written as a property before a reset is refused.
+#[test]
+fn test_plan_flash_sys7_property_write_before_a_reset_is_read_back()
+-> Result<(), Box<dyn std::error::Error>> {
+    use bussard_product::application::LoadOp;
+    let write = |obj: u32, pid: u32, data: Vec<u8>| LoadOp::WriteProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        prop_id: Some(pid),
+        inline_data: Some(data),
+        start_element: None,
+        count: Some(1),
+        verify: Some(false),
+        occurrence: None,
+    };
+    let plan_with = |op: LoadOp| -> Result<_, Box<dyn std::error::Error>> {
+        let mut app = app_with_master_resets()?;
+        let ops = &mut app.load_procedures[0].ops;
+        let connect = ops
+            .iter()
+            .position(|op| matches!(op, LoadOp::Connect))
+            .ok_or("the procedure connects")?;
+        ops.insert(connect + 1, op);
+        set_sys7_lsm_env(LsmMode::MemoryMapped);
+        Ok(plan_flash_default(
+            &app,
+            "1.1.99",
+            MASK_0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ))
+    };
+    // The routing count (object 0 PID 51 here), before the resets.
+    let plan = plan_with(write(0, 51, vec![0x60]))??;
+    let reset = plan
+        .steps
+        .iter()
+        .position(|s| matches!(s, FlashStep::MasterReset { .. }))
+        .ok_or("a reset")?;
+    let before: Vec<_> = plan.steps[..reset]
+        .iter()
+        .filter(|s| matches!(s, FlashStep::WriteProp { .. }))
+        .collect();
+    assert_eq!(before.len(), 1, "{:?}", plan.steps);
+    assert!(
+        before[0].written_range().is_some(),
+        "read back after the flash"
+    );
+    // A load-state control written as a property: refused.
+    let unload = bussard_mgmt::LoadControl::Unload.encode_full().to_vec();
+    let err = plan_with(write(1, 5, unload))?
+        .err()
+        .ok_or("a load-state write before a reset planned")?;
+    assert!(
+        err.to_string().contains("after a step it would undo"),
+        "{err}"
+    );
+    Ok(())
+}
+
+/// A procedure that does not load every machine to LoadCompleted after its
+/// Master Reset is refused (issue #1065).
+#[test]
+fn test_plan_flash_sys7_master_reset_needs_every_load_completed()
+-> Result<(), Box<dyn std::error::Error>> {
+    use bussard_product::application::LoadOp;
+    let mut app = app_with_master_resets()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let completed = ops
+        .iter()
+        .position(|op| matches!(op, LoadOp::LoadCompleted { .. }))
+        .ok_or("a completion")?;
+    ops.remove(completed);
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let err = plan_flash_default(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .err()
+    .ok_or("a reset without every completion planned")?;
+    assert!(
+        err.to_string().contains("not loaded to LoadCompleted"),
+        "{err}"
+    );
+    Ok(())
+}

@@ -284,14 +284,6 @@ impl StepExecutor for System7<'_> {
                 erase_code,
                 channel_number,
             } => {
-                // Refuse before the device erases anything when the session
-                // could not reconnect to it after the reboot, as the factory
-                // reset does.
-                if !session.can_reconnect() {
-                    return Err(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
-                        bussard_transport::TransportError::Closed,
-                    )));
-                }
                 super::execute::master_reset_confirmed(session, *erase_code, *channel_number)
                     .await?;
             }

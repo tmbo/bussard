@@ -705,11 +705,11 @@ pub(super) fn plan_flash_sys7(
             }
             LoadOp::WriteProp { .. } => {
                 let lowered_from = steps.len();
-                let declared_target =
-                    super::declare::declaration_for(&declared, step_no, op).is_some();
+                let declaration = super::declare::declaration_for(&declared, step_no, op);
+                let declared_target = declaration.is_some();
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
-                if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
+                if let Some(decl) = declaration {
                     let inline = match op {
                         LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
                         _ => None,
@@ -781,9 +781,9 @@ pub(super) fn plan_flash_sys7(
                     return Err(PlanError::UnsupportedOp {
                         op: format!(
                             "LdCtrlMasterReset after a step it would undo (step {step_no}, after \
-                             `{}`): only precondition checks, delays, earlier resets and property \
+                             \"{}\"): only precondition checks, delays, earlier resets and property \
                              writes (read back after the flash) may come before it on System 7",
-                            plan_label(before)
+                            super::labels::step_label(before, &super::labels::LabelCtx::default())
                         ),
                     });
                 }
@@ -813,6 +813,10 @@ pub(super) fn plan_flash_sys7(
         }
     }
 
+    // What a Master Reset erases is loaded again (issue #1065).
+    sys7_reset_reloaded(&steps).map_err(|why| PlanError::UnsupportedOp {
+        op: format!("LdCtrlMasterReset on System 7: {why}"),
+    })?;
     add_ets_prelude(&mut steps, &s7_profile);
 
     // The group-object descriptors live inside the application's own EEPROM
@@ -2070,33 +2074,60 @@ pub(super) fn mem_type_for_addr(addr: u32, profile: &bussard_mgmt::Sys7Profile) 
 
 /// Whether a lowered step may come before an `LdCtrlMasterReset` on System
 /// 7 (issue #1065): a step the reset cannot undo, or one whose effect the
-/// flash checks afterwards. Precondition checks and delays change nothing; an
-/// earlier reset is undone by nothing; a declaration sends nothing; a
-/// property write is read back after the flash (#390), so a reset that erased
+/// flash checks afterwards. Precondition checks, description reads and
+/// delays change nothing; an earlier reset is undone by nothing; a
+/// declaration sends nothing; a property write, held or sent, is read back
+/// after the flash and compared (`ExpectedProperty::from_flash_plan` takes
+/// every [`FlashStep::written_range`], issue #1073), so a reset that erased
 /// it fails the read-back. The Hager 0701 `M-0009_A-E0ED-10-0B6F` writes the
-/// routing count before its resets, as ETS sends it. Everything else (a load
-/// step, an allocation, a memory write, a function property call) refuses the
-/// reset.
+/// routing count before its resets, as ETS sends it. A load-state control
+/// written as a property, a load step, an allocation, a memory write and a
+/// function property call refuse the reset.
 fn sys7_kept_by_a_reset(step: &FlashStep) -> bool {
-    matches!(
-        step,
+    match step {
+        FlashStep::WriteProp { .. } => step.load_state_control().is_none(),
         FlashStep::CompareProp { .. }
-            | FlashStep::Sys7CompareMem { .. }
-            | FlashStep::Delay { .. }
-            | FlashStep::MasterReset { .. }
-            | FlashStep::DeclareProp { .. }
-            | FlashStep::WriteProp { .. }
-    )
+        | FlashStep::Sys7CompareMem { .. }
+        | FlashStep::Delay { .. }
+        | FlashStep::MasterReset { .. }
+        | FlashStep::DeclareProp { .. }
+        | FlashStep::DescribeProp { .. }
+        | FlashStep::FactoryHeldProp { .. } => true,
+        _ => false,
+    }
 }
 
-/// A short name of a step for a refusal.
-fn plan_label(step: &FlashStep) -> String {
-    let debug = format!("{step:?}");
-    debug
-        .split([' ', '{', '('])
-        .next()
-        .unwrap_or(&debug)
-        .to_string()
+/// The steps after each `MasterReset` of a lowered System 7 procedure load
+/// every load-state machine the procedure loads at all, through to
+/// `LoadCompleted` (issue #1065): what a reset erases is written again
+/// before the flash ends. `Err` names the machine left behind.
+fn sys7_reset_reloaded(steps: &[FlashStep]) -> std::result::Result<(), String> {
+    let loaded: BTreeSet<u32> = steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::Sys7StartLoading { lsm } => Some(*lsm),
+            _ => None,
+        })
+        .collect();
+    for (i, step) in steps.iter().enumerate() {
+        if !matches!(step, FlashStep::MasterReset { .. }) {
+            continue;
+        }
+        let completed: BTreeSet<u32> = steps[i..]
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Sys7LoadCompleted { lsm } => Some(*lsm),
+                _ => None,
+            })
+            .collect();
+        if let Some(lsm) = loaded.iter().find(|l| !completed.contains(l)) {
+            return Err(format!(
+                "LSM {lsm} is not loaded to LoadCompleted after the Master Reset at step {}",
+                i + 1
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A human label for a System 7 op that this engine cannot lower.

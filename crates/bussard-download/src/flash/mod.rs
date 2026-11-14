@@ -257,9 +257,15 @@ impl std::fmt::Display for PropObject {
 /// [`is_knx_virtual_application`].
 pub const KNX_VIRTUAL_MANUFACTURER: u16 = 0x00FA;
 
+/// The Master Reset erase code "FactoryReset" (KNX 3/5/2 §3.7.1.2.3 Table
+/// 4): everything, the individual address included. A procedure's reset with
+/// it is refused (issue #1065).
+pub(super) const ERASE_CODE_FACTORY_RESET: u8 = 0x02;
+
 /// The Master Reset erase code "ResetIA" (KNX 3/5/2 §3.7.1.2.3 Table 4): it
-/// resets the individual address and no loaded object.
-const ERASE_CODE_RESET_IA: u8 = 0x03;
+/// resets the individual address and no loaded object. A procedure's reset
+/// with it is refused (issue #1065).
+pub(super) const ERASE_CODE_RESET_IA: u8 = 0x03;
 
 /// The high octet of every KNX Virtual application number: the `A-25xx`
 /// programs of [`KNX_VIRTUAL_MANUFACTURER`] (DA.tp `A-2500`, KliX `A-2504`),
@@ -1523,10 +1529,10 @@ impl FlashPlan {
     pub fn erases_resident_objects(&self) -> bool {
         self.steps.iter().any(|s| match s {
             FlashStep::FactoryReset { .. } => true,
-            FlashStep::MasterReset { erase_code, .. } => !matches!(
-                *erase_code,
-                bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART | ERASE_CODE_RESET_IA
-            ),
+            // Codes 2 and 3 never reach a plan (issue #1065).
+            FlashStep::MasterReset { erase_code, .. } => {
+                *erase_code != bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART
+            }
             _ => false,
         })
     }
@@ -1591,28 +1597,33 @@ impl FlashPlan {
             .insert(at, FlashStep::KnxnetIpParameters { program });
     }
 
-    /// The index of the plan's closing restart: the first `Restart` or
-    /// `MasterReset` after the last load completion. A Master Reset before
-    /// the load (the Hager 0701 shape, issue #1065) is not one; a plan
-    /// without a closing restart has none.
+    /// The index of the plan's closing restart: the last `Restart` or
+    /// `MasterReset`, when it comes after every load step, whatever drives
+    /// the load states (a load-state control, a System 7 record, a typed
+    /// control, or a `WriteProp` of `PID_LOAD_STATE_CONTROL`, #947). A
+    /// Master Reset before the load (the Hager 0701 shape, issue #1065) is
+    /// not one. `None` when the plan ends without such a restart.
     fn terminal_restart(&self) -> Option<usize> {
-        let after = self
+        let last_load = self.steps.iter().rposition(|s| {
+            matches!(
+                s,
+                FlashStep::LoadCompleted { .. }
+                    | FlashStep::StartLoading { .. }
+                    | FlashStep::Unload { .. }
+                    | FlashStep::Sys7LoadCompleted { .. }
+                    | FlashStep::Sys7StartLoading { .. }
+                    | FlashStep::Sys7Unload { .. }
+                    | FlashStep::TypedLoadControl { .. }
+            ) || s.load_state_control().is_some()
+        });
+        let last_restart = self
             .steps
             .iter()
-            .rposition(|s| {
-                matches!(
-                    s,
-                    FlashStep::LoadCompleted { .. }
-                        | FlashStep::Sys7LoadCompleted { .. }
-                        | FlashStep::TypedLoadControl { .. }
-                )
-            })
-            .map_or(0, |i| i + 1);
-        self.steps
-            .get(after..)?
-            .iter()
-            .position(|s| matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }))
-            .map(|i| i + after)
+            .rposition(|s| matches!(s, FlashStep::Restart | FlashStep::MasterReset { .. }))?;
+        match last_load {
+            Some(load) if load > last_restart => None,
+            _ => Some(last_restart),
+        }
     }
 
     /// The KNXnet/IP parameter writes the plan carries (issue #455).
@@ -1829,7 +1840,6 @@ impl FlashPlan {
                 uncompared: &uncompared,
                 confirmed_restart: self.confirmed_restart,
                 sys7_read_compare: self.sys7_read_compare(),
-                sys7: self.is_sys7(),
                 parameters_only: self.is_parameters_only(),
                 baseline_address: Some(&self.baseline_address),
             },
@@ -2339,6 +2349,58 @@ mod tests {
             .filter(|s| matches!(s, FlashStep::KnxnetIpParameters { .. }))
             .count();
         assert_eq!(blocks, 1);
+        Ok(())
+    }
+
+    /// The closing restart after load-state controls written as properties
+    /// (#947, issue #1065): the KNXnet/IP writes go before it.
+    #[test]
+    fn test_add_knxnet_ip_anchors_after_property_driven_loads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{FlashStep, KnxnetIpProgram, PropObject};
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let completed = bussard_mgmt::LoadControl::LoadCompleted
+            .encode_full()
+            .to_vec();
+        plan.steps.retain(|s| {
+            !matches!(
+                s,
+                FlashStep::LoadCompleted { .. }
+                    | FlashStep::StartLoading { .. }
+                    | FlashStep::Unload { .. }
+                    | FlashStep::Restart
+                    | FlashStep::MasterReset { .. }
+            )
+        });
+        plan.steps.push(FlashStep::WriteProp {
+            object: PropObject::Index(8),
+            prop_id: 5,
+            value: completed,
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        });
+        plan.steps.push(FlashStep::Restart);
+        plan.add_knxnet_ip(KnxnetIpProgram {
+            object: PropObject::Index(6),
+            writes: Vec::new(),
+        });
+        let n = plan.steps.len();
+        assert!(matches!(
+            plan.steps[n - 2],
+            FlashStep::KnxnetIpParameters { .. }
+        ));
+        assert!(matches!(plan.steps[n - 1], FlashStep::Restart));
         Ok(())
     }
 

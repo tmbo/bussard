@@ -2696,7 +2696,10 @@ pub(super) fn lower_master_reset(
     };
     let erase_code = octet("EraseCode", erase_code.unwrap_or(1))?;
     let channel_number = octet("ChannelNumber", channel_number.unwrap_or(0))?;
-    if matches!(erase_code, 2 | 3) {
+    if matches!(
+        erase_code,
+        super::ERASE_CODE_FACTORY_RESET | super::ERASE_CODE_RESET_IA
+    ) {
         return Err(PlanError::UnsupportedOp {
             op: format!(
                 "LdCtrlMasterReset with EraseCode {erase_code} (step {step_no}): it resets the \
@@ -2712,17 +2715,17 @@ pub(super) fn lower_master_reset(
 }
 
 /// Whether ETS's handling of a Master Reset with `erase_code` on
-/// `channel_number` is in a capture: codes 1 and 4 on System B (the
-/// synthetic `syn-master-reset` and `syn-master-reset-code4`), 5 and 6 on
-/// System 7 (the Hager 0701 `M-0009_A-E0ED-10-0B6F`), channel 0 each. The
-/// plan names any other reset "not confirmed by a capture".
-pub(super) fn master_reset_captured(sys7: bool, erase_code: u8, channel_number: u8) -> bool {
-    channel_number == 0
-        && if sys7 {
-            matches!(erase_code, 5 | 6)
-        } else {
-            matches!(erase_code, 1 | 4)
-        }
+/// `channel_number` is in a capture. Every master reset in the sweep, house
+/// and synthetic captures (grep of `ops.txt` for `master-reset`, 2026-11-14)
+/// is channel 0 with one of four codes, on System B and System 7 alike:
+/// 1 (the closing confirmed restart of the Data Secure and many sweep
+/// programs, `syn-master-reset`), 4 (`syn-master-reset-code4`, KNX Virtual
+/// `M-00FA_A-2500-10-51CB`), 6 then 5 (the Hager 07B0 programs
+/// `M-0009_A-E0D0..E0D3`, `A-E0EE`, `A-E0F1`, `A-E0F2`, `A-E801`, `A-E802`,
+/// the 0701 `M-0009_A-E0ED-10-0B6F` and `A-20B6-11-52E9`, `syn-property-nopar`).
+/// The plan names any other reset "not confirmed by a capture".
+pub(super) fn master_reset_captured(erase_code: u8, channel_number: u8) -> bool {
+    channel_number == 0 && matches!(erase_code, 1 | 4 | 5 | 6)
 }
 
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).

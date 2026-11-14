@@ -2216,6 +2216,14 @@ pub(super) async fn master_reset_confirmed<C: Connector>(
     erase_code: u8,
     channel_number: u8,
 ) -> Result<(), WriteError> {
+    // Refuse before the device erases anything when the session could not
+    // reconnect to it after the reboot, as the factory reset does (issue
+    // #1065), on System B and System 7 alike.
+    if !session.can_reconnect() {
+        return Err(WriteError::Mgmt(MgmtError::Transport(
+            bussard_transport::TransportError::Closed,
+        )));
+    }
     match bussard_mgmt::master_reset(session.l4(), erase_code, channel_number).await {
         Ok(response) => {
             session

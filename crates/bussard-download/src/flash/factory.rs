@@ -47,12 +47,17 @@ use super::{FlashStep, PropObject};
 use bussard_product::application::ApplicationProgram;
 
 /// Whether a master reset with `erase_code` on `channel` resets every
-/// channel's parameters to their default: the factory resets (2, and 7
-/// without the individual address) and ResetParam (5) on channel 0, KNX
+/// channel's parameters to their default: the factory reset without the
+/// individual address (7) and ResetParam (5) on channel 0 (the factory reset
+/// 2 is refused at plan time, issue #1065), KNX
 /// 3/5/2 §3.7.1.2.3, Table 4 (a channel other than 0 resets that channel
 /// only).
 pub(super) fn resets_parameters(erase_code: u8, channel: u8) -> bool {
-    channel == 0 && matches!(erase_code, 2 | 5 | 7)
+    channel == 0
+        && matches!(
+            erase_code,
+            5 | bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA
+        )
 }
 
 /// What the procedure has done to the device's properties so far, as the
@@ -287,7 +292,8 @@ mod tests {
     #[test]
     fn test_resets_parameters_names_the_factory_and_parameter_resets() {
         let resets: Vec<u8> = (0..=8).filter(|c| resets_parameters(*c, 0)).collect();
-        assert_eq!(resets, vec![2, 5, 7]);
+        // 2 never reaches a plan (refused, issue #1065).
+        assert_eq!(resets, vec![5, 7]);
         assert!(!resets_parameters(5, 1));
     }
 
