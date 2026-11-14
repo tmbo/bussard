@@ -39,8 +39,9 @@ captures read.
 the base image (bussard issue #1127, the oracle's `run=flash` rows: knx-sim
 replays ETS's first download, then bussard flashes the same application
 and the sim records it). What must match is the state the device ends
-with, not who wrote it: bussard's resident check writes nothing when the
-device already holds the download, where ETS re-runs the whole procedure.
+with, not who wrote it: bussard keeps the group-object table when its MCB
+matches (as ETS does in its same-application downloads of the house
+devices), where a capture may show ETS reloading it.
 So the property elements compare on their final values only (the
 one-side-only rule of #1073 does not apply), the load state each object
 ends in is compared (`load_states`, from the load-control records of the
@@ -305,18 +306,19 @@ def execution(ets: Optional[DeviceOps], bussard: Optional[DeviceOps],
               order: Dict[str, object]) -> Dict[str, object]:
     """What each side executed in the step, next to each other (bussard
     issue #1127): the state-changing operations after normalisation, and
-    `skip`: `taken` when bussard's step wrote nothing (no memory, no load
-    control, no property, no restart) while ETS's completed the loads of
-    `objects` objects; `not-taken` otherwise. Reported, never judged."""
+    `skip`: `taken` when bussard's step left out the load of objects ETS's
+    step loaded (`objects` of them, indices in `kept`: the group-object
+    table bussard keeps when its MCB matches), else not taken. Reported; a
+    `run=flash` row pins it with `skip=`."""
     def loads(ops: Optional[DeviceOps]) -> List[int]:
         return sorted({o for r in _records(ops) if str(r["event"]) == "load-completed"
                        for o in [memimage._lc_object(r)] if o is not None})
     ours_ops = sequence.operations(bussard) if bussard is not None else []
-    writes_any = any(e["op"] in ("load-control", "prop-write", "mem-write", "restart", "fcall")
-                     for e in ours_ops)
-    ets_loads = loads(ets)
-    skip = {"taken": bussard is not None and bool(ours_ops) and not writes_any and bool(ets_loads),
-            "objects": len(ets_loads)}
+    # The objects ETS loaded and bussard did not touch (its step ran: it has
+    # an operation list).
+    touched = {memimage._lc_object(r) for r in _records(bussard)}
+    kept = [o for o in loads(ets) if o not in touched] if ours_ops else []
+    skip = {"taken": bool(kept), "objects": len(kept), "kept": kept}
     return {
         "skip": skip,
         "bussard_tokens": order.get("bussard_tokens"),
@@ -331,7 +333,8 @@ def skip_text(exe: Optional[Dict[str, object]]) -> str:
     if not exe:
         return ""
     skip = exe.get("skip") or {}
-    text = "  skip=taken(%d objects)" % skip.get("objects", 0) if skip.get("taken") else "  skip=not-taken"
+    text = ("  skip=taken(%d objects: %s)" % (skip.get("objects", 0), ",".join("obj%d" % o for o in skip.get("kept", [])))
+            if skip.get("taken") else "  skip=none")
     return text + "  exec=bussard %s/ETS %s ops" % (exe.get("bussard_tokens"), exe.get("ets_tokens"))
 
 

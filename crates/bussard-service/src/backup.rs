@@ -40,7 +40,7 @@ use bussard_download::backup::{
 };
 use bussard_download::{LiveRead, Sys7TableBases};
 use bussard_mgmt::{
-    L4Channel, Layer4Connection, MaskProfile, read_mcb_table, read_memory_range,
+    L4Channel, Layer4Connection, MaskProfile, read_mcb_entries_for, read_memory_range,
     read_table_reference, system_type,
 };
 use bussard_model::{IndividualAddress, Model};
@@ -392,11 +392,24 @@ async fn read_application_state<Ch: L4Channel>(
             );
         }
     };
-    let length = match read_mcb_table(l4, app_obj, 1, 1, None).await {
-        Ok(entries) => entries
-            .first()
+    // The segment is the sum of the MCB entries (Resources 03_05_01
+    // §4.2.27: the table subdivides it), read from entry 1 as ETS reads them:
+    // the Jung F50 reports its application as 6148 + 4 octets (issue #89),
+    // so entry 1 alone would back up a truncated segment.
+    let length = match read_mcb_entries_for(l4, app_obj, usize::MAX).await {
+        Ok(entries) if !entries.is_empty() => entries
+            .iter()
             .map(|e| e.segment_size as usize)
-            .unwrap_or(0),
+            .fold(0usize, usize::saturating_add),
+        Ok(_) => {
+            return (
+                application,
+                None,
+                ParameterStatus::not_captured(format!(
+                    "object {app_obj} did not answer PID_MCB_TABLE (the segment size): no entry 1"
+                )),
+            );
+        }
         Err(err) => {
             return (
                 application,

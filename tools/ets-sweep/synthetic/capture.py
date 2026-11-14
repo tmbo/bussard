@@ -675,6 +675,12 @@ def write_rows(entries: list[dict], keep_hand_set: bool = True) -> None:
         row = oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why,
                          e["variant"], e.get("row_options", ""))
         rows.append(kept_options(row, previous.get(row.split("|")[1], []), e["oracle"]))
+        # A second row over the same capture (`flash_rows`, bussard issue
+        # #1127): `run=flash` executes bussard over the device the base
+        # capture left. Written by hand in the manifest, never derived.
+        for extra in e.get("flash_rows", []):
+            rows.append(oracle_row(e["product"], e["application"], extra.get("coverage", ""), "",
+                                   extra.get("note", ""), e["variant"], extra["row_options"]))
     ROWS.write_text(head + "\n".join(rows) + "\n")
 
 
@@ -1343,6 +1349,10 @@ def capture_variant(product: str, variant: str, args) -> int:
         "note": previous.get("note"),
         "oracle": {k: verdict[k] for k in ORACLE_KEYS if k in verdict} or None,
     }
+    # The hand-written run=flash rows over this capture (#1127) survive a
+    # re-capture.
+    if previous.get("flash_rows"):
+        entry["flash_rows"] = previous["flash_rows"]
     for p in involved:
         if p != product:
             entry.setdefault("base_xml_sha256", {})[p] = xml_sha256(p)

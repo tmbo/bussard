@@ -3227,8 +3227,8 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual(r["properties"]["verdict"], memimage.IDENTICAL, r["properties"])
         self.assertEqual(r["load_states"]["verdict"], memimage.IDENTICAL)
         self.assertEqual(r["load_states"]["bussard"], {"1": "Loaded"})
-        self.assertEqual(r["execution"]["skip"], {"taken": True, "objects": 1})
-        self.assertIn("skip=taken(1 objects)", statediff.skip_text(r["execution"]))
+        self.assertEqual(r["execution"]["skip"], {"taken": True, "objects": 1, "kept": [1]})
+        self.assertIn("skip=taken(1 objects: obj1)", statediff.skip_text(r["execution"]))
         # Without --end-state the program version ETS alone wrote differs
         # (issue #1073), as a partial download judges it.
         r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)

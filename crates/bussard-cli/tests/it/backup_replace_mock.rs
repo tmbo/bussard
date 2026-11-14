@@ -85,6 +85,9 @@ struct MockDevice {
     tables: HashMap<u8, TableObject>,
     program_version: [u8; 5],
     parameters: Vec<u8>,
+    /// The entry sizes of the application's `PID_MCB_TABLE`; one entry
+    /// over the parameters when empty.
+    mcb_split: Vec<u32>,
     /// Per-table-object allocated segment base (`LdCtrlRelSegment`).
     segments: HashMap<u8, u32>,
     /// Device memory written with `A_Memory_Write`.
@@ -135,6 +138,7 @@ impl MockDevice {
             tables,
             program_version: [0x00, 0x83, 0x00, 0x42, 0x10],
             parameters: (0u8..40).collect(),
+            mcb_split: Vec::new(),
             segments: HashMap::new(),
             memory: HashMap::new(),
             writes: 0,
@@ -251,10 +255,24 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
             (APP_OBJECT, PID_LOAD_STATE_CONTROL) => answer(&[LS_LOADED]),
             (APP_OBJECT, PID_TABLE_REFERENCE) => answer(&PARAM_BASE.to_be_bytes()),
             (APP_OBJECT, PID_PROGRAM_VERSION) => answer(&dev.program_version),
+            // Entry `start` of the table (element 0 is the entry count, KNX
+            // 3/3/7 §3.4.4.1): one entry over the parameters, or the sizes
+            // of `mcb_split` (issue #1128).
             (APP_OBJECT, PID_MCB_TABLE) => {
-                let mut mcb = (dev.parameters.len() as u32).to_be_bytes().to_vec();
-                mcb.extend_from_slice(&[0x00, 0xFF, 0x00, 0x00]);
-                answer(&mcb)
+                let sizes = if dev.mcb_split.is_empty() {
+                    vec![dev.parameters.len() as u32]
+                } else {
+                    dev.mcb_split.clone()
+                };
+                match (start, sizes.get(usize::from(start).wrapping_sub(1))) {
+                    (0, _) => answer(&(sizes.len() as u16).to_be_bytes()),
+                    (_, Some(size)) => {
+                        let mut mcb = size.to_be_bytes().to_vec();
+                        mcb.extend_from_slice(&[0x00, 0xFF, 0x00, 0x00]);
+                        answer(&mcb)
+                    }
+                    _ => empty,
+                }
             }
             (4, PID_TABLE) if start == 0 => answer(&4u16.to_be_bytes()),
             (1 | 2, PID_TABLE_REFERENCE) => {
@@ -656,6 +674,32 @@ fn test_backup_reads_every_model_device_and_never_writes() -> TestResult {
     let expected_hex: String = (0u8..40).map(|b| format!("{b:02X}")).collect();
     assert_eq!(backup["parameters"]["bytes"], expected_hex);
     assert_eq!(backup["parameters"]["base"], PARAM_BASE);
+    Ok(())
+}
+
+/// Issue #1128: a segment whose `PID_MCB_TABLE` has two entries (the Jung
+/// F50 reports 6148 + 4 octets) is backed up whole: the entries' sizes add
+/// up to the segment length.
+#[test]
+fn test_backup_sums_a_multi_entry_mcb_table() -> TestResult {
+    let mut device = MockDevice::system_b("1.1.4", "MDT-JAL0410", &[], &[]);
+    device.mcb_split = vec![36, 4];
+    let bench = Bench::start("backup", vec![device])?;
+    write_model(&bench.model(), &[])?;
+    let out_dir = bench.tmp.join("snap");
+    let out = bench.bussard(&["backup", "--json", "--out", out_dir.to_str().ok_or("path")?])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let manifest = manifest_in(&out_dir)?;
+    let dev = manifest["devices"]
+        .as_array()
+        .ok_or("devices")?
+        .iter()
+        .find(|d| d["address"] == "1.1.4")
+        .ok_or("1.1.4 row")?
+        .clone();
+    assert_eq!(dev["parameters"]["captured"], true, "{dev}");
+    assert_eq!(dev["parameters"]["length"], 40, "{dev}");
     Ok(())
 }
 

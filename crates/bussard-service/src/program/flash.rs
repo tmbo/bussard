@@ -460,9 +460,9 @@ pub async fn execute(
     }
     if exec.differential {
         observer.event(Event::Note(Note::Warn(
-            "resident check: when every object the download loads already holds this image (MCB \
-             entries, Loaded) and the program version matches, nothing is written and the \
-             read-back runs; otherwise the full download runs (pass --full to always run it)"
+            "differential download: the group-object table is kept when its MCB entries match \
+             the image, as ETS keeps it; every other object is reloaded (pass --full to reload \
+             everything)"
                 .to_string(),
         )));
     }

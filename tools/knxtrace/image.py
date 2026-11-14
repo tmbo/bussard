@@ -585,7 +585,16 @@ def resident_state(ops: DeviceOps) -> Optional[Dict[str, object]]:
         elif pid == PID_PROGRAM_VERSION:
             versions[obj] = op.data
         elif pid == PID_MCB_TABLE and len(op.data) >= MCB_ENTRY_LEN:
-            mcb[obj] = op.data[:MCB_ENTRY_LEN]
+            # Every entry read, in element order (bussard issue #1128): a
+            # read from entry 1 starts the object's table again, a read of
+            # the next element extends it. Element 0 (the entry count) is
+            # not an entry.
+            index = f.get("index") or 0
+            whole = op.data[:len(op.data) - len(op.data) % MCB_ENTRY_LEN]
+            if index == 1:
+                mcb[obj] = whole
+            elif index > 1 and len(mcb.get(obj, b"")) == (index - 1) * MCB_ENTRY_LEN:
+                mcb[obj] = mcb[obj] + whole
     if not states:
         return None
     out: Dict[str, object] = {

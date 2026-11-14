@@ -20,7 +20,9 @@
 # pre-flight probe reads live: knxtrace writes it as `resident.json` and the
 # dry run plans against it (`--resident`, issue #490), so a device that
 # already holds the application gets the product's `par` load procedure and
-# an object whose MCB already matches is skipped, as on the bus. A capture
+# the group-object table is kept when the MCB ETS read matches, as ETS keeps
+# it on the bus (issue #1127; the application object and the address and
+# association tables are always reloaded). A capture
 # in which ETS ran its Unload command before the download (knxtrace's
 # `unload_pass`) is planned with `flash --full`, bussard's equivalent, which
 # keeps the System 7 pre-download pass (issue #488).
@@ -167,12 +169,16 @@
 #                                property values, each object's load state.
 #                                Shown, never judged: skip=taken(n objects)
 #                                when bussard wrote nothing while ETS loaded
-#                                n objects (the resident check), else
+#                                n objects (the keep), else
 #                                skip=not-taken, and exec=bussard a/ETS b
 #                                ops; diff.txt lists both operation lists.
-#                                ORDER and COUNT differ by design when the
-#                                skip is taken, so seq= and loadctl= are
-#                                not pinned on these rows
+#                                skip=taken|none pins it: taken when bussard
+#                                wrote nothing while ETS loaded objects,
+#                                none otherwise. A kept object (the
+#                                group-object table, as ETS keeps it) makes
+#                                ORDER and COUNT differ from a capture where
+#                                ETS reloaded it; pin seq= and loadctl=
+#                                only where the row shows ETS's order
 #                                base=A,B      the captures that led to the step,
 #                                              in order (comma-separated)
 #                                dir=MODEL     the model of the step (its links)
@@ -687,7 +693,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" seq="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" word
+  local expect="" confirmed="" props="" loadctl="" seq="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" skip="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -704,7 +710,8 @@ run_row() {
       state=*)     devstate="${word#state=}" ;;
       keyring=*)   rowkeyring="${word#keyring=}" ;;
       rev=*)       rev="${word#rev=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., seq=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=...)" ;;
+      skip=*)      skip="${word#skip=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., seq=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=..., skip=...)" ;;
     esac
   done
   local scope_args=()
@@ -714,6 +721,13 @@ run_row() {
     ""|identical|differs|not-comparable) ;;
     *) die "$device: unknown seq=$seq (identical, differs or not-comparable)" ;;
   esac
+  case "$skip" in
+    ""|taken|none) ;;
+    *) die "$device: unknown skip=$skip (taken or none)" ;;
+  esac
+  if [ -n "$skip" ] && [ "$run" != flash ]; then
+    die "$device: skip= pins the keep of a run=flash row"
+  fi
   case "$devstate" in
     ""|fresh|loaded) ;;
     *) die "$device: unknown state=$devstate (fresh or loaded)" ;;
@@ -732,15 +746,16 @@ run_row() {
 
   # The row's recorded coverage and expected verdict, for the summary and
   # --check (written next to the result, whatever the result is).
-  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" "$seq" <<'PY'
+  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" "$seq" "$skip" <<'PY'
 import json, sys
-path, recorded, expect, confirmed, props, loadctl, seq = sys.argv[1:8]
+path, recorded, expect, confirmed, props, loadctl, seq, skip = sys.argv[1:9]
 with open(path, "w", encoding="utf-8") as fh:
     json.dump({"recorded_coverage": float(recorded.rstrip("% ")) if recorded else None,
                "expect": expect or "identical", "expect_confirmed": confirmed or None,
                "expect_props": props or None,
                "expect_loadctl": loadctl or None,
                "expect_seq": seq or None,
+               "expect_skip": skip or None,
                "skipped": None}, fh)
 PY
   if [ -z "$run" ] && { [ -z "$product" ] || [ "$product" = "-" ]; }; then
@@ -1046,6 +1061,14 @@ for dev in devices:
         failures.append("%s: operation order %s, expected %s%s" % (
             dev, seq.get("verdict", "not-comparable"), want_seq,
             " (first: %s)" % seq["first"]["text"] if seq.get("first") else ""))
+    # run=flash (issue #1127): skip=taken pins that bussard's step wrote
+    # nothing an object ETS loaded needed, skip=none that it kept nothing.
+    want_skip = row.get("expect_skip")
+    if want_skip:
+        exe = r.get("execution") or {}
+        got = "taken" if (exe.get("skip") or {}).get("taken") else ("none" if exe else "not-comparable")
+        if got != want_skip:
+            failures.append("%s: keep %s, expected skip=%s" % (dev, got, want_skip))
     want = row.get("expect_confirmed")
     if want and conf.get("verdict", "not-comparable") != want:
         failures.append("%s: confirmed %s, expected %s" % (

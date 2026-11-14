@@ -2116,22 +2116,24 @@ pub struct FlashOptions {
     /// Skip re-downloading an object whose resident image already matches
     /// (issue #73 item 2 — the MCB-CRC re-download skip).
     ///
-    /// ETS's group-B re-download captures streamed ZERO body bytes: before
-    /// touching an object, ETS read its `PID_MCB_TABLE` (PID 27), saw the
-    /// resident image's size and CRC already matched the image it was about to
-    /// stream, and skipped the object's whole re-load (an app-unload flips load
-    /// state without erasing flash, so the resident image is intact). When this
-    /// is `true`, bussard does the same: a pre-pass reads each to-be-written
-    /// object's resident MCB and, on a size+CRC match, skips that object's
+    /// In a download onto a device that already holds the same application,
+    /// ETS reads `PID_MCB_TABLE` of the group-object table (object 3) and the
+    /// application object before the first unload and leaves the group-object
+    /// table alone when it matches, while objects 4, 2 and 1 are reloaded
+    /// (house captures `1-1-5-no-secure-ga`, `secure-1-1-47`, `secure-1-1-48`,
+    /// `taster-1-1-12-unsecure-0-0-6`, issue #1127). Where the product
+    /// declares no MCB check it reads none and reloads every object. When this
+    /// is `true`, bussard does the same: it reads the group-object table's MCB
+    /// entries from entry 1 (issue #1128) and, when they describe the image
+    /// and the object is `Loaded`, leaves out its
     /// `Unload`/`StartLoading`/`AllocateSegment`/`WriteRelMem`/`LoadCompleted`
-    /// steps — leaving the intact resident load untouched — while still running
-    /// its `LoadImageProp` MCB re-verify.
+    /// while still running its `LoadImageProp` check. The application object
+    /// and the address and association tables are always reloaded.
     ///
-    /// It NEVER skips a genuinely-needed write: a fresh/blank device (no MCB
-    /// entry), any object whose resident size or CRC differs, and any object that
-    /// does not currently report `Loaded` full-streams exactly as before. When `false` (the conservative default, and every
-    /// path validated byte-for-byte against DA.tp, which was a fresh flash whose
-    /// blank device never matches) every object is always full-streamed.
+    /// It never keeps an object that needs the write: a fresh device (no MCB
+    /// entry), a differing entry, a CRC control bit 0, a state other than
+    /// `Loaded` or a refused read reloads it, and a failure after the keep
+    /// runs the download again in full. When `false` every object is reloaded.
     pub skip_matching_mcb: bool,
 }
 
