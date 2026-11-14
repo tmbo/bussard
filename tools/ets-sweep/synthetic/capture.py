@@ -612,13 +612,15 @@ def carried_options(derived: str, previous: str) -> str:
 
 
 def row_options_of(text: str) -> dict[str, list[str]]:
-    """The options of each row in a rows file, by its capture path."""
+    """The options of each row in a rows file, by its capture path. A capture
+    with a second row (`flash_rows`, #1127) keeps its first row's options:
+    the second row is written from the manifest, never carried."""
     out = {}
     for line in text.splitlines():
         if line.startswith("#") or "|" not in line:
             continue
         fields = line.split("|")
-        out[fields[1].strip()] = fields[6].split() if len(fields) > 6 else []
+        out.setdefault(fields[1].strip(), fields[6].split() if len(fields) > 6 else [])
     return out
 
 
