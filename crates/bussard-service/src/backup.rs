@@ -392,7 +392,7 @@ async fn read_application_state<Ch: L4Channel>(
             );
         }
     };
-    let length = match read_mcb_table(l4, app_obj, 0, 1, None).await {
+    let length = match read_mcb_table(l4, app_obj, 1, 1, None).await {
         Ok(entries) => entries
             .first()
             .map(|e| e.segment_size as usize)

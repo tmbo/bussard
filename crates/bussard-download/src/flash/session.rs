@@ -1714,6 +1714,43 @@ pub(super) async fn read_memory_resumable<C: Connector>(
     resume!(session, load::read_memory(session.l4(), addr, len).await)
 }
 
+/// Session-aware, resume-on-drop [`bussard_mgmt::read_mcb_entries_for`]
+/// (issue #1128): reads, so replaying them is safe.
+pub(super) async fn read_mcb_entries_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    len: usize,
+) -> Result<Vec<bussard_mgmt::McbEntry>, WriteError> {
+    resume!(
+        session,
+        bussard_mgmt::read_mcb_entries_for(session.l4(), obj, len).await
+    )
+}
+
+/// Session-aware, resume-on-drop [`super::props::read_property_value`] of
+/// an object named by index (issue #1127): a read, so replaying it is safe.
+pub(super) async fn read_property_value_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    prop_id: u32,
+    start: u16,
+    count: u16,
+    elem: usize,
+) -> Result<Vec<u8>, WriteError> {
+    resume!(
+        session,
+        super::props::read_property_value(
+            session.l4(),
+            super::PropObject::Index(u32::from(obj)),
+            prop_id,
+            start,
+            count,
+            elem,
+        )
+        .await
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

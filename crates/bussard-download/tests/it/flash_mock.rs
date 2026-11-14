@@ -1010,6 +1010,15 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     prop_response(oi, pid, 0, start, &[]),
                 );
             }
+            // Element 0 is the number of entries (KNX 3/3/7 §3.4.4.1), never
+            // an entry (issue #1128): this mock holds one per object. A tool
+            // that reads it as entry 1 gets two octets and no match.
+            if start == 0 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &1u16.to_be_bytes()),
+                );
+            }
             // Multi-object flash: every loadable object has its own segment
             // and MCB, valid while that object is Loaded.
             if s.multi_object

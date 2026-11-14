@@ -241,11 +241,13 @@ impl Device {
             // branch below, the same signal the Jung sent.
             if count > 1 {
                 None
+            } else if start == 0 {
+                // Element 0 is the current number of entries (Application
+                // Layer 03_03_07 §3.4.4.1), two octets; ETS never reads it
+                // (bussard issue #1128).
+                Some(self.mcb_entry_count(object).to_be_bytes().to_vec())
             } else {
-                // Start index 0 answers entry 1, as it always did here:
-                // bussard's resident-MCB pre-pass reads it that way (its
-                // standard meaning, the element count, is not modelled).
-                self.mcb_entry_at(object, start.max(1))
+                self.mcb_entry_at(object, start)
             }
         } else {
             self.objects
@@ -925,6 +927,8 @@ mod tests {
             vec![0, 0, 0, 1, 0x01, 0x33, crc2[0], crc2[1]]
         );
         assert!(read(&mut dev, 3)?.is_empty(), "no third entry");
+        // Element 0 is the number of entries, not entry 1 (bussard #1128).
+        assert_eq!(read(&mut dev, 0)?, vec![0, 2]);
         Ok(())
     }
 

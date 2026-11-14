@@ -157,6 +157,22 @@
 #                                change into a device with no links, which
 #                                `apply` refuses (the `partial` run variant of
 #                                a synthetic product, epic #596)
+#                                run=flash: what bussard EXECUTES over a
+#                                device that holds the image (issue #1127):
+#                                knx-sim replays base= (ETS's first download),
+#                                `bussard flash` runs the same application
+#                                against it (dir=, else --dir), and
+#                                `knxtrace statediff --end-state` judges the
+#                                state the device ends with: memory, final
+#                                property values, each object's load state.
+#                                Shown, never judged: skip=taken(n objects)
+#                                when bussard wrote nothing while ETS loaded
+#                                n objects (the resident check), else
+#                                skip=not-taken, and exec=bussard a/ETS b
+#                                ops; diff.txt lists both operation lists.
+#                                ORDER and COUNT differ by design when the
+#                                skip is taken, so seq= and loadctl= are
+#                                not pinned on these rows
 #                                base=A,B      the captures that led to the step,
 #                                              in order (comma-separated)
 #                                dir=MODEL     the model of the step (its links)
@@ -569,6 +585,8 @@ apply_row() {
     not_comparable "$dir" "$device" "no knx-sim at $sim_bin (cargo build in knx-sim/, or export KNX_SIM_BIN)"
     return 0
   fi
+  # run=flash plans with --dir when the row names no model of its own.
+  [ "$how" = flash ] && [ -z "$model" ] && model="$PLAN_DIR"
   if [ -z "$model" ] || [ ! -d "$model" ]; then
     not_comparable "$dir" "$device" "run=apply needs dir=<model of the step>${model:+ ($model not found)}"
     return 0
@@ -631,17 +649,32 @@ PY
   [ "$how" = apply-line ] && target=(apply --line "${device%.*}")
   # run=params: the parameters-only download (issue #543).
   [ "$how" = params ] && target=(flash "$device" --parameters-only)
+  # run=flash: a plain flash of the same application (issue #1127).
+  local end_state=()
+  if [ "$how" = flash ]; then
+    target=(flash "$device" --product "$prod")
+    [ -n "$application" ] && target+=(--application "$application")
+    end_state=(--end-state)
+  fi
   local rc=0
   env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" --gateway "127.0.0.1:$port" \
     "${target[@]}" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   # A refused apply writes nothing; the state comparison then says so.
   [ "$rc" = 0 ] || note "bussard ${target[0]} exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+  # A flash that failed or was refused may have written nothing, which over
+  # a device that holds the image reads as the end state ETS left: never a
+  # verdict (issue #1127).
+  if [ "$rc" != 0 ] && [ "$how" = flash ]; then
+    not_comparable "$dir" "$device" "bussard flash exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+    return 0
+  fi
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
     --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} \
-    --json >"$dir/diff.json" || true
+    ${end_state+"${end_state[@]}"} --json >"$dir/diff.json" || true
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
-    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} >"$dir/diff.txt" || true
+    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} \
+    ${end_state+"${end_state[@]}"} >"$dir/diff.txt" || true
   sed 's/^/  /' "$dir/diff.txt"
 }
 
@@ -686,8 +719,8 @@ run_row() {
     *) die "$device: unknown state=$devstate (fresh or loaded)" ;;
   esac
   case "$run" in
-    ""|secure-on|secure-off|apply|apply-line|params) ;;
-    *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line or params)" ;;
+    ""|secure-on|secure-off|apply|apply-line|params|flash) ;;
+    *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line, params or flash)" ;;
   esac
   if [ -n "$rev" ] && { [ -n "$rowdir" ] || [ -n "$run" ]; }; then
     die "$device: rev= plans with --dir at a revision; it does not combine with dir= or run="
@@ -720,7 +753,7 @@ PY
     mark_skipped "$dir" "capture not found"
     return 0
   fi
-  if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ]; then
+  if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ] || [ "$run" = flash ]; then
     apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run" "$rowkeyring"
     return 0
   fi
@@ -961,6 +994,17 @@ for dev in devices:
         detail += "  seq=differs(first: %s)" % (seq.get("first") or {}).get("text", "?")
     else:
         detail += "  seq=n/c"
+    # run=flash (issue #1127): each object's load state at the end, judged
+    # as part of the headline by statediff; the executed operations shown.
+    lsm = r.get("load_states") or {}
+    if lsm.get("verdict") == "identical":
+        detail += "  lsm=ok(%d)" % lsm.get("compared", 0)
+    elif lsm.get("verdict") == "differs":
+        detail += "  lsm=differs(%s)" % ", ".join(
+            "obj%s %s/%s" % (d["object"], d["bussard"], d["ets"]) for d in lsm.get("differences", [])[:4])
+    if r.get("execution"):
+        import statediff  # noqa: E402
+        detail += statediff.skip_text(r["execution"])
     if r.get("verdict") == "not-comparable" and parts and not r.get("reason", "").startswith("thin"):
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
     # The headline counts the property writes (issue #669): identical memory

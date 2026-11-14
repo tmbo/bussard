@@ -147,11 +147,14 @@ impl Recorded {
         !self.state.objects.is_empty()
     }
 
-    /// Drops the re-loads the executor's resident-MCB skip would drop on
-    /// this device ([`FlashPlan::skip_resident_matches`]). An object whose
-    /// load state was not recorded counts as `Loaded` when its MCB was: ETS
-    /// reads the MCB of the objects it keeps and not their load state, and
-    /// the recorded MCB is the evidence the object holds that image.
+    /// Empties the plan when the executor's resident check would write
+    /// nothing on this device ([`FlashPlan::skip_resident_matches`]): every
+    /// object the plan loads has a recorded MCB that matches its image.
+    /// An object whose load state was not recorded counts as in the state
+    /// the plan leaves it: ETS reads the MCB of the objects it keeps and not
+    /// their load state, and the recorded MCB is the evidence the object
+    /// holds that image. Returns the matched objects, empty when the plan
+    /// runs in full.
     pub fn skip_matching(&self, plan: &mut FlashPlan) -> Vec<u8> {
         let app_obj = self
             .state
@@ -165,11 +168,9 @@ impl Recorded {
                 .find(|o| o.index == obj)
                 .map(|o| o.state)
         };
-        plan.skip_resident_matches(&self.mcbs, app_obj, |obj| {
-            state_of(obj).is_none_or(|s| s == LoadState::Loaded)
-        })
-        .into_iter()
-        .collect()
+        plan.skip_resident_matches(&self.mcbs, app_obj, state_of)
+            .into_iter()
+            .collect()
     }
 }
 

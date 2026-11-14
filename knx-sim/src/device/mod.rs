@@ -945,6 +945,17 @@ impl Device {
         self.mcb_entry_whole(object)
     }
 
+    /// The number of `PID_MCB_TABLE` entries `object` answers, what a read
+    /// of element 0 returns (bussard issue #1128): the entries a tool wrote
+    /// while they answer, else 1 when the whole-segment entry answers, else 0.
+    pub(super) fn mcb_entry_count(&self, object: u8) -> u16 {
+        let mut n = 0u16;
+        while n < u16::MAX && self.mcb_entry_at(object, n + 1).is_some() {
+            n += 1;
+        }
+        n
+    }
+
     /// Entry 1 when the tool seeded none: the segment's whole written span.
     fn mcb_entry_whole(&self, object: u8) -> Option<Vec<u8>> {
         // The MCB covers the bytes the tool actually streamed (the loaded image),

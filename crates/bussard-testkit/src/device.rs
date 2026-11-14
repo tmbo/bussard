@@ -44,6 +44,9 @@ use crate::consts::{
     PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
+/// `PID_MCB_TABLE` of a loadable object (Resources 03_05_01 §4.2.27).
+const PID_MCB_TABLE: u8 = 27;
+
 /// `PID_DEVICE_CONTROL` of the device object (Resources 03_05_01 §4.2.14).
 const PID_DEVICE_CONTROL: u8 = 14;
 /// Its verify-mode bit (bit 2).
@@ -271,6 +274,13 @@ pub struct MockDevice {
     /// Answer every `A_PropertyValue_Read` that asks for more than one element
     /// with zero elements, as a device without multi-element reads does.
     pub single_element_reads: bool,
+    /// Serve `PID_MCB_TABLE` (27) of every loadable object, computed over its
+    /// segment while it is `Loaded` (see [`MockDevice::with_mcb_tables`]).
+    pub mcb_tables: bool,
+    /// The entry sizes an object's `PID_MCB_TABLE` splits its segment into
+    /// (see [`MockDevice::with_mcb_split`]); one entry over the whole
+    /// segment when absent.
+    pub mcb_splits: HashMap<u8, Vec<u32>>,
     /// Hold every application-layer answer back this long after the `T_ACK`,
     /// as a real device on a busy line does (about 200 ms per request on the
     /// Data Secure devices of the speed deep dive, 2026-09-24).
@@ -677,6 +687,8 @@ impl MockDevice {
             plain_refused: 0,
             io_list: true,
             single_element_reads: false,
+            mcb_tables: false,
+            mcb_splits: HashMap::new(),
             response_delay: None,
             descriptions: HashMap::new(),
             properties: HashMap::new(),
@@ -768,6 +780,56 @@ impl MockDevice {
             }
         }
         self
+    }
+
+    /// Serves `PID_MCB_TABLE` (27) of every loadable object the way the
+    /// standard defines it (issue #1128): element 0 is the number of entries
+    /// (Application Layer 03_03_07 §3.4.4.1), elements 1 to n the 8-octet
+    /// entries `[size u32][CRC control 00][access 33][CRC u16]`, each with
+    /// the System B CRC over its slice of the segment, in order (Resources
+    /// 03_05_01 §4.2.27). The CRC is valid only while the object is
+    /// `Loaded`, so another state answers no entry. A read of more than one
+    /// element is refused (count 0), as the Jung 3361-1MWW refuses it.
+    pub fn with_mcb_tables(mut self) -> Self {
+        self.mcb_tables = true;
+        self
+    }
+
+    /// Splits `object_index`'s `PID_MCB_TABLE` into entries of `sizes`
+    /// octets (the Jung F50 reports its application in two, issue #89), and
+    /// turns [`MockDevice::with_mcb_tables`] on.
+    pub fn with_mcb_split(mut self, object_index: u8, sizes: &[u32]) -> Self {
+        self.mcb_tables = true;
+        self.mcb_splits.insert(object_index, sizes.to_vec());
+        self
+    }
+
+    /// The `PID_MCB_TABLE` entries `object_index` answers now (see
+    /// [`MockDevice::with_mcb_tables`]): none unless it is `Loaded` with a
+    /// segment.
+    pub fn mcb_entries(&self, object_index: u8) -> Vec<[u8; 8]> {
+        let Some(&(base, size)) = self.segments.get(&object_index) else {
+            return Vec::new();
+        };
+        if self.load_state(object_index) != LS_LOADED {
+            return Vec::new();
+        }
+        let sizes = self
+            .mcb_splits
+            .get(&object_index)
+            .cloned()
+            .unwrap_or_else(|| vec![size]);
+        let mut offset = 0u32;
+        sizes
+            .iter()
+            .map(|&len| {
+                let bytes = self.read_mem(base.wrapping_add(offset), len as usize);
+                offset = offset.wrapping_add(len);
+                let crc = crate::consts::crc16_system_b(&bytes).to_be_bytes();
+                let l = len.to_be_bytes();
+                [l[0], l[1], l[2], l[3], 0x00, 0x33, crc[0], crc[1]]
+            })
+            .collect()
     }
 
     /// Serves a read-only array property: `data` holds elements of `elem_size`
@@ -1709,6 +1771,19 @@ impl MockDevice {
         }
         if pid == PID_TABLE && is_table_object {
             return self.table_read(oi, count, start);
+        }
+        if pid == PID_MCB_TABLE && is_table_object && self.mcb_tables {
+            let entries = self.mcb_entries(oi);
+            if count > 1 {
+                return answer(0, &[]);
+            }
+            if start == 0 {
+                return answer(1, &(entries.len() as u16).to_be_bytes());
+            }
+            return match entries.get(usize::from(start) - 1) {
+                Some(entry) => answer(1, entry),
+                None => answer(0, &[]),
+            };
         }
         if let Some(prop) = self.properties.get(&(oi, pid)) {
             let total = prop.data.len() / prop.elem_size;

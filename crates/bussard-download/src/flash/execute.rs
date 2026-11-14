@@ -15,8 +15,8 @@ use super::session::{
 };
 use super::steps::{Reboot, StepExecutor, run_shared_step, run_steps};
 use super::verify::{
-    WrittenSample, advisory_mcb_warning, fill_sample, mcb_read_object, mcb_skip_target,
-    resident_match_objects, take_sample, verify_after_reboot, verify_outcome,
+    WrittenSample, advisory_mcb_warning, fill_sample, mcb_read_object, resident_matches,
+    take_sample, verify_after_reboot, verify_outcome,
 };
 use super::{
     FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress, PropObject, SegmentFill,
@@ -352,8 +352,10 @@ struct SystemB<'a> {
     /// The device object's `PID_IO_LIST`, read once on the first object
     /// named by type `object_table` does not hold (issue #964).
     io_list: super::props::IoListCache,
-    /// The objects whose resident MCB matched the image (see [`flash_steps`]).
-    skip_objects: BTreeSet<u8>,
+    /// Set when the device already holds everything the plan writes (the
+    /// resident check, see [`flash_steps`]): the objects the plan loads.
+    /// Every step that writes is then left out.
+    resident: Option<BTreeSet<u8>>,
     /// Set between the security object's `Unload` and its `LoadCompleted`.
     security_open: &'a mut bool,
     /// `options.verify_after_restart`, read in the terminal-restart arm.
@@ -442,23 +444,37 @@ impl StepExecutor for SystemB<'_> {
         }
     }
 
-    /// A resident-match object (its MCB already matched the image bussard
-    /// would stream) skips its whole re-load: the `Unload`/`StartLoading`/
-    /// `AllocateSegment`/`WriteRelMem`/`LoadCompleted` for it are dropped so
-    /// the intact resident load is untouched and ZERO body bytes stream
-    /// (matching ETS's group-B captures). Its `LoadImageProp` MCB re-verify is
-    /// kept (a read-only confirm that passes by construction). The object is
-    /// still recorded as completed so the post-flash verify covers it.
+    /// When the device already holds everything the plan writes (the
+    /// resident check, issue #1127), every step that writes or reboots is
+    /// left out: the loads, the property writes, the `Delay`s and the
+    /// terminal `Restart`. The reads that check something still run: the
+    /// procedure's `CompareProp`, `DescribeProp` and `LoadImageProp` (its
+    /// MCB verification, which passes by construction). A `LoadCompleted`
+    /// still records its object as completed, so the verify after the
+    /// steps reads its load state.
     fn skip(&mut self, step: &FlashStep) -> Option<String> {
-        let skip_obj = mcb_skip_target(step, &self.object_table, self.app_obj, self.plan)
-            .filter(|obj| self.skip_objects.contains(obj))?;
-        if let FlashStep::LoadCompleted { .. } = step
-            && !self.completed_objects.contains(&skip_obj)
+        self.resident.as_ref()?;
+        if matches!(
+            step,
+            FlashStep::CompareProp { .. }
+                | FlashStep::DescribeProp { .. }
+                | FlashStep::LoadImageProp { .. }
+        ) {
+            return None;
+        }
+        if let FlashStep::LoadCompleted { target } = step
+            && let Some(obj) = resolve_object_target_opt(
+                *target,
+                &self.object_table,
+                self.app_obj,
+                self.plan.spliced_from_template,
+            )
+            && !self.completed_objects.contains(&obj)
         {
-            self.completed_objects.push(skip_obj);
+            self.completed_objects.push(obj);
         }
         Some(format!(
-            "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
+            "skip {} (the device already holds this download)",
             step_label(step, &LabelCtx::default())
         ))
     }
@@ -1539,30 +1555,47 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         Some(known) => known,
         None => discover_object_table_resumable(session).await?,
     };
-    // Item 2 (issue #73): the MCB-CRC re-download skip. When enabled, read each
-    // to-be-written object's resident `PID_MCB_TABLE` *before* any step touches
-    // it and, on a size+CRC match against the image bussard would stream, mark
-    // that object skippable. The skip drops the object's re-load steps (so no
-    // body bytes stream and the intact resident load is left untouched) but is
-    // NEVER taken on a fresh/blank device (no MCB entry) or a size/CRC mismatch —
-    // those full-stream exactly as before. Disabled by default, so DA.tp and
-    // every mock path are byte-identical.
+    // The resident check (issue #73 item 2; reworked for #1127 and #1128).
+    // Before anything is written: when the device already holds everything
+    // the plan writes (each loaded object's MCB entries describe its image
+    // and it is Loaded, each object the plan only unloads is Unloaded, each
+    // planned property value reads back), nothing is written and the verify
+    // and the read-back run. Otherwise the whole procedure runs, as ETS runs
+    // it over a device that holds the same application
+    // (`captures/synthetic/syn-minimal/reload`, 43 ops). No capture or
+    // clause shows a device accepting part of it (an unload of one object
+    // without its reload, a `PID_PROGRAM_VERSION` write to a `Loaded`
+    // object), so the check never skips some objects and loads others.
     //
-    // A plan that factory-resets the device first erases every object, so no
-    // resident image can survive to be matched: the pre-pass is skipped and every
-    // object streams in full. The same holds for a product `LdCtrlMasterReset`
-    // whose erase code resets loaded objects (issue #623, the rule and its
-    // evidence are on `FlashPlan::erases_resident_objects`): skipping an object
-    // the reset then erases leaves the device without it. A secure-capable
-    // plan that writes a filled segment sparsely keeps ETS's full procedure
-    // too (issue #1081, `FlashPlan::allows_resident_skip`).
-    // A parameter-only download diffs against the resident memory instead.
-    let skip_objects: BTreeSet<u8> =
-        if options.skip_matching_mcb && plan.allows_resident_skip() && !plan.is_parameters_only() {
-            resident_match_objects(session, plan, app_obj, &object_table).await?
-        } else {
-            BTreeSet::new()
-        };
+    // Not taken where a step erases resident objects (a factory reset, an
+    // erasing `LdCtrlMasterReset`, issue #623), on a secure-capable plan
+    // that writes a filled segment sparsely (issue #1081, both on
+    // `FlashPlan::allows_resident_skip`), on a parameter-only download
+    // (it diffs against the resident memory instead), or when the plan
+    // writes state the check does not read ([`FlashPlan::resident_check`]).
+    let resident = if options.skip_matching_mcb
+        && plan.allows_resident_skip()
+        && !plan.is_parameters_only()
+    {
+        match plan.resident_check(app_obj, &object_table) {
+            Ok(check) => match resident_matches(session, &check).await {
+                Ok(()) => Some(check.loaded.keys().copied().collect::<BTreeSet<u8>>()),
+                Err(why) => {
+                    tracing::info!("resident check: {why}; the full download runs");
+                    None
+                }
+            },
+            Err(why) => {
+                tracing::info!("resident check not made: {why}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // A read the check could not finish may have left the connection
+    // closed; the download opens a fresh one.
+    reopen_if_closed(session).await?;
 
     // A parameter-only download by the mask's `par` procedure writes no
     // table but checks the tables' MCBs after LoadCompleted (MergeId 7):
@@ -1594,6 +1627,91 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         check_security_capacity(session, plan).await?;
     }
 
+    let Some(objects) = resident else {
+        return run_system_b(
+            session,
+            plan,
+            &options,
+            &mut progress,
+            security_open,
+            (app_obj, object_table),
+            partial_checked,
+            None,
+        )
+        .await;
+    };
+    // The device holds the download: the procedure's reads and the verify
+    // run, nothing is written. On the first refusal, timeout or failed
+    // verify the full procedure runs instead (CLAUDE.md "Speed Changes").
+    let skipped = run_system_b(
+        session,
+        plan,
+        &options,
+        &mut progress,
+        security_open,
+        (app_obj, object_table.clone()),
+        partial_checked.clone(),
+        Some(objects.clone()),
+    )
+    .await;
+    let why = match skipped {
+        Ok(mut outcome) if outcome.ok() => {
+            outcome.warnings.insert(
+                0,
+                format!(
+                    "the device already holds this download (objects {objects:?}: MCB entries,                      load states and property values match): nothing was written"
+                ),
+            );
+            return Ok(outcome);
+        }
+        Ok(outcome) => format!(
+            "the verify after the check found the application {} ({:?})",
+            outcome.load_state, outcome.object_states
+        ),
+        Err(err) => err.to_string(),
+    };
+    tracing::warn!("resident check passed but {why}; running the full download");
+    reopen_if_closed(session).await?;
+    let mut outcome = run_system_b(
+        session,
+        plan,
+        &options,
+        &mut progress,
+        security_open,
+        (app_obj, object_table),
+        partial_checked,
+        None,
+    )
+    .await?;
+    outcome.warnings.push(format!(
+        "the resident check found this download on the device, but {why}: the full download ran"
+    ));
+    Ok(outcome)
+}
+
+/// Re-opens the session's connection when a read left it closed and the
+/// session can reconnect (issue #1127: after the resident check).
+async fn reopen_if_closed<C: Connector>(session: &mut Session<C>) -> Result<(), WriteError> {
+    if session.l4().is_closed() && session.can_reconnect() {
+        session.reconnect().await?;
+    }
+    Ok(())
+}
+
+/// Runs the System B steps of `plan` and verifies them: the whole
+/// procedure, or with `resident` (the objects the resident check found the
+/// download on) only its reads ([`SystemB::skip`]).
+#[allow(clippy::too_many_arguments)] // one call site per path in `flash_steps`
+async fn run_system_b<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    options: &FlashOptions,
+    progress: &mut F,
+    security_open: &mut bool,
+    (app_obj, object_table): (u8, Vec<(u8, u16)>),
+    partial_checked: BTreeSet<u8>,
+    resident: Option<BTreeSet<u8>>,
+) -> Result<FlashOutcome, WriteError> {
     // `options.bcu_key` was consumed at connect time (the session was opened with
     // it); only `verify_after_restart` is read, in the terminal-restart arm.
     let mut exec = SystemB {
@@ -1601,7 +1719,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         app_obj,
         object_table,
         io_list: None,
-        skip_objects,
+        resident: resident.clone(),
         security_open,
         verify_after_restart: options.verify_after_restart,
         segment_base: None,
@@ -1620,12 +1738,20 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         table_references: BTreeMap::new(),
     };
     let threshold = reconnect_exchange_threshold(plan);
-    run_steps(session, plan, threshold, &mut progress, &mut exec).await?;
+    run_steps(session, plan, threshold, progress, &mut exec).await?;
+    // Every object the check matched is verified, whether or not its
+    // `LoadCompleted` was in the plan.
+    for obj in resident.into_iter().flatten() {
+        if !exec.completed_objects.contains(&obj) {
+            exec.completed_objects.push(obj);
+        }
+    }
 
     // If no terminal restart captured the outcome (a procedure with no final
-    // Restart), verify now over the still-open connection. `verify_outcome` is
-    // internally resume-on-drop (each read reconnects and retries), so a connection
-    // death here — after all the writes landed — is recovered rather than reported
+    // Restart, or the resident path, which leaves the restart out), verify now
+    // over the still-open connection. `verify_outcome` is internally
+    // resume-on-drop (each read reconnects and retries), so a connection death
+    // here — after all the writes landed — is recovered rather than reported
     // as a flash failure.
     let mut outcome = match exec.verified {
         Some(outcome) => outcome,
