@@ -407,10 +407,11 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         .device(IndividualAddress(ia))
         .ok_or_else(|| format!("{label}: device {ia:04x} missing"))?;
     // An unload capture (the `unload` and `unload-full` run variants, bussard
-    // #1056) leaves every load-state object Unloaded; any other is Loaded.
+    // #1056) leaves every load-state object Unloaded; any other is Loaded,
+    // `unload-reload` too: its capture is the download after the unload.
     let unload = capture
         .file_name()
-        .is_some_and(|n| n.to_string_lossy().starts_with("unload"));
+        .is_some_and(|n| matches!(n.to_string_lossy().as_ref(), "unload" | "unload-full"));
     let expected = if unload {
         LoadState::Unloaded
     } else {

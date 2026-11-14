@@ -1651,6 +1651,62 @@ class TestCaptureVariants(unittest.TestCase):
             self.assertIn('0.listen = ["1/0/1", "1/0/2"]', device)
             self.assertIn('1.send = "1/0/3"', device)
 
+    def test_partial_twice_splits_the_changes_by_step(self):
+        # #1091: one change before each partial download, the base is the
+        # defaults download and the first partial one.
+        steps = capture.variant_steps("syn-property-param", "partial-twice")
+        self.assertEqual([(s["name"], s["mode"], [c["label"] for c in s["params"]]) for s in steps],
+                         [("base-1", "application", []), ("base-2", "partial", ["Delay (s)"]),
+                          ("capture", "partial", ["Territory mark"])])
+        self.assertTrue(capture.variant_options("syn-property-param", "partial-twice").startswith(
+            "run=params base=captures/synthetic/syn-property-param/partial-twice/base.pcapng "))
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-property-param", "partial-twice", Path(tmp))
+            device = (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text()
+            # The model holds both changes: the state after the capture.
+            self.assertIn("delay-s = 500\n", device)
+            self.assertIn("territory-mark = 7\n", device)
+        minimal = capture.variant_steps("syn-minimal", "partial-twice")
+        self.assertEqual([c["label"] for c in minimal[-1]["params"]], ["Operating mode"])
+
+    def test_apply_params_links_and_a_parameter_in_one_partial(self):
+        # #1095: the third link and the parameter change before one partial.
+        for product in ("syn-minimal", "syn-secure"):
+            steps = capture.variant_steps(product, "apply-params")
+            self.assertEqual([(s["mode"], s["links"], [c["label"] for c in s["params"]]) for s in steps],
+                             [("application", [(0, "1/0/1"), (1, "1/0/3")], []),
+                              ("partial", [(0, "1/0/2")], ["Delay (s)"])])
+            self.assertIn("run=apply ", capture.variant_options(product, "apply-params"))
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-minimal", "apply-params", Path(tmp))
+            device = (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text()
+            self.assertIn("delay-s = 500\n", device)
+            self.assertIn('0.listen = ["1/0/1", "1/0/2"]', device)
+
+    def test_secure_fill_reset_variants(self):
+        # #1081: another secure application first, unload then download,
+        # assign then download, each on the secure-capable fill product.
+        self.assertEqual([s["product"] for s in capture.variant_steps("syn-secure-fill", "other-app")],
+                         ["syn-secure", "syn-secure-fill"])
+        self.assertEqual([(s["name"], s["mode"]) for s in capture.variant_steps("syn-secure-fill", "unload-reload")],
+                         [("base-1", "application"), ("base-2", "unload"), ("capture", "application")])
+        self.assertEqual([s["mode"] for s in capture.variant_steps("syn-secure-fill", "assign")],
+                         ["address", "application"])
+        app = "M-00FA_A-2902-10-0000"
+        # The assignment leaves the secure device in factory state; an
+        # unload leaves it activated.
+        self.assertIn("    status: factory\n", capture.sim_yaml("syn-secure-fill", app, variant="assign", base=True))
+        self.assertIn("    status: activated\n",
+                      capture.sim_yaml("syn-secure-fill", app, variant="unload-reload", base=True))
+
+    def test_param_changes_refuse_a_bad_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "changes.toml"
+            bad.write_text('[syn-minimal]\npartial = [{ page = "General", label = "Delay (s)", kind = "number", '
+                           'value = "500", step = 0 }]\n')
+            with mock.patch.object(capture, "CHANGES", bad), self.assertRaises(SystemExit):
+                capture.param_changes("syn-minimal", "partial")
+
     def test_every_parameter_variant_has_its_changes(self):
         for variant in ("partial", "calc-input", "calc-overflow", "params"):
             for product in capture.VARIANTS[variant]["products"]:
@@ -2230,6 +2286,50 @@ class TestDriverParamEditor(unittest.TestCase):
         cells = [{"text": "a note", "x": 1625, "y": 990, "w": 60, "h": 20}]
         self.assertEqual(self.d.radio_row(self.px_of(rings), 1000, cells)[0], [])
         self.assertEqual(self.d.classify_control(self.px_of(rings), 1000, cells)["kind"], "none")
+
+    def e802_logic_row(self, first_cell):
+        """Hager E802 'Art der logischen Funktion' (#1049, driver.json of
+        params-1-0, 2026-11-13): circles at 1640 and 1753 on the row at 345
+        (centre 341), the second selected; `first_cell` what OCR made of the
+        first option."""
+        px = self.px_of([("ring", 1640, 341, 0, 0, self.BORDER), ("ring", 1753, 341, 1, 0, self.BORDER)])
+        cells = ([first_cell] if first_cell else []) + [{"text": "ODER", "x": 1773, "y": 335, "w": 52, "h": 18}]
+        return px, cells
+
+    def test_classify_control_radio_option_glued_to_its_circle(self):
+        # OCR read the first circle and the short word after it as one word
+        # starting left of the circle's centre: the option read ''.
+        px, cells = self.e802_logic_row({"text": "OUND", "x": 1624, "y": 335, "w": 78, "h": 18})
+        got = self.d.classify_control(px, 345, cells)
+        self.assertEqual([o["text"] for o in got["options"]], ["UND", "ODER"])
+        self.assertEqual(got["value"], "ODER")
+
+    def test_fill_option_texts_reads_a_dropped_option_on_its_own(self):
+        px, cells = self.e802_logic_row(None)
+        row = {"label": "Art der logischen Funktion", "y": 345, **self.d.classify_control(px, 345, cells)}
+        self.assertEqual([o["text"] for o in row["options"]], ["", "ODER"])
+        boxes = []
+
+        def read(bbox):
+            boxes.append(bbox)
+            return [{"text": "UND", "x": 1662, "y": 333, "w": 40, "h": 18}]
+        self.d.fill_option_texts(row, read)
+        self.assertEqual([o["text"] for o in row["options"]], ["UND", "ODER"])
+        self.assertEqual(row["value"], "ODER")
+        # Only the unread option's span, right of its circle to the next one.
+        self.assertEqual(len(boxes), 1)
+        self.assertTrue(1640 < boxes[0][0] and boxes[0][2] < 1753, boxes)
+
+    def test_set_row_never_sets_an_unread_radio_option(self):
+        # The #1049 record: pick chose the option read '' and stored ''.
+        px, cells = self.e802_logic_row(None)
+        row = {"label": "Art der logischen Funktion", "y": 345, **self.d.classify_control(px, 345, cells)}
+        with mock.patch.object(self.d, "click") as click:
+            with self.assertRaises(LookupError):
+                self.d.set_row(row, {"pick": 0.909})
+            with self.assertRaises(LookupError):
+                self.d.set_row(row, {"value": ""})
+        click.assert_not_called()
 
     def test_classify_control_checkbox_a_few_px_above_the_label_centre(self):
         px = self.px_of([("frame", 1625, 979, 1657, 1011, self.BORDER)])
