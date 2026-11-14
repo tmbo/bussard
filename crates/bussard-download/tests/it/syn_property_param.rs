@@ -9,9 +9,9 @@
 use std::collections::BTreeMap;
 
 use bussard_download::{
-    FlashStep, PlanError, PropObject, Session, build_table_images, changed_properties, flash,
+    FlashStep, PlanError, PropObject, Session, changed_properties, flash,
     planned_parameter_regions, read_checked_properties, read_parameter_regions,
-    read_property_value, template_ops_for,
+    read_property_value,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_product::application::ApplicationProgram;
@@ -22,45 +22,14 @@ use bussard_testkit::consts::{
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
-use crate::builtin_template::zip_synthetic;
-
-use crate::support::plan_flash_default;
+use crate::support::{plan_synthetic_07b0 as plan_of, synthetic_product};
 
 /// The application-relative id of the property-placed parameter's ref.
 const TERRITORY_REF: &str = "P-3_R-3";
 
 /// The product and its application, read from the zipped synthetic XML.
 fn product() -> TestResult<(bussard_product::ProductData, tempfile::TempDir)> {
-    let tmp = tempfile::tempdir()?;
-    let path = tmp.path().join("syn-property-param.knxprod");
-    zip_synthetic("syn-property-param", &path).map_err(|e| e.to_string())?;
-    Ok((bussard_product::read_knxprod(&path)?, tmp))
-}
-
-/// The System B plan of `app` for 1.1.1 under `overrides`, spliced into the
-/// built-in 07B0 template the stub master leaves bussard with.
-fn plan_of(
-    product: &bussard_product::ProductData,
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-) -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
-    let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
-    let tables = build_table_images(
-        None,
-        "1.1.1".parse()?,
-        app,
-        overrides,
-        &bussard_product::dynamic::DynamicMemo::new(app),
-    );
-    Ok(plan_flash_default(
-        app,
-        "1.1.1",
-        0x07B0,
-        overrides,
-        &BTreeMap::new(),
-        Some(&template),
-        &tables,
-    )?)
+    synthetic_product("syn-property-param")
 }
 
 /// The plan's writes to object 4 PID 201.

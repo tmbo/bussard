@@ -13,12 +13,11 @@
 use std::collections::BTreeMap;
 
 use bussard_download::{
-    Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Session,
-    build_table_images, flash, read_parameter_regions, regions_memory, template_ops_for,
+    Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Session, flash,
+    read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
-use bussard_product::application::ApplicationProgram;
 use bussard_testkit::consts::{
     A_MEMORY_WRITE, A_PROPERTY_VALUE_READ, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM,
     OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
@@ -26,48 +25,15 @@ use bussard_testkit::consts::{
 use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
-use crate::builtin_template::zip_synthetic;
-use crate::support::plan_flash_default;
+use crate::support::{
+    plan_flash_default, plan_synthetic_07b0 as plan_of, synthetic_product as product,
+};
 
 /// Where the mock places object 4's segment.
 const BASE: u32 = 0x6000;
 
 /// The `delay` parameter (16 bits at octets 1 and 2), app-relative.
 const DELAY: &str = "P-2_R-2";
-
-/// The synthetic product and its application.
-fn product(name: &str) -> TestResult<(bussard_product::ProductData, tempfile::TempDir)> {
-    let tmp = tempfile::tempdir()?;
-    let path = tmp.path().join(format!("{name}.knxprod"));
-    zip_synthetic(name, &path).map_err(|e| e.to_string())?;
-    Ok((bussard_product::read_knxprod(&path)?, tmp))
-}
-
-/// The full download of `app` for 1.1.1 under `overrides`.
-fn plan_of(
-    product: &bussard_product::ProductData,
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-) -> TestResult<FlashPlan> {
-    let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
-    let tables = build_table_images(
-        None,
-        "1.1.1".parse()?,
-        app,
-        overrides,
-        &bussard_product::dynamic::DynamicMemo::new(app),
-    );
-    plan_flash_default(
-        app,
-        "1.1.1",
-        0x07B0,
-        overrides,
-        &BTreeMap::new(),
-        Some(&template),
-        &tables,
-    )
-    .map_err(|e| e.to_string().into())
-}
 
 /// A System B device of 1.1.1 with the objects the product loads.
 fn device() -> TestResult<MockDevice> {

@@ -57,6 +57,7 @@ pub use backup::{
 };
 pub use compute::{
     DesiredTables, GroupObjectDescriptor, compute_tables, dynamic_group_object_descriptors,
+    ref_sized_objects,
 };
 pub use compute_sys7::{Sys7GroupObject, decode_sys7_association_table};
 pub use device_plan::{

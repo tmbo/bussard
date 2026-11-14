@@ -14,7 +14,9 @@
 //!   absent), plus both table sizes. A full flash also compares the
 //!   group-object table's element count with the count the planned image
 //!   carries (System B; a System 7 image takes its group-object table from
-//!   the product data).
+//!   the product data), and every descriptor of it for a program whose
+//!   descriptor sizes come from a ref over an object size without a type
+//!   code (issue #1065; every descriptor for every flash is #1150).
 //! - **Parameters**: the parameter memory decoded and compared with the
 //!   model ([`crate::params::read_flashed_parameters`], the plan's decode).
 //! - **Load-procedure properties** (issue #390): every property an
@@ -312,10 +314,21 @@ impl<'a> Expected<'a> {
                 .and_then(|img| img.get(..2))
                 .map(|w| u16::from_be_bytes([w[0], w[1]]))
         };
+        // A program with a com-object whose descriptor takes its size from
+        // a ref over an object size without a type code (issue #1065): the
+        // type octets that rule writes are not confirmed by a capture, so
+        // the whole group-object table is compared, not only its count.
+        // Every other flash compares the count (issue #1150).
+        let object_table =
+            if group_objects.is_some() && !bussard_download::ref_sized_objects(app).is_empty() {
+                images.get(&3).cloned()
+            } else {
+                None
+            };
         Expected {
             tables,
             group_objects,
-            object_table: None,
+            object_table,
             parameters: Some(ExpectedParameters {
                 product,
                 app,

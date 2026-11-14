@@ -6,8 +6,11 @@ purpose = """
 syn-minimal with a third com object whose ComObject declares
 `ObjectSize="LegacyVarData"`, a size without a value field type code
 (Resources Table 88), while its only ComObjectRef states `14 Bytes`. The ref's
-size overrides the object's, so the descriptor takes code 14; bussard refused
-the program before #1065 (the Jung `A-1111-11-A356` object 7 shape)."""
+size overrides the object's, so bussard writes code 14; it refused the program
+before #1065 (the Jung `A-1111-11-A356` object 7 shape). Not confirmed by a
+capture: in the Jung row object 7 sits behind a branch the defaults do not
+take (ETS wrote `00 00`), so what ETS writes for such a descriptor waits for
+this product's capture."""
 construct = "ComObject size LegacyVarData, its ref 14 Bytes"
 issues = [1065, 545]
 
