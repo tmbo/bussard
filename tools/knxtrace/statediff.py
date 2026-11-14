@@ -34,6 +34,20 @@ PID_PROGMODE, the verify-mode switch) are listed, not compared, and the
 security object's tables compare whole by imgdiff's value check. Objects
 named by index meet those named by type through the object types the
 captures read.
+
+`end_state=True` judges a full download over a device that already holds
+the base image (bussard issue #1127, the oracle's `run=flash` rows: knx-sim
+replays ETS's first download, then bussard flashes the same application
+and the sim records it). What must match is the state the device ends
+with, not who wrote it: bussard keeps the group-object table when its MCB
+matches (as ETS does in its same-application downloads of the house
+devices), where a capture may show ETS reloading it.
+So the property elements compare on their final values only (the
+one-side-only rule of #1073 does not apply), the load state each object
+ends in is compared (`load_states`, from the load-control records of the
+base captures and the step, in order), and the executed operations are
+reported next to ETS's (`execution`, with `skip`: whether bussard's step
+wrote nothing while ETS's loaded objects), never judged.
 """
 
 from __future__ import annotations
@@ -137,7 +151,7 @@ def _whole(elements: Dict[Tuple[str, int, int], str], label: str, pid: int) -> s
 
 
 def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
-                       bussard: Optional[DeviceOps]) -> Dict[str, object]:
+                       bussard: Optional[DeviceOps], end_state: bool = False) -> Dict[str, object]:
     """The property elements either side wrote in the step, compared on
     their final values (see the module doc). The elements of a property only
     one side wrote in the step are listed under `ets_only_step` or
@@ -147,7 +161,8 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
     compares (`image.property_exemption`) are listed under `not_compared`;
     the security object's properties compare whole, by `image.value_check`
     (the group key table and the sender table by entry, the sender
-    table's sequence numbers a note)."""
+    table's sequence numbers a note). With `end_state` the one-side-only
+    rule is off: the final values decide (module doc)."""
     labels = object_labels(list(base) + [ets, bussard])
     before: Dict[Tuple[str, int, int], str] = {}
     for ops in base:
@@ -202,7 +217,7 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
         # then read ok. Its elements are counted on their own and fail the
         # comparison. A tool that rewrites only the changed elements of a
         # property it writes (issue #944) is judged on the final values.
-        if ((label, pid) in ets_props) != ((label, pid) in ours_props):
+        if not end_state and ((label, pid) in ets_props) != ((label, pid) in ours_props):
             (ets_only_step if (label, pid) in ets_props else bussard_only_step).append(name)
             differences.append({"property": name, "bussard": a or "--", "ets": b or "--",
                                 "why": "property written by %s only in this step"
@@ -250,14 +265,90 @@ def _records(ops: Optional[DeviceOps]) -> List[Dict[str, object]]:
             for r in memimage.load_control_writes(ops)]
 
 
+# The load state a load-control event leaves an object in.
+EVENT_STATE = {"unload": "Unloaded", "start-loading": "Loading", "load-completed": "Loaded"}
+
+
+def final_load_states(ops_list: List[Optional[DeviceOps]]) -> Dict[int, str]:
+    """The load state each object ends in after the captures, in order: the
+    last load event of each (`EVENT_STATE`); an object no event drove is
+    left out."""
+    out: Dict[int, str] = {}
+    for ops in ops_list:
+        for rec in _records(ops):
+            obj = memimage._lc_object(rec)
+            state = EVENT_STATE.get(str(rec["event"]))
+            if obj is not None and state is not None:
+                out[obj] = state
+    return out
+
+
+def compare_load_states(base: List[DeviceOps], ets: Optional[DeviceOps],
+                        bussard: Optional[DeviceOps]) -> Dict[str, object]:
+    """The load state each object ends in on either side, from the base
+    captures and that side's step (bussard issue #1127)."""
+    ets_end = final_load_states(list(base) + [ets])
+    ours_end = final_load_states(list(base) + [bussard])
+    objects = sorted(set(ets_end) | set(ours_end))
+    differences = [{"object": o, "bussard": ours_end.get(o, "--"), "ets": ets_end.get(o, "--")}
+                   for o in objects if ours_end.get(o) != ets_end.get(o)]
+    return {
+        "verdict": (memimage.NOT_COMPARABLE if not objects else memimage.DIFFERS if differences
+                    else memimage.IDENTICAL),
+        "compared": len(objects),
+        "bussard": {str(o): ours_end[o] for o in sorted(ours_end)},
+        "ets": {str(o): ets_end[o] for o in sorted(ets_end)},
+        "differences": differences,
+    }
+
+
+def execution(ets: Optional[DeviceOps], bussard: Optional[DeviceOps],
+              order: Dict[str, object]) -> Dict[str, object]:
+    """What each side executed in the step, next to each other (bussard
+    issue #1127): the state-changing operations after normalisation, and
+    `skip`: `taken` when bussard's step left out the load of objects ETS's
+    step loaded (`objects` of them, indices in `kept`: the group-object
+    table bussard keeps when its MCB matches), else not taken. Reported; a
+    `run=flash` row pins it with `skip=`."""
+    def loads(ops: Optional[DeviceOps]) -> List[int]:
+        return sorted({o for r in _records(ops) if str(r["event"]) == "load-completed"
+                       for o in [memimage._lc_object(r)] if o is not None})
+    ours_ops = sequence.operations(bussard) if bussard is not None else []
+    # The objects ETS loaded and bussard did not touch (its step ran: it has
+    # an operation list).
+    touched = {memimage._lc_object(r) for r in _records(bussard)}
+    kept = [o for o in loads(ets) if o not in touched] if ours_ops else []
+    skip = {"taken": bool(kept), "objects": len(kept), "kept": kept}
+    return {
+        "skip": skip,
+        "bussard_tokens": order.get("bussard_tokens"),
+        "ets_tokens": order.get("ets_tokens"),
+        "bussard": order.get("bussard", []),
+        "ets": order.get("ets", []),
+    }
+
+
+def skip_text(exe: Optional[Dict[str, object]]) -> str:
+    """The `skip=` and `exec=` columns of a `run=flash` row's summary line."""
+    if not exe:
+        return ""
+    skip = exe.get("skip") or {}
+    text = ("  skip=taken(%d objects: %s)" % (skip.get("objects", 0), ",".join("obj%d" % o for o in skip.get("kept", [])))
+            if skip.get("taken") else "  skip=none")
+    return text + "  exec=bussard %s/ETS %s ops" % (exe.get("bussard_tokens"), exe.get("ets_tokens"))
+
+
 def compare_states(
     base: List[DeviceOps],
     ets: Optional[DeviceOps],
     bussard: Optional[DeviceOps],
     device: str = "",
+    end_state: bool = False,
 ) -> Dict[str, object]:
     """ETS's and bussard's device state after one partial download (see the
-    module doc). `ets` or `bussard` None: that side wrote nothing."""
+    module doc), or with `end_state` after a full download over a device
+    holding the base image. `ets` or `bussard` None: that side wrote
+    nothing."""
     before: Dict[int, int] = {}
     for ops in base:
         before.update(writes(ops))
@@ -309,7 +400,7 @@ def compare_states(
     # A step in which neither side wrote memory but the property elements
     # compared (a property-only program, issue #1074) takes their verdict,
     # as imgdiff does for a property-only plan (#1043).
-    props = compare_properties(base, ets, bussard)
+    props = compare_properties(base, ets, bussard, end_state)
     if not compared and props.get("compared"):
         verdict = str(props["verdict"])
         reason = "no memory written in this step; the property elements are the verdict"
@@ -326,10 +417,19 @@ def compare_states(
     # The order of the state-changing operations (issue #1055): its own
     # verdict, never the row's.
     order = sequence.compare_captures(ets, bussard)
+    extra: Dict[str, object] = {}
+    if end_state:
+        lsm = compare_load_states(base, ets, bussard)
+        extra = {"load_states": lsm, "execution": execution(ets, bussard, order)}
+        # The end state is the headline: a load state that differs fails it
+        # however the memory compares.
+        if lsm["verdict"] == memimage.DIFFERS:
+            verdict, reason = memimage.DIFFERS, "the objects end in other load states"
     return {
         "device": device,
         "application": None,
-        "system": "apply",
+        "system": "flash" if end_state else "apply",
+        **extra,
         "verdict": verdict,
         "reason": reason,
         "coverage": {"placed": compared, "compared": compared, "percent": 100.0 if compared else 0.0,
@@ -347,8 +447,10 @@ def compare_states(
 
 def render(report: Dict[str, object]) -> List[str]:
     octets = report["octets"]
-    lines = ["%s partial download (apply): %s%s" % (
-        report["device"], report["verdict"], " (%s)" % report["reason"] if report["reason"] else "")]
+    what = ("full download over the base image (flash, end state)" if report.get("system") == "flash"
+            else "partial download (apply)")
+    lines = ["%s %s: %s%s" % (
+        report["device"], what, report["verdict"], " (%s)" % report["reason"] if report["reason"] else "")]
     lines.append("  octets written in the step: ETS %d, bussard %d; compared %d (final state), %d differ"
                  % (octets["ets_step"], octets["bussard_step"], octets["compared"], octets["differing"]))
     for reg in report["regions"]:
@@ -375,6 +477,17 @@ def render(report: Dict[str, object]) -> List[str]:
         lines.append("  not compared: %s PID %s (%s)" % (e["key"][0], e["key"][1], e["reason"]))
     for note in props.get("notes") or []:
         lines.append("  note: %s" % note)
+    lsm = report.get("load_states")
+    if lsm:
+        lines.append("  load states at the end: %s (%d object(s)); bussard %s; ETS %s" % (
+            lsm["verdict"], lsm["compared"],
+            " ".join("obj%s=%s" % kv for kv in lsm["bussard"].items()),
+            " ".join("obj%s=%s" % kv for kv in lsm["ets"].items())))
     lines.extend(memimage.render_load_controls(report.get("load_controls")))
     lines.extend(sequence.render(report.get("sequence")))
+    exe = report.get("execution")
+    if exe:
+        lines.append("  executed (not judged):%s" % skip_text(exe))
+        lines.append("      bussard: %s" % (" | ".join(exe.get("bussard") or []) or "nothing"))
+        lines.append("      ETS    : %s" % (" | ".join(exe.get("ets") or []) or "nothing"))
     return lines

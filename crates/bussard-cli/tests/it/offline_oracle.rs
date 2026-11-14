@@ -442,12 +442,16 @@ fn check_synthetic_row(
 /// row with its time. The nextest budget for this test is an override in
 /// `.config/nextest.toml`.
 /// Whether a rows line replays captures into knx-sim before bussard writes
-/// (`run=apply`, `run=apply-line`, `run=params`), so it needs the simulator.
+/// (`run=apply`, `run=apply-line`, `run=params`, `run=flash`), so it needs
+/// the simulator.
 fn needs_sim(line: &str) -> bool {
     line.split('|').nth(6).is_some_and(|options| {
-        options
-            .split_whitespace()
-            .any(|w| matches!(w, "run=apply" | "run=apply-line" | "run=params"))
+        options.split_whitespace().any(|w| {
+            matches!(
+                w,
+                "run=apply" | "run=apply-line" | "run=params" | "run=flash"
+            )
+        })
     })
 }
 
@@ -467,7 +471,9 @@ fn test_offline_oracle_synthetic_rows_pass_the_check() -> TestResult {
 
 /// The synthetic rows that replay a capture into knx-sim (`needs_sim`): the
 /// `partial` run variant, ETS's partial download against `bussard flash
-/// --parameters-only` into a sim that replayed the defaults download first.
+/// --parameters-only` into a sim that replayed the defaults download first,
+/// and the `run=flash` rows (a full flash over the device the base capture
+/// left, issue #1127).
 #[test]
 fn test_offline_oracle_synthetic_sim_rows_pass_the_check() -> TestResult {
     if knx_sim_bin().is_none() {

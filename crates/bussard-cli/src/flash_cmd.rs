@@ -70,10 +70,10 @@ pub(crate) struct FlashArgs {
     // Issue #79.
     #[arg(long)]
     pub force: bool,
-    /// Skip nothing: re-stream every object. By default an object whose
-    /// resident image already matches (MCB size and CRC, object `Loaded`)
-    /// is skipped when re-flashing the same application, so a
-    /// parameter-only change does not re-download the code segment. On
+    /// Skip nothing: reload every object. By default, when re-flashing the
+    /// same application, the group-object table is kept when its MCB
+    /// entries match the image and it is `Loaded`, as ETS keeps it, where
+    /// the product declares that MCB check. On
     /// System 7 (mask 0701/0705) it also first unloads load-state machines
     /// 1 to 4 and restarts the device, as ETS does when its Unload command
     /// precedes the download; a plain flash, like ETS's application
@@ -661,7 +661,8 @@ fn dry_run(
         );
         if !recorded.skipped.is_empty() {
             eprintln!(
-                "dry run: object(s) {:?} skipped: the recorded MCB matches the image",
+                "dry run: object(s) {:?} kept: the recorded MCB entries match the image (a live \
+                 flash reads them again and reloads an object that differs)",
                 recorded.skipped
             );
         }

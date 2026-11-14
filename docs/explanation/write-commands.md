@@ -196,8 +196,8 @@ prompt, for example) is reopened at the next request, with no error.
       reports a state. System 7: each load-state machine.
     - **Reset.** Only over another or an unknown application (above): master
       reset, erase code 7. `flash` waits the reboot time the
-      device reports, reconnects and streams every object; the differential
-      download that skips matching objects does not apply after a reset.
+      device reports, reconnects and streams every object; the group-object
+      table is not kept after a reset.
     - **Load-state changes** are confirmed by the state in the device's
       answer, as ETS does, else read back. After the restart `flash` re-reads
       the application object's state; a segment whose MCB CRC check passed is

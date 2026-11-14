@@ -1,55 +1,27 @@
-//! Post-load verification and the resident-MCB skip gate.
+//! Post-load verification and the resident-image keep.
 //!
-//! Before a re-load, the executor compares each object's resident MCB (memory
-//! control block) against the image it is about to write and skips an object
-//! that already matches. After the load, [`FlashOutcome`] records the load state
-//! and an end-of-segment spot check.
+//! Before a download, the executor keeps an object whose resident image
+//! already matches, where ETS keeps it ([`keep_candidates`],
+//! [`resident_keep`]). After the load, [`FlashOutcome`] records the load
+//! state and an end-of-segment spot check.
 
 use super::execute::resolve_object_target_opt;
 use super::session::{
     Connector, Session, read_load_state_ext_resumable, read_load_state_resumable,
-    read_memory_range_resumable, read_memory_resumable,
+    read_mcb_entries_resumable, read_memory_range_resumable, read_memory_resumable,
 };
 use super::{FlashOutcome, FlashPlan, FlashStep, ImageRef};
-use bussard_mgmt::load::{LoadState, WriteError, read_load_state, read_mcb_table};
-use std::collections::BTreeSet;
-
-/// The device object index whose re-load a step belongs to, for the MCB-skip
-/// gate (issue #73 item 2) — or `None` if the step is not part of a per-object
-/// re-load that a resident-MCB match may skip.
-///
-/// Only the load-state and segment-write steps of a single object are skippable:
-/// `Unload`/`StartLoading`/`AllocateSegment`/`WriteRelMem`/`LoadCompleted`. The
-/// `LoadImageProp` verify is deliberately excluded (it is a read-only confirm
-/// that must still run against the skipped object's resident MCB), as is every
-/// non-per-object step (`WriteMem`, `CompareProp`, `Restart`, `MasterReset`, all
-/// System 7 steps). Resolution uses the same index rules as execution.
-pub(super) fn mcb_skip_target(
-    step: &FlashStep,
-    object_table: &[(u8, u16)],
-    app_obj: u8,
-    plan: &FlashPlan,
-) -> Option<u8> {
-    let target = match step {
-        FlashStep::Unload { target, .. }
-        | FlashStep::StartLoading { target }
-        | FlashStep::AllocateSegment { target, .. }
-        | FlashStep::LoadCompleted { target } => *target,
-        FlashStep::WriteRelMem { target, .. } => *target,
-        _ => return None,
-    };
-    resolve_object_target_opt(target, object_table, app_obj, plan.spliced_from_template)
-}
+use bussard_mgmt::load::{LoadState, WriteError};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The single whole-segment image a `WriteRelMem` streams into `obj`, if the
 /// object has exactly one such write and it starts at offset 0.
 ///
-/// The MCB CRC the device reports covers the whole stored segment, so a skip is
-/// only sound when a single write covers that segment from its base. An object
-/// with several writes (e.g. a `full` then a `par` write at different offsets),
-/// or a write at a non-zero offset, is treated as *uncertain* and never skipped
-/// — the conservative choice the issue mandates ("never skip a write on an
-/// uncertain match"). Returns the streamed bytes, or `None` when no single
+/// The MCB CRC the device reports covers the whole stored segment, so a match
+/// is only sound when a single write covers that segment from its base. An
+/// object with several writes (e.g. a `full` then a `par` write at different
+/// offsets), or a write at a non-zero offset, is treated as *uncertain* and
+/// never matched. Returns the streamed bytes, or `None` when no single
 /// offset-0 write resolves onto `obj`. Resolution uses the same object-index
 /// rules as execution, so `obj` must be the executor-resolved index.
 pub(super) fn sole_object_image<'a>(
@@ -77,7 +49,7 @@ pub(super) fn sole_object_image<'a>(
             }
             if *offset != 0 || found.is_some() {
                 // A non-zero-offset write, or a second write into this object:
-                // uncertain, so never skip it.
+                // uncertain, so never matched.
                 return None;
             }
             found = Some(&image.segment_id);
@@ -92,97 +64,125 @@ pub(super) fn sole_object_image<'a>(
     plan.images.get(segment_id).map(|v| v.as_slice())
 }
 
-/// Reads each to-be-written object's resident `PID_MCB_TABLE` and returns the
-/// set of object indices whose resident image already matches what bussard would
-/// stream — the objects whose re-load the executor may skip (issue #73 item 2).
+/// The segment id the System B planner gives the group-object table image
+/// (`obj-table-3`, `plan.rs` `table_object_name`).
+const GROUP_OBJECT_TABLE_IMAGE: &str = "obj-table-3";
+
+/// The objects of `plan` the keep may leave alone, with the image the
+/// plan streams into each: the rule the house captures show ETS following
+/// (issue #1127). In a download onto a device that already holds the same
+/// application, ETS reads `PID_MCB_TABLE` of the group-object table and of
+/// the application object before the first unload, with the count of the
+/// product's `LdCtrlLoadImageProp`, and leaves the group-object table alone
+/// when it matches: no unload, no load, no write, while the application
+/// object and the address and association tables are reloaded as the
+/// procedure says (`1-1-5-no-secure-ga`, `secure-1-1-47`, `secure-1-1-48`,
+/// `taster-1-1-12-unsecure-0-0-6`: objects 4, 2, 1 unloaded and loaded,
+/// object 3 untouched). Where the product declares no MCB check ETS reads no
+/// MCB and runs the whole procedure (every synthetic `reload` capture).
 ///
-/// For every object that a single offset-0 `WriteRelMem` would fill (see
-/// [`sole_object_image`]), this reads the object's MCB *before* any step touches
-/// it. A match requires the device to report an entry whose `segment_size`
-/// equals the image length AND whose `crc16` equals the CRC over the image
-/// bytes. A device that answers no MCB entry (a fresh/blank object), a differing
-/// size, or a differing CRC is NOT added — that object full-streams. Any read
-/// error is treated as "cannot confirm a match" and the object full-streams,
-/// so an unreadable MCB never causes a needed write to be skipped.
-pub(super) async fn resident_match_objects<C: Connector>(
-    session: &mut Session<C>,
-    plan: &FlashPlan,
+/// So an object is a candidate when the plan writes the group-object table
+/// image into it with one offset-0 write ([`sole_object_image`]), it is not
+/// the application object, and the plan carries an `LdCtrlLoadImageProp` of
+/// it (the product declares its MCB). `object_types` gives the device's type
+/// of an object when known; a known type other than the group-object table
+/// excludes it.
+pub(super) fn keep_candidates<'a>(
+    plan: &'a FlashPlan,
     app_obj: u8,
     object_table: &[(u8, u16)],
-) -> Result<BTreeSet<u8>, WriteError> {
-    // The candidate objects: those the executor would resolve a WriteRelMem onto.
-    let mut candidates: BTreeSet<u8> = BTreeSet::new();
+) -> BTreeMap<u8, &'a [u8]> {
+    let spliced = plan.spliced_from_template;
+    let mut out = BTreeMap::new();
     for step in &plan.steps {
-        if let FlashStep::WriteRelMem { target, .. } = step
-            && let Some(obj) = resolve_object_target_opt(
-                *target,
-                object_table,
-                app_obj,
-                plan.spliced_from_template,
-            )
-        {
-            candidates.insert(obj);
+        let FlashStep::WriteRelMem { image, target, .. } = step else {
+            continue;
+        };
+        if image.segment_id != GROUP_OBJECT_TABLE_IMAGE {
+            continue;
+        }
+        let Some(obj) = resolve_object_target_opt(*target, object_table, app_obj, spliced) else {
+            continue;
+        };
+        let typed_otherwise = object_table
+            .iter()
+            .any(|&(i, t)| i == obj && t != 0 && t != bussard_mgmt::tables::OT_GROUP_OBJECT_TABLE);
+        let declared = plan.steps.iter().any(|s| {
+            matches!(s, FlashStep::LoadImageProp { obj_idx, prop_id, .. }
+                if *obj_idx == u32::from(obj) && *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE))
+        });
+        if obj == app_obj || typed_otherwise || !declared {
+            continue;
+        }
+        if let Some(bytes) = sole_object_image(plan, obj, app_obj, object_table) {
+            out.insert(obj, bytes);
         }
     }
-
-    let mut matches = BTreeSet::new();
-    for obj in candidates {
-        let Some(image) = sole_object_image(plan, obj, app_obj, object_table) else {
-            // Several writes / a non-zero offset: uncertain, never skip.
-            continue;
-        };
-        // Read the resident MCB WITHOUT asserting (expected = None), so a
-        // mismatch is a value to compare, not an error. Any read failure means
-        // we cannot confirm a match — leave the object out (it full-streams).
-        let entries = match read_mcb_table(session.l4(), obj, 0, 1, None).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let Some(entry) = entries.first() else {
-            continue;
-        };
-        if !mcb_matches(image, entry.segment_size, entry.crc16) {
-            continue;
-        }
-        // A matching MCB alone is not enough: an object left `Unloaded`,
-        // `Loading` or `Error` (an interrupted flash, an app-unload) can still
-        // describe an intact segment, but skipping its re-load would skip the
-        // `StartLoading`/`LoadCompleted` that bring it back to `Loaded`. Only an
-        // object that reports `Loaded` right now is skipped; an unreadable state
-        // full-streams, like an unreadable MCB.
-        if matches!(
-            read_load_state(session.l4(), obj).await,
-            Ok(LoadState::Loaded)
-        ) {
-            matches.insert(obj);
-        }
-    }
-    Ok(matches)
+    out
 }
 
-/// Whether a resident MCB entry (segment size and CRC) describes `image`:
-/// the match [`resident_match_objects`] skips an object's re-load on.
-pub(super) fn mcb_matches(image: &[u8], segment_size: u32, crc16: u16) -> bool {
-    segment_size == image.len() as u32 && crc16 == bussard_mgmt::crc16_ccitt(image)
+/// The device object index whose re-load a step belongs to, for the keep
+/// (issue #73 item 2), or `None` for a step that is not part of one
+/// object's re-load: only `Unload`, `StartLoading`, `AllocateSegment`,
+/// `WriteRelMem` and `LoadCompleted` are. The `LoadImageProp` check still
+/// runs on a kept object, as ETS reads its MCB after the load too.
+pub(super) fn mcb_skip_target(
+    step: &FlashStep,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+    plan: &FlashPlan,
+) -> Option<u8> {
+    let target = match step {
+        FlashStep::Unload { target, .. }
+        | FlashStep::StartLoading { target }
+        | FlashStep::AllocateSegment { target, .. }
+        | FlashStep::LoadCompleted { target }
+        | FlashStep::WriteRelMem { target, .. } => *target,
+        _ => return None,
+    };
+    resolve_object_target_opt(target, object_table, app_obj, plan.spliced_from_template)
+}
+
+/// Whether an object's resident state lets it be kept: its MCB entries
+/// describe `image` ([`bussard_mgmt::mcb_entries_match`]: from entry 1,
+/// entry by entry, CRC control bit 0 clear) and it is `Loaded` (the CRC is
+/// valid only there, Resources 03_05_01 §4.2.27.1.2). The one rule the live
+/// check ([`resident_keep`]) and the dry run against a recorded state
+/// ([`FlashPlan::skip_resident_matches`]) apply.
+pub(super) fn keeps(image: &[u8], entries: &[bussard_mgmt::McbEntry], state: LoadState) -> bool {
+    state == LoadState::Loaded && bussard_mgmt::mcb_entries_match(image, entries)
 }
 
 impl FlashPlan {
-    /// The offline counterpart of the executor's resident-MCB skip (issue
-    /// #73 item 2), for a dry run planned against a recorded device state
-    /// (issue #490): drops the re-load steps of every object whose MCB in
-    /// `mcbs` (object index to segment size and CRC) matches the image a
-    /// single offset-0 write streams into it and that `loaded` reports
-    /// `Loaded`, the steps [`mcb_skip_target`] names and the executor skips.
-    /// Every object the plan names counts as present; `app_obj` is the
-    /// application object an op without an index resolves to. Returns the
-    /// objects dropped. The caller gates it the way the executor's skip is
-    /// gated (`skip_unchanged` in `bussard-service`): only where
-    /// [`FlashPlan::allows_resident_skip`].
+    /// Drops the re-load steps ([`mcb_skip_target`]) of each object in `keep`.
+    fn drop_reloads(&mut self, keep: &BTreeSet<u8>, app_obj: u8, object_table: &[(u8, u16)]) {
+        let retain: Vec<bool> = self
+            .steps
+            .iter()
+            .map(|s| {
+                mcb_skip_target(s, object_table, app_obj, self).is_none_or(|o| !keep.contains(&o))
+            })
+            .collect();
+        let mut retain = retain.into_iter();
+        self.steps.retain(|_| retain.next().unwrap_or(true));
+    }
+
+    /// The offline counterpart of the executor's keep (issue #490), for a
+    /// dry run planned against a recorded device state: drops the re-load
+    /// of each candidate ([`keep_candidates`]) whose recorded MCB entries
+    /// (`mcbs`, by object index, as ETS read them) and load state pass
+    /// [`keeps`], the rule the executor applies live. `state_of` returns the
+    /// recorded load state; an object whose state was not recorded counts as
+    /// `Loaded`, as ETS reads the MCB of the object it keeps and not its
+    /// state. Every object the plan names counts as present; `app_obj` is
+    /// the object an op without an index resolves to. Returns the objects
+    /// kept. The caller gates it as the executor's keep is gated
+    /// (`skip_unchanged` in `bussard-service`).
     pub fn skip_resident_matches(
         &mut self,
-        mcbs: &std::collections::BTreeMap<u8, (u32, u16)>,
+        mcbs: &BTreeMap<u8, Vec<bussard_mgmt::McbEntry>>,
         app_obj: u8,
-        loaded: impl Fn(u8) -> bool,
+        state_of: impl Fn(u8) -> Option<LoadState>,
     ) -> BTreeSet<u8> {
         let table: Vec<(u8, u16)> = self
             .steps
@@ -196,31 +196,57 @@ impl FlashPlan {
                 _ => None,
             })
             .filter_map(|t| u8::try_from(t).ok())
+            .chain(std::iter::once(app_obj))
             .collect::<BTreeSet<u8>>()
             .into_iter()
             .map(|idx| (idx, 0))
             .collect();
-        let mut skip = BTreeSet::new();
-        for (&obj, &(size, crc)) in mcbs {
-            if let Some(image) = sole_object_image(self, obj, app_obj, &table)
-                && mcb_matches(image, size, crc)
-                && loaded(obj)
-            {
-                skip.insert(obj);
-            }
-        }
-        if skip.is_empty() {
-            return skip;
-        }
-        let keep: Vec<bool> = self
-            .steps
-            .iter()
-            .map(|s| mcb_skip_target(s, &table, app_obj, self).is_none_or(|o| !skip.contains(&o)))
+        let keep: BTreeSet<u8> = keep_candidates(self, app_obj, &table)
+            .into_iter()
+            .filter(|(obj, image)| {
+                mcbs.get(obj).is_some_and(|entries| {
+                    keeps(image, entries, state_of(*obj).unwrap_or(LoadState::Loaded))
+                })
+            })
+            .map(|(obj, _)| obj)
             .collect();
-        let mut keep = keep.into_iter();
-        self.steps.retain(|_| keep.next().unwrap_or(true));
-        skip
+        if !keep.is_empty() {
+            self.drop_reloads(&keep, app_obj, &table);
+        }
+        keep
     }
+}
+
+/// The objects the device already holds as the plan would leave them: each
+/// candidate ([`keep_candidates`]) that passes [`keeps`]. Reads only, each
+/// resumed across a connection death; a read the device refuses or does not
+/// answer keeps nothing for that object, so it is reloaded as before this
+/// check existed (CLAUDE.md "Speed Changes").
+///
+/// The MCB entries are read from entry 1, one element per request, as ETS
+/// reads them (issue #1128); element 0 is the number of entries (Application
+/// Layer 03_03_07 §3.4.4.1) and is not read.
+pub(super) async fn resident_keep<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+) -> BTreeSet<u8> {
+    let mut keep = BTreeSet::new();
+    for (obj, image) in keep_candidates(plan, app_obj, object_table) {
+        let Ok(entries) = read_mcb_entries_resumable(session, obj, image.len()).await else {
+            continue;
+        };
+        if !bussard_mgmt::mcb_entries_match(image, &entries) {
+            continue;
+        }
+        if let Ok(state) = read_load_state_resumable(session, obj).await
+            && keeps(image, &entries, state)
+        {
+            keep.insert(obj);
+        }
+    }
+    keep
 }
 
 /// Verifies a completed flash over the session's connection: re-reads the load
@@ -622,63 +648,137 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #490: the offline MCB skip drops the re-load of an object whose
-    /// recorded MCB matches the image, and nothing of an object whose MCB
-    /// differs or is not Loaded.
+    /// `plan` with a group-object table loaded into object 3 (the planner's
+    /// `obj-table-3` image) and, with `declared`, its MCB check.
+    fn with_group_object_table(mut plan: FlashPlan, table: &[u8], declared: bool) -> FlashPlan {
+        let image = ImageRef {
+            segment_id: GROUP_OBJECT_TABLE_IMAGE.to_string(),
+            kind: ImageKind::Table,
+            len: table.len(),
+            offset: 0,
+        };
+        plan.images
+            .insert(GROUP_OBJECT_TABLE_IMAGE.to_string(), table.to_vec());
+        let mut steps = vec![
+            FlashStep::Unload {
+                target: Some(3),
+                absent_ok: false,
+            },
+            FlashStep::StartLoading { target: Some(3) },
+            FlashStep::AllocateSegment {
+                size: table.len() as u32,
+                target: Some(3),
+                fill: super::super::SegmentFill::NONE,
+            },
+            FlashStep::WriteRelMem {
+                offset: 0,
+                image,
+                target: Some(3),
+            },
+            FlashStep::LoadCompleted { target: Some(3) },
+        ];
+        if declared {
+            steps.push(FlashStep::LoadImageProp {
+                obj_idx: 3,
+                prop_id: 27,
+                count: 1,
+                image: None,
+                advisory: false,
+            });
+        }
+        plan.steps.splice(0..0, steps);
+        plan
+    }
+
+    /// The one MCB entry a device reports for `bytes`.
+    fn entry(bytes: &[u8], crc_control: u8) -> Vec<bussard_mgmt::McbEntry> {
+        vec![bussard_mgmt::McbEntry {
+            segment_size: bytes.len() as u32,
+            crc_control,
+            access: 0x33,
+            crc16: bussard_mgmt::crc16_ccitt(bytes),
+        }]
+    }
+
+    /// Issues #490, #1127: the dry run against a recorded state keeps the
+    /// group-object table when its recorded MCB matches, under the rule
+    /// the executor applies ([`keeps`]): another image, CRC control bit 0,
+    /// a state other than Loaded or an undeclared MCB check keep nothing.
+    /// The application object is never kept.
     #[test]
-    fn test_skip_resident_matches_drops_a_matching_object() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut plan = super::super::test_support::par_pair_plan()?;
-        let image = plan
+    fn test_skip_resident_matches_keeps_the_group_object_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let table = [0x01u8, 0x02, 0x03];
+        let base = super::super::test_support::full_only_plan()?;
+        let plan = with_group_object_table(base.clone(), &table, true);
+        let loaded = |_: u8| None;
+        let reloads_3 = |p: &FlashPlan| {
+            p.steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::StartLoading { target: Some(3) }))
+        };
+
+        let mut kept = plan.clone();
+        assert_eq!(
+            kept.skip_resident_matches(&BTreeMap::from([(3u8, entry(&table, 0))]), 4, loaded),
+            BTreeSet::from([3u8])
+        );
+        assert!(!reloads_3(&kept), "{:?}", kept.steps);
+        assert!(
+            kept.steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::LoadImageProp { obj_idx: 3, .. })),
+            "the MCB check of the kept object stays"
+        );
+        assert_eq!(kept.steps.len(), plan.steps.len() - 5);
+
+        for (mcbs, state, why) in [
+            (
+                BTreeMap::from([(3u8, entry(&[9, 9, 9], 0))]),
+                None,
+                "another image",
+            ),
+            (
+                BTreeMap::from([(3u8, entry(&table, 1))]),
+                None,
+                "CRC control bit 0",
+            ),
+            (
+                BTreeMap::from([(3u8, entry(&table, 0))]),
+                Some(LoadState::Unloaded),
+                "not Loaded",
+            ),
+        ] {
+            let mut p = plan.clone();
+            assert!(
+                p.skip_resident_matches(&mcbs, 4, |_| state).is_empty(),
+                "{why}"
+            );
+            assert_eq!(p.steps, plan.steps, "{why}");
+        }
+
+        let mut undeclared = with_group_object_table(base.clone(), &table, false);
+        assert!(
+            undeclared
+                .skip_resident_matches(&BTreeMap::from([(3u8, entry(&table, 0))]), 4, loaded)
+                .is_empty(),
+            "no MCB check declared: ETS reads no MCB"
+        );
+        let app = base
             .steps
             .iter()
             .find_map(|s| match s {
-                FlashStep::WriteRelMem { image, .. } => plan.image_bytes(&image.segment_id),
+                FlashStep::WriteRelMem { image, .. } => base.image_bytes(&image.segment_id),
                 _ => None,
             })
             .ok_or("no write")?
             .to_vec();
-        let crc = bussard_mgmt::crc16_ccitt(&image);
-        let len = image.len() as u32;
-        let mut differs = plan.clone();
-        let wrong = std::collections::BTreeMap::from([(4u8, (len, crc ^ 1))]);
+        let mut app_plan = base.clone();
         assert!(
-            differs
-                .skip_resident_matches(&wrong, 4, |_| true)
-                .is_empty()
-        );
-        assert_eq!(differs.steps, plan.steps);
-        let matching = std::collections::BTreeMap::from([(4u8, (len, crc))]);
-        let mut unloaded = plan.clone();
-        assert!(
-            unloaded
-                .skip_resident_matches(&matching, 4, |_| false)
-                .is_empty()
-        );
-        let skipped = plan.skip_resident_matches(&matching, 4, |_| true);
-        assert_eq!(skipped, BTreeSet::from([4u8]));
-        assert!(!plan.steps.iter().any(|s| matches!(
-            s,
-            FlashStep::Unload {
-                target: Some(4),
-                ..
-            } | FlashStep::StartLoading { target: Some(4) }
-                | FlashStep::AllocateSegment {
-                    target: Some(4),
-                    ..
-                }
-                | FlashStep::WriteRelMem { .. }
-                | FlashStep::LoadCompleted { target: Some(4) }
-        )));
-        assert!(
-            plan.steps.iter().any(|s| matches!(
-                s,
-                FlashStep::Unload {
-                    target: Some(5),
-                    ..
-                }
-            )),
-            "another object's steps stay"
+            app_plan
+                .skip_resident_matches(&BTreeMap::from([(4u8, entry(&app, 0))]), 4, loaded)
+                .is_empty(),
+            "the application object is never kept"
         );
         Ok(())
     }

@@ -20,7 +20,9 @@
 # pre-flight probe reads live: knxtrace writes it as `resident.json` and the
 # dry run plans against it (`--resident`, issue #490), so a device that
 # already holds the application gets the product's `par` load procedure and
-# an object whose MCB already matches is skipped, as on the bus. A capture
+# the group-object table is kept when the MCB ETS read matches, as ETS keeps
+# it on the bus (issue #1127; the application object and the address and
+# association tables are always reloaded). A capture
 # in which ETS ran its Unload command before the download (knxtrace's
 # `unload_pass`) is planned with `flash --full`, bussard's equivalent, which
 # keeps the System 7 pre-download pass (issue #488).
@@ -157,6 +159,26 @@
 #                                change into a device with no links, which
 #                                `apply` refuses (the `partial` run variant of
 #                                a synthetic product, epic #596)
+#                                run=flash: what bussard EXECUTES over a
+#                                device that holds the image (issue #1127):
+#                                knx-sim replays base= (ETS's first download),
+#                                `bussard flash` runs the same application
+#                                against it (dir=, else --dir), and
+#                                `knxtrace statediff --end-state` judges the
+#                                state the device ends with: memory, final
+#                                property values, each object's load state.
+#                                Shown, never judged: skip=taken(n objects)
+#                                when bussard wrote nothing while ETS loaded
+#                                n objects (the keep), else
+#                                skip=not-taken, and exec=bussard a/ETS b
+#                                ops; diff.txt lists both operation lists.
+#                                skip=taken|none pins it: taken when bussard
+#                                wrote nothing while ETS loaded objects,
+#                                none otherwise. A kept object (the
+#                                group-object table, as ETS keeps it) makes
+#                                ORDER and COUNT differ from a capture where
+#                                ETS reloaded it; pin seq= and loadctl=
+#                                only where the row shows ETS's order
 #                                base=A,B      the captures that led to the step,
 #                                              in order (comma-separated)
 #                                dir=MODEL     the model of the step (its links)
@@ -569,6 +591,8 @@ apply_row() {
     not_comparable "$dir" "$device" "no knx-sim at $sim_bin (cargo build in knx-sim/, or export KNX_SIM_BIN)"
     return 0
   fi
+  # run=flash plans with --dir when the row names no model of its own.
+  [ "$how" = flash ] && [ -z "$model" ] && model="$PLAN_DIR"
   if [ -z "$model" ] || [ ! -d "$model" ]; then
     not_comparable "$dir" "$device" "run=apply needs dir=<model of the step>${model:+ ($model not found)}"
     return 0
@@ -631,17 +655,32 @@ PY
   [ "$how" = apply-line ] && target=(apply --line "${device%.*}")
   # run=params: the parameters-only download (issue #543).
   [ "$how" = params ] && target=(flash "$device" --parameters-only)
+  # run=flash: a plain flash of the same application (issue #1127).
+  local end_state=()
+  if [ "$how" = flash ]; then
+    target=(flash "$device" --product "$prod")
+    [ -n "$application" ] && target+=(--application "$application")
+    end_state=(--end-state)
+  fi
   local rc=0
   env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" --gateway "127.0.0.1:$port" \
     "${target[@]}" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   # A refused apply writes nothing; the state comparison then says so.
   [ "$rc" = 0 ] || note "bussard ${target[0]} exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+  # A flash that failed or was refused may have written nothing, which over
+  # a device that holds the image reads as the end state ETS left: never a
+  # verdict (issue #1127).
+  if [ "$rc" != 0 ] && [ "$how" = flash ]; then
+    not_comparable "$dir" "$device" "bussard flash exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+    return 0
+  fi
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
     --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} \
-    --json >"$dir/diff.json" || true
+    ${end_state+"${end_state[@]}"} --json >"$dir/diff.json" || true
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
-    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} >"$dir/diff.txt" || true
+    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} \
+    ${end_state+"${end_state[@]}"} >"$dir/diff.txt" || true
   sed 's/^/  /' "$dir/diff.txt"
 }
 
@@ -654,7 +693,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" seq="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" word
+  local expect="" confirmed="" props="" loadctl="" seq="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" skip="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -671,7 +710,8 @@ run_row() {
       state=*)     devstate="${word#state=}" ;;
       keyring=*)   rowkeyring="${word#keyring=}" ;;
       rev=*)       rev="${word#rev=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., seq=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=...)" ;;
+      skip=*)      skip="${word#skip=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., seq=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=..., skip=...)" ;;
     esac
   done
   local scope_args=()
@@ -681,13 +721,20 @@ run_row() {
     ""|identical|differs|not-comparable) ;;
     *) die "$device: unknown seq=$seq (identical, differs or not-comparable)" ;;
   esac
+  case "$skip" in
+    ""|taken|none) ;;
+    *) die "$device: unknown skip=$skip (taken or none)" ;;
+  esac
+  if [ -n "$skip" ] && [ "$run" != flash ]; then
+    die "$device: skip= pins the keep of a run=flash row"
+  fi
   case "$devstate" in
     ""|fresh|loaded) ;;
     *) die "$device: unknown state=$devstate (fresh or loaded)" ;;
   esac
   case "$run" in
-    ""|secure-on|secure-off|apply|apply-line|params) ;;
-    *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line or params)" ;;
+    ""|secure-on|secure-off|apply|apply-line|params|flash) ;;
+    *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line, params or flash)" ;;
   esac
   if [ -n "$rev" ] && { [ -n "$rowdir" ] || [ -n "$run" ]; }; then
     die "$device: rev= plans with --dir at a revision; it does not combine with dir= or run="
@@ -699,15 +746,16 @@ run_row() {
 
   # The row's recorded coverage and expected verdict, for the summary and
   # --check (written next to the result, whatever the result is).
-  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" "$seq" <<'PY'
+  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" "$seq" "$skip" <<'PY'
 import json, sys
-path, recorded, expect, confirmed, props, loadctl, seq = sys.argv[1:8]
+path, recorded, expect, confirmed, props, loadctl, seq, skip = sys.argv[1:9]
 with open(path, "w", encoding="utf-8") as fh:
     json.dump({"recorded_coverage": float(recorded.rstrip("% ")) if recorded else None,
                "expect": expect or "identical", "expect_confirmed": confirmed or None,
                "expect_props": props or None,
                "expect_loadctl": loadctl or None,
                "expect_seq": seq or None,
+               "expect_skip": skip or None,
                "skipped": None}, fh)
 PY
   if [ -z "$run" ] && { [ -z "$product" ] || [ "$product" = "-" ]; }; then
@@ -720,7 +768,7 @@ PY
     mark_skipped "$dir" "capture not found"
     return 0
   fi
-  if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ]; then
+  if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ] || [ "$run" = flash ]; then
     apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run" "$rowkeyring"
     return 0
   fi
@@ -961,6 +1009,17 @@ for dev in devices:
         detail += "  seq=differs(first: %s)" % (seq.get("first") or {}).get("text", "?")
     else:
         detail += "  seq=n/c"
+    # run=flash (issue #1127): each object's load state at the end, judged
+    # as part of the headline by statediff; the executed operations shown.
+    lsm = r.get("load_states") or {}
+    if lsm.get("verdict") == "identical":
+        detail += "  lsm=ok(%d)" % lsm.get("compared", 0)
+    elif lsm.get("verdict") == "differs":
+        detail += "  lsm=differs(%s)" % ", ".join(
+            "obj%s %s/%s" % (d["object"], d["bussard"], d["ets"]) for d in lsm.get("differences", [])[:4])
+    if r.get("execution"):
+        import statediff  # noqa: E402
+        detail += statediff.skip_text(r["execution"])
     if r.get("verdict") == "not-comparable" and parts and not r.get("reason", "").startswith("thin"):
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
     # The headline counts the property writes (issue #669): identical memory
@@ -1002,6 +1061,14 @@ for dev in devices:
         failures.append("%s: operation order %s, expected %s%s" % (
             dev, seq.get("verdict", "not-comparable"), want_seq,
             " (first: %s)" % seq["first"]["text"] if seq.get("first") else ""))
+    # run=flash (issue #1127): skip=taken pins that bussard's step wrote
+    # nothing an object ETS loaded needed, skip=none that it kept nothing.
+    want_skip = row.get("expect_skip")
+    if want_skip:
+        exe = r.get("execution") or {}
+        got = "taken" if (exe.get("skip") or {}).get("taken") else ("none" if exe else "not-comparable")
+        if got != want_skip:
+            failures.append("%s: keep %s, expected skip=%s" % (dev, got, want_skip))
     want = row.get("expect_confirmed")
     if want and conf.get("verdict", "not-comparable") != want:
         failures.append("%s: confirmed %s, expected %s" % (

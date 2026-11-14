@@ -3210,6 +3210,42 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual([d["kind"] for d in r["load_controls"]["differences"]], ["ets-only", "ets-only"])
 
 
+    def test_statediff_end_state_skip_reads_identical(self):
+        # Issue #1127, run=flash: the base download left the device holding
+        # the image, ETS reloads it all (records, the image, the program
+        # version), bussard's resident check writes nothing. The end state
+        # is identical: memory, the final property value, the load state.
+        unload = bytes([4]) + bytes(9)
+        base = self.capture([(0x4000, b"\x02\x0a")], [self.START, self.SEG, self.DONE],
+                            props=[(1, 13, 1, 1, b"\x00\xfa\x27\x00\x10")])
+        ets = self.capture([(0x4000, b"\x02\x0a")], [unload, self.START, self.SEG, self.DONE],
+                           props=[(1, 13, 1, 1, b"\x00\xfa\x27\x00\x10")])
+        ours = self.capture([])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours, "--end-state")
+        self.assertEqual(r["system"], "flash")
+        self.assertEqual(r["verdict"], memimage.IDENTICAL, r)
+        self.assertEqual(r["properties"]["verdict"], memimage.IDENTICAL, r["properties"])
+        self.assertEqual(r["load_states"]["verdict"], memimage.IDENTICAL)
+        self.assertEqual(r["load_states"]["bussard"], {"1": "Loaded"})
+        self.assertEqual(r["execution"]["skip"], {"taken": True, "objects": 1, "kept": [1]})
+        self.assertIn("skip=taken(1 objects: obj1)", statediff.skip_text(r["execution"]))
+        # Without --end-state the program version ETS alone wrote differs
+        # (issue #1073), as a partial download judges it.
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(r["properties"]["verdict"], memimage.DIFFERS)
+
+    def test_statediff_end_state_load_state_differs(self):
+        # Issue #1127: bussard leaves the object unloaded where ETS loads it.
+        unload = bytes([4]) + bytes(9)
+        base = self.capture([(0x4000, b"\x02")], [self.START, self.SEG, self.DONE])
+        ets = self.capture([(0x4000, b"\x02")], [unload, self.START, self.SEG, self.DONE])
+        ours = self.capture([], [unload])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours, "--end-state")
+        self.assertEqual(r["verdict"], memimage.DIFFERS)
+        self.assertEqual(r["load_states"]["differences"],
+                         [{"object": 1, "bussard": "Unloaded", "ets": "Loaded"}])
+        self.assertFalse(r["execution"]["skip"]["taken"])
+
     def test_statediff_property_only_step_compares_elements(self):
         # Issue #944: a parameter-only download of a property-only program
         # writes no memory. ETS rewrites all 3 elements of obj 10 PID 55,

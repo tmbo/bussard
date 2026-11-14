@@ -4,13 +4,14 @@
 //! A live flash shapes its plan with what the read-only pre-flight finds on
 //! the device: the load state and `PID_PROGRAM_VERSION` of the application
 //! objects decide the freshness verdict, which picks the factory reset or the
-//! product's `par` load procedure, and the objects' `PID_MCB_TABLE` decide
-//! which re-loads the executor skips. A dry run has no device, so the offline
+//! product's `par` load procedure, and the `PID_MCB_TABLE` of the object ETS
+//! keeps (the group-object table, issue #1127) decides whether the executor
+//! leaves its re-load out. A dry run has no device, so the offline
 //! oracle (`scripts/campaign/95-offline-oracle.sh`) records what the device
 //! answered ETS before the download (`knxtrace image` writes it as
 //! `resident.json`) and hands it here. The plan then takes the shape the live
 //! flash would take on that device; the planner, the freshness verdict, the
-//! `par` procedure and the MCB match are the ones the live flash runs.
+//! `par` procedure and the keep rule are the ones the live flash runs.
 //!
 //! The file is JSON:
 //!
@@ -23,7 +24,8 @@
 //! `objects` are the application objects whose `PID_LOAD_STATE_CONTROL` was
 //! read (the state octet, KNX 3/5/1 §4.2.4: 0 Unloaded, 1 Loaded), `app_id`
 //! the hex `PID_PROGRAM_VERSION` of the application object, `mcb` the hex
-//! first `PID_MCB_TABLE` entry per object. Every field is optional.
+//! `PID_MCB_TABLE` entries ETS read per object, from entry 1 (8 octets
+//! each). Every field is optional.
 //!
 //! On a System 7 plan `objects` are the load-state machines instead (`index`
 //! the LSM, 1 to 4): a record with every LSM `Unloaded` is a factory-fresh
@@ -63,7 +65,7 @@ struct RecordedState {
     /// The application object's `PID_PROGRAM_VERSION`, hex.
     #[serde(default)]
     app_id: Option<String>,
-    /// The first `PID_MCB_TABLE` entry per object index, hex.
+    /// The `PID_MCB_TABLE` entries per object index, from entry 1, hex.
     #[serde(default)]
     mcb: BTreeMap<String, String>,
 }
@@ -73,8 +75,8 @@ struct RecordedState {
 pub struct Recorded {
     /// The state the pre-flight probe would have read.
     pub state: ResidentState,
-    /// The first MCB entry per object: segment size and CRC.
-    mcbs: BTreeMap<u8, (u32, u16)>,
+    /// The `PID_MCB_TABLE` entries ETS read per object, from entry 1.
+    mcbs: BTreeMap<u8, Vec<McbEntry>>,
 }
 
 /// Decodes a hex string: an odd length or a non-hex digit is an error.
@@ -114,8 +116,14 @@ impl Recorded {
             let index: u8 = index
                 .parse()
                 .ctx(|| format!("MCB object index {index:?}"))?;
-            if let Some(entry) = McbEntry::decode(&hex(entry)?) {
-                mcbs.insert(index, (entry.segment_size, entry.crc16));
+            let entries: Vec<McbEntry> = hex(entry)?
+                .as_chunks::<{ bussard_mgmt::MCB_ENTRY_LEN }>()
+                .0
+                .iter()
+                .filter_map(|c| McbEntry::decode(c))
+                .collect();
+            if !entries.is_empty() {
+                mcbs.insert(index, entries);
             }
         }
         Ok(Recorded {
@@ -147,11 +155,13 @@ impl Recorded {
         !self.state.objects.is_empty()
     }
 
-    /// Drops the re-loads the executor's resident-MCB skip would drop on
-    /// this device ([`FlashPlan::skip_resident_matches`]). An object whose
-    /// load state was not recorded counts as `Loaded` when its MCB was: ETS
-    /// reads the MCB of the objects it keeps and not their load state, and
-    /// the recorded MCB is the evidence the object holds that image.
+    /// Drops the re-loads the executor's keep would leave out on this
+    /// device ([`FlashPlan::skip_resident_matches`], the same rule): each
+    /// object ETS keeps (the group-object table, where the product declares
+    /// its MCB check) whose recorded MCB entries match its image. An object
+    /// whose load state was not recorded counts as `Loaded`: ETS reads the
+    /// MCB of the object it keeps and not its load state. Returns the kept
+    /// objects.
     pub fn skip_matching(&self, plan: &mut FlashPlan) -> Vec<u8> {
         let app_obj = self
             .state
@@ -165,11 +175,9 @@ impl Recorded {
                 .find(|o| o.index == obj)
                 .map(|o| o.state)
         };
-        plan.skip_resident_matches(&self.mcbs, app_obj, |obj| {
-            state_of(obj).is_none_or(|s| s == LoadState::Loaded)
-        })
-        .into_iter()
-        .collect()
+        plan.skip_resident_matches(&self.mcbs, app_obj, state_of)
+            .into_iter()
+            .collect()
     }
 }
 
@@ -191,7 +199,14 @@ mod tests {
             recorded.state.app_id.as_deref(),
             Some(&[0x00, 0x04, 0x20, 0xDE, 0x22][..])
         );
-        assert_eq!(recorded.mcbs.get(&3), Some(&(0x05F6, 0x0B93)));
+        let entries = recorded.mcbs.get(&3).ok_or("object 3's MCB")?;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.segment_size, e.crc16))
+                .collect::<Vec<_>>(),
+            vec![(0x05F6, 0x0B93)]
+        );
         assert!(recorded.has_states());
         Ok(())
     }

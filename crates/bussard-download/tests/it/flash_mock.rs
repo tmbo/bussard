@@ -1010,6 +1010,15 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     prop_response(oi, pid, 0, start, &[]),
                 );
             }
+            // Element 0 is the number of entries (KNX 3/3/7 §3.4.4.1), never
+            // an entry (issue #1128): this mock holds one per object. A tool
+            // that reads it as entry 1 gets two octets and no match.
+            if start == 0 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &1u16.to_be_bytes()),
+                );
+            }
             // Multi-object flash: every loadable object has its own segment
             // and MCB, valid while that object is Loaded.
             if s.multi_object
@@ -2349,12 +2358,12 @@ fn preloaded_device(image: &[u8]) -> TestResult<Shared> {
 }
 
 #[tokio::test]
-async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
-    // Item 2 (issue #73), match→skip branch: the device already holds the exact
-    // image bussard would stream (resident MCB size+CRC match). With
-    // `skip_matching_mcb` on, the pre-pass reads PID 27, sees the match and skips
-    // the object's re-load — ZERO body bytes stream — yet the flash still reaches
-    // Loaded and the LoadImageProp MCB re-verify passes.
+async fn test_flash_reloads_the_application_object_even_when_its_mcb_matches() -> TestResult {
+    // Issue #1127: the device already holds the exact image bussard would
+    // stream (resident MCB size+CRC match), but the application object is
+    // never kept: no ETS capture keeps it (the house captures reload object 4
+    // and keep only the group-object table). The flash reloads it and
+    // verifies Loaded.
     let image = [0u8, 1, 2, 3, 4, 5];
     let state = preloaded_device(&image)?;
     let (mut bus, state, handle) = setup_device(state).await?;
@@ -2392,14 +2401,11 @@ async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
     .await?;
     let _ = session.into_disconnect().await;
 
-    assert!(
-        outcome.ok(),
-        "a resident-match re-download must still verify Loaded: {outcome:?}"
-    );
+    assert!(outcome.ok(), "the re-download verifies Loaded: {outcome:?}");
     let s = lock(&state)?;
-    assert_eq!(
-        s.memory_writes_seen, 0,
-        "a resident-MCB match must stream ZERO body bytes"
+    assert!(
+        s.memory_writes_seen > 0,
+        "the application object is reloaded even when its MCB matches"
     );
     drop(handle);
     Ok(())
