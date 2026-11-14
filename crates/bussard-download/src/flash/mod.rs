@@ -134,7 +134,7 @@ pub use knxnet_ip::{
 pub use labels::trace;
 use labels::{LabelCtx, step_label};
 pub use load_records::{LoadControlForm, LoadControlRecord};
-pub use partial::PartialPlanError;
+pub use partial::{PartialPlanError, ProcedureKind};
 pub(crate) use plan::fills_application_program_2;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{add_par_procedure, kept_octets, plan_flash, same_program, select_application};
@@ -1320,6 +1320,10 @@ pub struct FlashPlan {
     /// Whether [`FlashPlan::parameters_only`] built this parameter-only plan
     /// from the mask's `par` procedure (issue #1052).
     from_par_procedure: bool,
+    /// Why [`FlashPlan::parameters_only`] kept the cut for a memory program
+    /// that carries the mask's `par` procedure (issue #1085), for the plan
+    /// note; `None` otherwise.
+    par_fallback: Option<&'static str>,
     /// Whether [`FlashPlan::parameters_only`] cut this plan down to a
     /// parameter-only download (see [`FlashPlan::is_parameters_only`]).
     parameters_only: bool,
