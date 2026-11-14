@@ -141,17 +141,16 @@ pub fn show_device_result(
 
 pub use bussard_service::validate_report::{ValidateFilter, parse_severity};
 
-/// `knx_validate` (issue #304): the diagnostics `filter` selects (by default
-/// errors and warnings), with `counts` per severity over the whole model,
-/// `shown` and a `note` naming what the filter left out.
+/// `knx_validate` (issue #304): of the shared `run` (issue #1112), the
+/// diagnostics `filter` selects (by default errors and warnings), with
+/// `counts` per severity over the whole project, `shown`, a `note` naming
+/// what the filter left out and the rule families `checked`.
 pub fn validate_filtered(
     model: &Model,
-    extra: Vec<bussard_model::Diagnostic>,
+    run: bussard_service::validate_report::ValidateRun,
     filter: &ValidateFilter,
 ) -> Value {
-    let mut diags = bussard_model::validate(model);
-    diags.extend(extra);
-    crate::reply::report(&ValidateReport::new(diags, filter), model)
+    crate::reply::report(&ValidateReport::new(run, filter), model)
 }
 
 /// Decodes a raw payload against a GA's DPT into a display string + typed JSON,
@@ -355,6 +354,7 @@ mod tests {
     use bussard_model::param_model::ProductModels;
     use bussard_service::project_view::{DeviceInfo, ProjectSummary};
     use bussard_service::transport::TransportKind;
+    use bussard_service::validate_report::{RuleSet, ValidateRun};
 
     /// `value` as JSON.
     fn json_of(value: impl serde::Serialize) -> Value {
@@ -559,7 +559,7 @@ mod tests {
             severity: Some(bussard_model::Severity::Info),
             ..ValidateFilter::default()
         };
-        let v = validate_filtered(&m, Vec::new(), &all);
+        let v = validate_filtered(&m, run(bussard_model::validate(&m)), &all);
         assert!(v["counts"]["total"].as_u64().is_some());
         assert!(v["diagnostics"].is_array());
         // A well-formed fixture: `ok` reflects zero errors.
@@ -574,6 +574,14 @@ mod tests {
         location: &str,
     ) -> bussard_model::Diagnostic {
         bussard_model::Diagnostic::new(code, severity, location, format!("{code} test"))
+    }
+
+    /// A run of `diagnostics` with every rule family checked.
+    fn run(diagnostics: Vec<bussard_model::Diagnostic>) -> ValidateRun {
+        ValidateRun {
+            diagnostics,
+            checked: RuleSet::ALL.to_vec(),
+        }
     }
 
     fn codes(v: &Value) -> Vec<String> {
@@ -600,13 +608,13 @@ mod tests {
         };
         let all = validate_filtered(
             &m,
-            extra(),
+            run(extra()),
             &ValidateFilter {
                 severity: Some(Severity::Info),
                 ..ValidateFilter::default()
             },
         );
-        let v = validate_filtered(&m, extra(), &ValidateFilter::default());
+        let v = validate_filtered(&m, run(extra()), &ValidateFilter::default());
         assert!(
             v["diagnostics"]
                 .as_array()
@@ -625,7 +633,7 @@ mod tests {
 
         let errors = validate_filtered(
             &m,
-            extra(),
+            run(extra()),
             &ValidateFilter {
                 severity: parse_severity("error"),
                 ..ValidateFilter::default()
@@ -636,7 +644,7 @@ mod tests {
 
         let device = validate_filtered(
             &m,
-            extra(),
+            run(extra()),
             &ValidateFilter {
                 severity: Some(Severity::Info),
                 address: Some("1.1.4".to_string()),
@@ -647,7 +655,7 @@ mod tests {
         assert!(!codes(&device).contains(&"E909".to_string()), "{device}");
         let line = validate_filtered(
             &m,
-            extra(),
+            run(extra()),
             &ValidateFilter {
                 severity: Some(Severity::Info),
                 address: Some("1.1.".to_string()),
@@ -658,7 +666,7 @@ mod tests {
 
         let group = validate_filtered(
             &m,
-            extra(),
+            run(extra()),
             &ValidateFilter {
                 group: Some("7/".to_string()),
                 ..ValidateFilter::default()
