@@ -402,9 +402,53 @@ pub(super) fn compose_over(
     Ok(value)
 }
 
+/// Whether a parameter may be stored in `object`/`prop_id` under a name
+/// bussard does not resolve to `object` (an index against a type, see
+/// [`lower_declared_write_prop`]).
+pub(super) fn has_unresolved_placement(
+    app: &ApplicationProgram,
+    object: PropObject,
+    prop_id: u32,
+) -> bool {
+    placements(app, object, prop_id).1
+}
+
+/// The octet of the property an undeclared `LdCtrlWriteProp` with
+/// `InlineData` of `len` octets starts at: element `StartElement` of
+/// `len / Count` octets ([`undeclared_element_count`] elements), 0 from
+/// element 1. Where the parameters placed in the property are laid over the
+/// InlineData (issue #1049).
+///
+/// # Errors
+///
+/// The reason, naming `name`, when the write starts past element 1 and its
+/// InlineData is not a whole number of elements, so the element size and
+/// the octets it covers are unknown.
+pub(super) fn undeclared_inline_from(
+    name: &str,
+    start_element: Option<u32>,
+    count: Option<u32>,
+    len: usize,
+) -> Result<usize, String> {
+    let start = start_element.unwrap_or(1).max(1);
+    if start == 1 {
+        return Ok(0);
+    }
+    let elements = undeclared_element_count(count) as usize;
+    if !len.is_multiple_of(elements) {
+        return Err(format!(
+            "the write to {name} starts at element {start} with {len} octets of InlineData for \
+             {elements} element(s), not a whole number of octets per element; bussard does not \
+             know which octets of the property the parameters placed in it fall on"
+        ));
+    }
+    Ok((start as usize - 1).saturating_mul(len / elements))
+}
+
 /// The value the parameters placed in `object`/`prop_id` compose over
-/// `template` from element 1 ([`compose_over`]), `None` when no parameter is
-/// placed in the property under a name of `object`.
+/// `template`, the octets a write sends from octet `from` of the property
+/// ([`compose_over`]), `None` when no parameter is placed in the property
+/// under a name of `object`.
 ///
 /// # Errors
 ///
@@ -418,6 +462,7 @@ pub(super) fn placed_value(
     params: &PropertyParameters<'_>,
     app: &ApplicationProgram,
     template: &[u8],
+    from: usize,
 ) -> Result<Option<Vec<u8>>, String> {
     let (names, unresolved) = placements(app, object, prop_id);
     if unresolved {
@@ -426,7 +471,7 @@ pub(super) fn placed_value(
     if !names.iter().any(|n| params.places(*n, prop_id)) {
         return Ok(None);
     }
-    compose_over(name, &names, prop_id, params, template, 0).map(Some)
+    compose_over(name, &names, prop_id, params, template, from).map(Some)
 }
 
 /// Whether a parameter is placed in `object`/`prop_id` under a name of

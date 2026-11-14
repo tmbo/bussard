@@ -1245,31 +1245,60 @@ fn plan_flash_as(
 
                 match inline_data {
                     Some(value) if !value.is_empty() => {
-                        // The PID 13 placeholder's parameters are laid over its
-                        // template as on the declared arm (the one rule,
-                        // `maybe_substitute_app_id`), and the step says the
-                        // value is theirs (issue #669), so a parameter change
-                        // rewrites it.
-                        let (value, from_parameters) = if placeholder {
-                            match super::declare::placed_value(
+                        // The parameters placed in the property are laid
+                        // over the InlineData as on the declared arm, and
+                        // the step says the value is theirs (issue #669),
+                        // so a parameter change rewrites it. ETS does so
+                        // for a write its procedure declares only after it
+                        // (issue #1049: `M-0009_A-E802-13-7620` object 9
+                        // PID 208, "Emission" set to 01 over the template's
+                        // 02), and for the PID 13 placeholder (the one rule,
+                        // `maybe_substitute_app_id`, issue #964). A
+                        // parameter that may be stored in the property
+                        // under another name of the object (an index
+                        // against a type) leaves a concrete InlineData as it
+                        // is, the shape ETS wrote for the Siemens dimmer's
+                        // typed write (issue #948); only the placeholder
+                        // refuses it.
+                        let refuse = |reason| PlanError::UnsupportedWriteProp {
+                            step: step_no,
+                            reason,
+                        };
+                        let keep_template = !placeholder
+                            && super::declare::has_unresolved_placement(app, object, prop_id);
+                        let composed = if keep_template
+                            || !super::declare::is_placed(
+                                &name,
+                                object,
+                                prop_id,
+                                &property_params,
+                                app,
+                            )
+                            .map_err(refuse)?
+                        {
+                            None
+                        } else {
+                            let from = super::declare::undeclared_inline_from(
+                                &name,
+                                *start_element,
+                                *count,
+                                value.len(),
+                            )
+                            .map_err(refuse)?;
+                            super::declare::placed_value(
                                 &name,
                                 object,
                                 prop_id,
                                 &property_params,
                                 app,
                                 &value,
+                                from,
                             )
-                            .map_err(|reason| {
-                                PlanError::UnsupportedWriteProp {
-                                    step: step_no,
-                                    reason,
-                                }
-                            })? {
-                                Some(composed) => (composed, true),
-                                None => (value, false),
-                            }
-                        } else {
-                            (value, false)
+                            .map_err(refuse)?
+                        };
+                        let (value, from_parameters) = match composed {
+                            Some(composed) => (composed, true),
+                            None => (value, false),
                         };
                         // A value-carrying WriteProp must be executable to keep the
                         // "only a fully-executable FlashPlan reaches flash" invariant:
@@ -5424,6 +5453,82 @@ mod tests {
                 assert_eq!(writes, vec![(expected.clone(), true)], "{ops}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_lays_placed_parameters_over_undeclared_inline_data() -> TestResult {
+        // Issue #1049: `M-0009_A-E802-13-7620` writes object 9 PID 208 with
+        // 124 octets of InlineData one op before it declares the property,
+        // and places parameters in it ("Emission", `P-676`, octet 83). ETS
+        // lays the parameter values over the InlineData (it wrote 01 for
+        // "Periodically" where the template holds the default 02); the
+        // undeclared arm wrote the template verbatim. The same op with the
+        // declaration first composes the same bytes.
+        let param = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="emission" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="2"><Property ObjectIndex="9" PropertyId="208" Offset="3" BitOffset="0" /></Parameter>"#;
+        let declare = r#"<LdCtrlDeclarePropDesc ObjIdx="9" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="4" Writable="true" />"#;
+        let write = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" Count="4" Verify="false" InlineData="AA000002" />"#;
+        for ops in [
+            format!(r#"{write}{declare}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+            format!(r#"{declare}{write}<LdCtrlLoadCompleted LsmIdx="4" />"#),
+        ] {
+            let app = ops_app_showing(&ops, param, &[1], false)?;
+            for (set, expected) in [(None, 0x02), (Some("1"), 0x01), (Some("0"), 0x00)] {
+                let mut overrides = BTreeMap::new();
+                if let Some(v) = set {
+                    overrides.insert("P-1_R-1".to_string(), v.to_string());
+                }
+                let plan = plan_flash_default(
+                    &app,
+                    "1.1.4",
+                    0x07B0,
+                    &overrides,
+                    &BTreeMap::new(),
+                    None,
+                    &BTreeMap::new(),
+                )?;
+                let writes: Vec<(Vec<u8>, bool, u16)> = writes_to(&plan, 208)
+                    .into_iter()
+                    .filter_map(|s| match s {
+                        FlashStep::WriteProp {
+                            value,
+                            from_parameters,
+                            count,
+                            ..
+                        } => Some((value, from_parameters, count)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    writes,
+                    vec![(vec![0xAA, 0x00, 0x00, expected], true, 4)],
+                    "{ops} with {set:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_lays_placed_parameters_over_undeclared_inline_data_from_start_element()
+    -> TestResult {
+        // Issue #1049: an undeclared InlineData write from `StartElement`
+        // sends `Count` elements of `len / Count` octets; the parameters
+        // placed in that extent are laid over it at their own offsets, and
+        // one placed outside it changes nothing.
+        let params = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="in" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="7"><Property ObjectIndex="9" PropertyId="208" Offset="5" BitOffset="0" /></Parameter>
+            <Parameter Id="M-00FA_A-2500-10-51CB_P-2" Name="out" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="9"><Property ObjectIndex="9" PropertyId="208" Offset="0" BitOffset="0" /></Parameter>"#;
+        let ops = r#"<LdCtrlWriteProp ObjIdx="9" PropId="208" StartElement="3" Count="2" InlineData="11112222" /><LdCtrlLoadCompleted LsmIdx="4" />"#;
+        let plan = plan_ops(&ops_app_showing(ops, params, &[1, 2], false)?)?;
+        let writes: Vec<Vec<u8>> = writes_to(&plan, 208)
+            .into_iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteProp { value, .. } => Some(value),
+                _ => None,
+            })
+            .collect();
+        // Elements 3 and 4 of two octets: octets 4 to 7, P-1 at octet 5.
+        assert_eq!(writes, vec![vec![0x11, 0x07, 0x22, 0x22]]);
         Ok(())
     }
 
