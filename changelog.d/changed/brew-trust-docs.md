@@ -1,1 +1,0 @@
-- The install docs, the README and the landing page name the `brew trust tmbo/tap` step Homebrew 7 requires before installing from the tap.

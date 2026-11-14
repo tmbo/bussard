@@ -10,6 +10,671 @@ Unreleased section with them included.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-14
+
+### Breaking changes
+
+- One JSON shape per flow, second half (#904): the `--json` output of `scan`, `status`,
+  `status <ADDRESS>`, `show`, `history`, `undo`, `backup`, `reconstruct`, `validate`, `audit`,
+  `diff`, `groups reserve`, `groups secure`, `keys import`, `keys export`, `export`, `test`,
+  `keys enroll`, `secure diag` and `interface secure` is now the object the matching MCP tool
+  returns (`knx_find_devices`, the `live` part of `knx_show_device`, `knx_describe_change`,
+  `knx_history`, `knx_backup_device`, `knx_reconstruct_device`, `knx_validate`, `knx_audit`,
+  `knx_diff_project`, `knx_reserve_groups`, `knx_import_file`, `knx_export`, `knx_run_tests`,
+  the enrolment tools, `knx_clear_security_log`, `knx_interface_secure`), which adds only the
+  chat envelope and the job fields. The Home Assistant, bus, telegram, project-view and
+  model-edit tools return typed results too. Renamed keys: `scan --json` and `knx_find_devices`
+  say `devices` (was `found`), `order_number` (was `order`) and `known` (was `model_status`),
+  and `missing_from_bus` lists only the scanned range; `diff --json` says `from`/`to` (was
+  `a`/`b`) and carries the second side's `source`; `keys import --json` says `path` (was
+  `source`); `interface secure --json` says `address` (was `device`); `interface secure` and
+  `secure diag` say `reason` (was `error`); `knx_reconstruct_device` returns the comparison as
+  `differences` (was `diff`) and drops `identity_line`; a scoped `knx_show_device` lists the
+  other pages as `block_summary` and `inactive_channel_summary`. `validate`, `status <ADDRESS>`,
+  `scan`, `backup` and `reconstruct` are `schema: 2`. `knx_audit` now has `products`,
+  `knx_write_group` `gateway`, and `commission --json` the identification and read-back of each
+  device whose address was written.
+- One JSON shape per flow (#904): the `--json` output of `plan`, `plan --line`, `apply --line`,
+  `flash`, `flash --parameters-only`, `restart`, `assign`, `commission`, `describe`, `read` and
+  `write` is now the same object the matching MCP tool returns, which adds only `summary`,
+  `next_step`, `what_you_will_notice` and the job fields. These shapes are `schema: 2`. Renamed or
+  moved keys: `plan` → `table_plan` and the MCP plan's `parameters` → `parameter_plan` (the
+  CLI's parameter read-back stays `parameters`), `identity` is the verdict object everywhere (no
+  longer a sentence), `unchanged` is the list of links, line runs carry `total`, `changed`,
+  `unchanged`, `skipped`, `failed` at the top (no `totals`), `flash --json` says `address`,
+  `mask` and `device`/`model` (was `device`, `device_mask`, `old`/`new`), `assign --json` says
+  `address` and nests the read-back under `readback` (was `to` and top-level fields),
+  `describe --json` and `read --json` say `reason` (was `error`), `knx_write_group` drops the
+  nested `written` object, `knx_restart_device` drops `outcome`, an interface apply says
+  `properties_written` (was `written`), and absent values are left out instead of `null`.
+- MCP: `knx_plan_device`'s `pending_model_changes` is now a list of sentences
+  read from the history (the device's changes since the session last saw it
+  hold the project), no longer `[{snapshot, tool, sentences}]` from an
+  in-memory ledger. `knx_discard_edits` reads what is pending the same way.
+  Internal: a server started on an empty directory is one `BussardMcp` whose
+  tool set changes after `knx_setup`, not a second server (#941).
+
+### Added
+
+- More ETS references are gated in CI: a hidden parameter in a data-less
+  segment (`syn-relseg-dataless-hidden`: ETS writes its octets as `00`),
+  two partial downloads in one ETS session (`partial-twice`, #1091), a link
+  and a parameter changed before one partial download (`apply-params`,
+  #1095) and a secure download after ETS's unload (`syn-secure-fill`
+  `unload-reload`: no factory reset, #1081). The ETS sweep driver no longer
+  records a radio option it could not read as an empty value (#1049).
+- knx-sim starts a KNX Data Secure device `activated`: security mode on, the
+  tool key, group keys, sender table and group-object flags from the sim
+  config or an ETS keyring export (#1054). CI now flashes the synthetic
+  Data Secure product secured with the key store, applies a parameter change
+  over it, and checks both against golden request streams and between the
+  CLI and the MCP server, next to parameter-only goldens for two plain
+  products.
+- The ETS captures of the #1054 session are committed and gated in CI: 19 new
+  synthetic oracle rows (parameter sets, parameter-only and link-change
+  downloads, Data Secure reload, partial and apply, `syn-relseg-dataless`),
+  every row pinned on its operation order (`seq=`), the knx-sim replay over
+  them, and golden request streams for the parameter change, the reload and
+  the apply of each product captured that way (#1054).
+- The offline oracle runs a Data Secure `run=params`/`run=apply` row against
+  knx-sim started `activated` from the row's keyring, so such a row is judged
+  instead of refused (#1054).
+- Three more ETS parameter-set captures are gated in CI: a load-procedure
+  choose that writes part of a segment (`syn-choose-partial-segment`), module
+  instances in the branches of a choose (`syn-module-choose`, #1050) and a
+  repeated module (`syn-module-repeat`), each with its oracle row, knx-sim
+  replay and golden request stream (#1054).
+- The offline oracle compares the order of bussard's state-changing operations
+  with ETS's (load-control events, memory writes by segment, property writes,
+  function property calls, restarts), after the state comparison's
+  normalisations, as `seq=ok(n)` or `seq=differs(first: ...)` next to
+  `loadctl=`. A row pins it with `seq=identical`; the reads only one side
+  sends are counted in the row's detail, not judged (#1055).
+- ETS references for a programmed device are gated in CI: a download over
+  a programmed 07B0 device (`syn-minimal` `reload` and `other-app`), a new
+  Data Secure product with a pre-filled segment (`syn-secure-fill`, the
+  answer to #1081: ETS sends no factory reset), ETS's unload of the
+  application (`syn-minimal`, `syn-s7-0705`), the address assignment
+  (`syn-minimal` `assign`), a secured address next to plain ones
+  (`syn-secure` `links`) and two more link-change downloads (#1056).
+- The offline oracle's diff now counts, per memory region, the octets bussard
+  writes that ETS never wrote into an allocation without fill: they are not
+  compared, and after ETS's download the device keeps what it held there
+  (#1084). The synthetic product `syn-relseg-dataless-hidden` asks ETS which
+  value a hidden parameter's octets get under a Fill other than `00`.
+- A list of supported devices ships in the binary (#1089): the application
+  programs bussard has checked against ETS, each with its category and
+  evidence (#1097). `flash`, `apply` (also `--line`),
+  `restore`, `replace` and `commission --flash/--apply` refuse a device that
+  is not on it on a real gateway, before anything is written;
+  `--allow-unsupported` writes it anyway and the history record says
+  `support: forced`. A loopback gateway reports the verdict but never
+  refuses. `plan`, `describe` and `device` print the verdict, and
+  `bussard device --supported` lists the entries. Over MCP,
+  `knx_show_device`, `knx_find_devices` and `knx_plan_device` carry
+  `support`; the write tools refuse with `code: unsupported_device` and take
+  `allow_unsupported: true` only with the digest of a plan that reported the
+  device unsupported. Reads are not affected.
+- Device support comes in three categories (#1097): `proven` (bussard wrote
+  a real device with the application and the read-back matched), `likely`
+  (computed from the committed ETS sweep: identical image and load control
+  for every captured build, coverage at least 95 %, and a proven device for
+  every mask; or a house device with an identical ETS capture) and
+  unsupported (a known problem naming its issue and cause, or unknown). `proven` and `likely` write without
+  `--allow-unsupported`; a plan, the write and the assistant say a `likely`
+  device is not confirmed on a real device. The list now holds 4 proven and
+  1040 likely applications, and 83 with a known problem (79 the sweep finds
+  differing from ETS, 4 named by an open bug), refused with their issue. `bussard device --supported`, `--json` and
+  the MCP `support` block report the `category`.
+  `tools/supported-devices/generate.py` computes the list, and CI fails when
+  it is stale. The synthetic products are no longer listed, and the Theben
+  Meteodata (mask `0701`, no proven device yet) is unknown until a live run
+  is recorded.
+- The offline oracle has `run=flash` rows: knx-sim replays ETS's first download,
+  bussard flashes against it, and the row judges the state the device ends with
+  (memory, property values, load states), showing and optionally pinning whether
+  bussard kept objects (`skip=taken|none`) next to both operation lists. The rows
+  come from `flash_rows` in `captures/synthetic/manifest.json` (#1127).
+- knx-sim simulates a BCU 2 (System 2, masks 0020, 0021 and 0025): the three
+  property-driven load-state machines with the KNX 3/5/2 §3.31.3 records, the
+  BCU 2 memory map and system table, and four access levels (#525). 90 of the
+  94 corpus BCU 2 programs load with their own procedure; the ETS sweep now
+  starts them, and the synthetic product `syn-bcu2-0021` waits for its first
+  capture. bussard still refuses to flash a BCU 2.
+
+### Changed
+
+- The offline oracle gives a property-only row (a `properties` plan, mask 0021,
+  the KNX IP interface shape) the property parity as its verdict, as it already
+  did for the `interface secure` plan: identical when every property write
+  matches, differs on any write only one side sent. ETS's commissioning writes
+  stay listed, not counted. The Enertex IP Secure Interface rows (plain, Data
+  Secure and the parameter set) now read identical instead of not comparable
+  (#1043).
+- Internal (ETS sweep): `capture.py` records and pins each row's operation
+  order and never drops a row option it does not derive, and accepts a partial
+  download that writes no program version when its base step does; the driver
+  restores a collapsed Katalog panel before a catalogue flow, tolerates a
+  dropdown that closes under its wait, expands a collapsed parameter page in
+  the page walk, and keeps a screenshot of a row it cannot set (#1054).
+- Internal (synthetic products): five new products for the ETS, bussard and
+  knx-sim triangle (`syn-secure-property`, `syn-property-nopar`,
+  `syn-trailing-writeprop`, `syn-module-choose`, `syn-assign-rewrite`), and
+  the `capture.py` run variants `params`, `apply` and `calc-overflow`, with
+  `partial`, `links` and `reload` on more products, Data Secure included; the
+  parameter changes are committed in `tools/ets-sweep/synthetic/changes.toml`.
+  The captures follow in a VM session (#1054).
+- The offline oracle gives a parameter-only download that writes no memory
+  on either side (a property-only program) the property parity as its
+  verdict, as it does for a property-only plan (#1043). The ETS sweep's
+  `params.py partial` no longer pins such a row, so its first run on an
+  empty `--work` directory gives the same verdict as the second; the two
+  synthetic property-only partial rows read identical instead of not
+  comparable (#1074).
+- Flash: a System B download of an application that supports Secure and writes a filled segment sparsely no longer opens with a factory reset (`A_Restart` master reset, erase code 7), as ETS sends none in any captured download, fresh or programmed device. The allocation with the fill flag has the device fill the segment; the segment's MCB check, or else a read of skipped octets after the restart, confirms it did. The device now keeps what that reset cleared and ETS keeps: its access keys, the data the application stores outside the download, and on a Data Secure device its group and point-to-point keys and security address table until the download rewrites them. A re-flash of such an application still runs the whole procedure, as ETS does. The reset stays, not confirmed by a capture, for a `--force` over another application or an unreadable one, now after every read-only precondition, and a load procedure's own `LdCtrlMasterReset` is sent as before. Such a download is one reset and one reconnect shorter (#1081).
+- Flash: a System B parameter segment without `<Data>` whose allocation keeps the memory (`Mode="0"`) is now written only where a declared parameter occupies it, shown or hidden, as ETS writes it; the other octets keep what the device held instead of taking the segment's `Fill`. The plan lists them as `kept_memory`, and the segment's MCB check reads the device's CRC without comparing it, since that CRC covers the kept octets. The 11 Theben-made M-00EF programs and two more of the sweep send fewer octets and stay identical (#1084).
+- A parameter-only download (`flash --parameters-only`, `apply`, `restore
+  --parameters`) of a System B program spliced into the master template now
+  runs the mask's `par` procedure for programs with parameter memory too, as
+  ETS does: it reads the base pointer before the unload and checks it after
+  the load, and runs the procedure's steps without `AppliesTo` (MergeId 7's
+  MCB checks of the tables, for example). Only the parameter octets that
+  differ from the device are written, as before. A device whose tables differ
+  from the project is refused before anything is written. A program whose
+  procedure refills a segment or erases more than the parameters keeps the
+  previous download, noted as not confirmed by a capture. A second backup
+  within the same second no longer replaces the first (#1085).
+- The device view lists the stored values a configuration ignores, and moves
+  reached hidden values to their visible keys, without working out the
+  conditions of every other parameter on every page; the result is the
+  same. The corpus view-acceptance test builds one device analysis per value
+  set, runs as 16 shards with a line per program, and is listed with the
+  corpus-gated tests in `dev/testing.md` (#1087).
+- Over MCP, a chat app that can show the server's questions (elicitation)
+  gets bussard's own question before a write to a device not on the list of
+  supported devices, so the assistant cannot answer for the human;
+  `allow_unsupported` counts only without it (#1093). A write the product
+  data moved under since its plan is refused with "plan again", and the
+  digest is spent. `bussard audit` and `bussard status <address>` print the
+  verdict, text and `--json`.
+- `apply` of a link change on System B (mask 07B0, 27B0, 57B0) with product
+  data now runs the partial download ETS runs: it unloads the group-object,
+  association and address tables, reloads all three, completes them and
+  restarts the device in the same session, then reads it back. `apply --line`
+  restarts each such device. The plan and its question name the restart. A
+  restart that could not be sent fails the result and stays pending: the next
+  `plan` offers it and the next `apply` sends it. A write of the link tables
+  alone (`restore`, no product data) refuses a group-object table a failed
+  download left unloaded (#1095).
+- The device-support list is computed from the ETS sweep of 2026-11-14,
+  re-run after the November fix round (#1097): 1072 likely applications
+  (was 1040) and 56 with a known problem (was 83). 27 applications that
+  differed from ETS now match it, among them the Zennio 07B0 programs with a
+  data-less fill segment (#1061) and the IP interfaces with tunnelling
+  addresses.
+- CI runs the offline tests of `tools/knxtrace` and `tools/ets-sweep`, and
+  `captures/synthetic/rows.txt` is generated from `manifest.json` alone
+  (`tools/ets-sweep/synthetic/capture.py --write-rows`) (#1119).
+- Internal (ETS sweep): the KNX Data Secure variant runs a representative
+  subset with `secure.py run --representative` (`tools/ets-sweep/secure-subset.json`,
+  19 applications covering masks, TP devices, tunnelling devices and IP
+  interfaces, manufacturers, object counts and key table capacities, all with
+  an identical plain oracle row), and `oracle.py --variant secure` compares
+  each secure capture with its keyring and a key store imported from it (#423).
+- Internal (ETS sweep): the parameter-set oracle maps a change on a module's
+  page to the parameter of that module instance (the instance's pages in
+  tree order, the page text's `{{...}}` placeholders matched), keeps an
+  editable virtual parameter that feeds calculations, and the driver logs
+  what it saw before it walks the tree for a page (#424).
+- Internal (ETS sweep): the parameter editor of the ETS driver works on
+  channel products: it walks every page of ETS's page tree, reads each row's
+  control (checkbox, radio buttons, dropdown, number or text field) and value
+  from the screen, and sets a change by page and label with a read-back.
+  `params.py run` draws each configuration from that survey (page switches
+  first, then other rows, then rows of the pages that appeared), builds the
+  oracle's model from the values ETS shows afterwards, `--representative`
+  runs `tools/ets-sweep/params-subset.json`, and `params.py partial` captures
+  ETS's parameter-only download (#424).
+- Internal (ETS sweep): the links variant runs a representative subset with
+  `defaults.py --variant links --representative` (`tools/ets-sweep/links-subset.json`,
+  a greedy cover of masks, table layouts, Data Secure, object counts and sizes,
+  modules, download plugins and difficult products), and the driver makes all
+  links of a device from one opened object table, polling for each dialog
+  state instead of fixed pauses (#478).
+- `bussard flash` of an application whose load procedure writes no link table
+  ends with a note that the links are left for `bussard apply <address>`
+  (#779).
+- CLI output, prompts, errors and MCP results say "project" instead of
+  "model": "Created a fresh bussard project", "Restored the project files",
+  "the links in your project", "not in your project" and so on, as in
+  `dev/glossary.md`. JSON field names, diagnostic codes, tool names and the
+  `--no-model-edits` flag are unchanged (#817).
+- Internal: each CLI subcommand is now an arguments struct that runs itself,
+  the thin wrapper modules around `bussard-service` are gone, and the three
+  progress displays are one. No change to flags, help text or `--json` output
+  (#894).
+- The audit report is a typed `AuditReport` in `bussard-service`; `bussard audit`
+  and `knx_audit` build and print the same struct, with JSON unchanged (#896).
+- `bussard-download` is smaller inside (#897): the System B, System 7 and
+  property-only flashes run one step loop, the product-corpus sweep moved to
+  the test tree, each operation has one function instead of a `_with` /
+  `_secured` / `_seeded` ladder, and the crate root no longer re-exports
+  items only its own tests use. Nothing written to a device changes. A plan
+  against a device whose parameter memory cannot be read lists only the
+  parameters the project's configuration shows, as a plan with memory does.
+- The hex, date, HTML-escape, slug and edit-distance helpers live once in
+  `bussard_model::text` and `bussard_model::timefmt` instead of as private
+  copies in each crate (#898). A hex payload such as `+1` or a non-ASCII
+  character is now refused instead of decoded or panicking, and the
+  installation documentation escapes `'` as `&#39;`.
+- Internal: `bussard flash` (also `--parameters-only` and `--dry-run`),
+  `plan`, `apply` and `restore` and the MCP tier's `knx_plan_device`,
+  `knx_apply_device` and `knx_restore_tables` read, plan and write a device
+  through one module, `bussard_service::program`: one read of identity,
+  tables, parameter memory, PID 54 and PID 61, one plan with its
+  fingerprints, one table and parameter write ending in the independent
+  read-back, one flash with its freshness gate and lock update, and one
+  observer for progress and the question. The bytes written, the CLI output
+  and the MCP result keys are unchanged. The MCP tier's device read now opens
+  its session as the CLI's does: it waits for a reconnecting tunnel and
+  retries a connect a gateway link loss cut short (#901).
+- `assign`, `adopt`, `replace` and `commission` and the chat tools
+  `knx_add_device`, `knx_replace_device` and `knx_commission_line` give a
+  device its address through one flow in `bussard-service` (#902): the wait
+  for the programming button, the free-address check, the address write, the
+  read-back and the programming-mode re-check. `replace` now prints its
+  button prompt on stderr, `commission` says "wrote …; verifying" like the
+  other commands, and `adopt --product` reports the stored file the way
+  `import-product` does.
+- The MCP server's plan-confirm scaffolding exists once (#905): one store
+  for every plan digest (device, line, restore, restart, add, replace,
+  commission and the Home Assistant plans), one digest builder, one job
+  runner and one `claim`, one set of reply helpers and one bus-ready check,
+  and one table of tools and their tiers. A digest that is unknown, expired or
+  already used is refused with the same sentence by every tool, so the
+  Home Assistant, commissioning and restart refusals now read like the
+  device plan's.
+- The application program is modelled once (#906): the product model is built
+  straight from the parsed application program instead of being written as YAML
+  and parsed back through a second set of structs, the Dynamic tree has one serde
+  form, static parameter placement is computed once for the image writer and the
+  read-back decoder, and the parameter rows of `plan`, `reconstruct` and the MCP
+  read-backs are bussard-download's own. No byte written to a device changes; on
+  the reference installation a command that rebuilds the product models takes
+  6.3 s instead of 12.7 s.
+- Internal: the device file is read and written through one serde shape, the
+  model analysis behind `bussard audit` and the viz problems panel is built
+  from the `validate` diagnostics, the device view, `bussard doc` and the
+  lock's parameter index share one parameter row, and the DPT validity checks
+  run inside the decoder (#907).
+- `bussard validate` reports the one-sided links `bussard audit` lists as
+  findings: I048 (a group address with a sender but no listener) and I049 (a
+  listener but no sender), both info (#907).
+- `bussard audit` and the viz count as unlinked com objects the ones I009
+  reports (a T or W object in no link); objects without either flag are no
+  longer counted (#907).
+- `bussard doc --json` lists each device's parameters as the rows
+  `bussard device --json` shows, plus `label`: `key` is the device file's key,
+  `value` the stored value and `computed` what a download writes for a
+  calculation output (#907).
+- Internal: the project model walks the Dynamic tree with one visitor,
+  evaluates each device once for the device view and its lookups, writes
+  `bussard.lock` from its serde structs, merges an edited device file with
+  one recursive merge, and shares one descriptor between decoding, parsing and
+  encoding the integer DPTs. No change to `bussard.lock`, device files,
+  `knx_show_device` or `--json` output (#907).
+- Internal: one model of key material. A `.knxkeys` export and the key store
+  `bussard.keys` are read into the same `KeyStore`, there is one keyring
+  export type, and the keyring precedence and tunnel credentials are resolved
+  in one place in `bussard-service` for the CLI and the MCP server. The signed
+  export is byte-identical and no flag, message or `--json` output changes
+  (#908).
+- The service layer has one error type, `ServiceError`, in place of 19
+  per-flow wrapper enums; the MCP server turns it into a refusal sentence in
+  one place (#909). The device backup and line reconstruction tools now name
+  the cause when the source-address check or the output directory fails, as
+  the other tools already did.
+- Every flow in `bussard-service` reports through one progress and prompt
+  vocabulary (#910): a `ProgressSink` of `Event`s (phase, step, note, wait,
+  download progress, finished) and a `Prompt` for the write, download and
+  conflict questions. The setup `Output`, `DownloadPrompt` and
+  `ConflictPrompt`, the assign `WaitEvent`, the line `LineNote` and the IP
+  Secure progress callback are gone. The CLI implements both once
+  (`progress::Terminal`, `confirm::Answers`), the MCP server once (the job
+  table's `JobSink`). What the commands print and the job status keys are
+  unchanged.
+- Certificate enrolment is in one place: one loopback server and one page
+  shell behind the pairing page, the password form and `--local`, one
+  session status shared by `knx_enroll_status` and the pairing page, and one
+  end sentence. `bussard keys enroll` now ends with the same sentence as the
+  chat ("Finished on the phone.") instead of "Session closed (...)", and its
+  `--json` `end` event carries that sentence (#911).
+- One device facts record (#912): the flash download is seeded from the
+  stored facts record instead of a second `DeviceFacts` struct, the
+  lock-key derivation in bussard-project is named `LockKeys`, and a backup
+  run's per-device result is its manifest row. No change to what is written
+  to a device or to the backup files.
+- The management and service internals are shared once instead of per
+  command (#913): one device identity read, one line parser and line walker
+  for `scan`, `reconstruct --line`, `backup` and `commission`, one
+  millisecond parser for the `BUSSARD_*_MS` test hooks, and one step table
+  for the KNXnet/IP Secure switch. `reconstruct --line` now authorizes after
+  the descriptor read as `scan` does, `backup --line 1.1.4` reads line 1.1,
+  and an unreadable link table reports as a malformed response.
+- A device management connection runs the tunnel's KNXnet/IP channel code
+  (sequenced request and ACK, heartbeat, inbound sequence check, disconnect)
+  instead of its own copy; the tunnel is unchanged on the wire. The secure,
+  monitor, viz and project crates drop duplicate helpers and dead API; the
+  `bussard monitor --json` record keeps its field names (#914).
+- The assistant's manual is markdown (#915): every MCP tool description is
+  `crates/bussard-mcp/guidance/tools/<tool>.md`, and the paragraphs of the
+  server instructions and of `capabilities` are `guidance/instructions/*.md`
+  and `guidance/capabilities/*.md`, compiled in with `include_str!`. The text
+  the assistant reads is byte-identical; a test fails on a guidance file no
+  code includes. The hints no transport or download error prints moved from
+  `bussard-transport` to `bussard_service::guidance`.
+- The workspace has 14 crates instead of 16 (#916): the bus actor is
+  `bussard_transport::bus`, `bussard-product` holds the ETS-XML parsers, the
+  `.knxprod` reader and the `.knxproj` import (formerly `bussard-ets`,
+  `bussard-prod` and half of `bussard-project`), and `bussard-project` keeps
+  the key store. The CLI, MCP and viz crates depend on `bussard-service`,
+  `bussard-model` and `bussard-product` only, so a flow cannot bypass the
+  service layer.
+- Internal (offline oracle): `knxtrace statediff`, the device-state
+  comparison of a `run=apply` or `run=params` row, also compares the final
+  value of every interface-object property element either side wrote in the
+  step, so the parameter-only download of a program whose parameters all live
+  in properties is compared at all (it writes no memory) (#944).
+- The install docs, the README and the landing page name the `brew trust tmbo/tap` step Homebrew 7 requires before installing from the tap.
+- Bumped `rmcp` 3.3 to 3.9 (RUSTSEC-2026-0457, RUSTSEC-2026-0461, RUSTSEC-2026-0462) and `rusqlite` 0.32 to 0.41, which brings the bundled `libsqlite3-sys` 0.30 to 0.39 (RUSTSEC-2026-0459). Building from source now needs Rust 1.89 or newer (was 1.88), because rusqlite 0.41 requires it. No change to the MCP tools or the monitor's history database.
+
+### Removed
+
+- `.bussard/models/` is no longer written or read: product models are generated
+  JSON under `.bussard/model-cache/`, rebuilt from `products/` on the next command.
+  An old `.bussard/models/` folder can be deleted (#906).
+- `bussard doc --format html` and the `html` format of the MCP `knx_export`
+  `doc` export: the handover documentation is Markdown only, and `bussard doc`
+  has no `--format` flag (#914).
+- `bussard import --from-json` and the xknxproject `.json` dump as an import,
+  `init`, `diff`, `knx_setup` or `knx_import_file` input: import the ETS
+  `.knxproj` instead (#914).
+- `--yes-download` and `--no-download` on `bussard import` and `bussard init`,
+  and the `download` argument of the MCP `knx_setup`: a `.knxproj` carries the
+  application program of every device it holds (an export without one is
+  refused before anything is written), so the import-side download step was
+  never reached. `adopt`, `import-product` and `knx_import_file` with
+  `order_number` keep their download consent (#923).
+
+### Fixed
+
+- Group-object table: in the ETS download-plugin shape, an object the configuration does not show and whose `<ComObject>` declares `CommunicationFlag="Disabled"` is now written `00 00`, as ETS does, instead of `04 00`. The Jung room controller compact modules (`A-146D`, `A-146F`) declare 30 such placeholders (#1007).
+- Tests: the six `mcp_flash::test_knx_apply_device_*` tests no longer overflow the 2 MiB test thread in a local macOS debug run. The MCP apply job now boxes each of its steps (pre-flight, write, links after the download), so a debug build stops copying the whole plan, flash and read-back future onto the stack at every `.await`; the peak stack drops from over 2 MiB to under 1 MiB (#1008).
+- Offline oracle: a row whose product file is gone (the house rows name ETS exports that are no longer kept) plans with the model's retained `products/<application>.knxprod`, and the new row option `rev=<git revision>` plans with the model as committed before a later edit of the device, so the 1.1.44 row compares against the project ETS downloaded in its capture (#1010).
+- knx-sim: a device holds the property values its catalogue `Hardware2Program/@LoadedImage` lists (kind 5 entries) in factory state and after a master reset with erase code 2, 5 or 7, as the real Hager devices do; a flash that leaves those writes out, as ETS does, now reads back what the device holds (#1012).
+- Flash: before the first write or compare of a property on a connection, bussard reads the property's description when neither an `LdCtrlDeclarePropDesc` of the procedure nor the KNX master data gives it a type, as ETS does (the sweep's captures: 470 such reads, none for 4762 declared or typed properties). The offline oracle shows the description reads ETS and bussard make as their own `desc=` column, outside the verdict (#1014).
+- knx-sim reports the empty `PID_MCB_TABLE` entry of #422 only for an object
+  that reached Loaded; a never-loaded object that holds nothing reports no
+  entry again, so the re-download skip is never taken on a blank device and
+  the DA.tp calibration test passes with its fixture present (#1015).
+- Flash: an `LdCtrlCompareProp` that names its object by `ObjType` now reads the object of that type, found the way a by-type `LdCtrlWriteProp` is (the device's object list, then `PID_IO_LIST`), instead of object 0. A type the device does not list is refused with the type named. The Gira `M-0008_A-E000-10-89B0-O0077` and three other 07B0 programs compare PID 207 of type 65281 (#1021).
+- Flash: ETS writes the KNXnet/IP parameters after the application on IP-enabled hardware on mask 07B0, even when the application declares no tunnelling addresses (the ise smart connect gateways, the Jung Sonos-Gateway, the Gira Eco). A full download into such a device now writes them too: PIDs 51, 66, 67, the friendly name and the IP assignment, without PID 53. The values come from the device's `[knxnet]` table. Without a table, the download uses ETS's defaults, DHCP and the device's catalogue product text (cut to 30 characters), as ETS does. The friendly name also comes from that product text when the table sets none. `--parameters-only` never writes the block. The product model now keeps the hardware's `IsIPEnabled` (#1023).
+- A parameter placed in a property that the configuration does not reach now leaves its octets zero (or the `InlineData` template) when the property is named by object index and has no `LdCtrlDeclarePropDesc`, as ETS writes it; elsewhere it still takes its default. The ise smart connect programs no longer write unreached defaults into object 8 (`M-007C_A-0006-20-C776` PID 69, `M-007C_A-0001-10-2A85` PID 71) (#1024).
+- Flash: when a segment has no `<Data>` and no memory parameter, and its own allocation pre-fills it, the plan now uses the fill as the segment's image and writes none of it, as ETS does. Before, the planner refused it (Gira `M-0008_A-6010-20-4D55`). The offline oracle now compares an image against the fill when ETS allocated the object with a fill and never read its base, so the ise smart connect rows `A-0001-10-2A85` and `A-0012-11-049B` reach a verdict (#1026).
+- `bussard device`, the plan's notes and the MCP device view now mark a value stored for a module instance's parameter the configuration does not reach as ignored, with what it needs (the conditions in front of the instance's `<Module>`, a `<Repeat>` count, or those in the module body), by the same rule as application parameters: a value at the instance's default (with its `BaseValue` argument), a channel label and a parameter no module body places are left out. The download never wrote such a value; only the report was wrong (#1050).
+- `flash --parameters-only` and `apply` run the mask's own parameter-only
+  load procedure (KNX 3/5/3 §3.9.3.6) for a program whose parameters all live
+  in properties, with the application's ops whose `AppliesTo` names `par` or
+  that have none. Hager `M-0009_A-E802-13-7620` (no `par` allocation, a
+  parameter reset with erase code 5) is no longer refused, and E804/E805 now
+  send MergeId 7's trailing write as ETS does (#1038). The read-back covers
+  every property the download writes. A procedure that would drop an object's
+  segment, or reset more than the parameters, is refused before anything is
+  sent. The confirmation says when the procedure resets all parameters first
+  (#1052).
+- Internal (ETS sweep): the driver finds radio buttons whose circles sit a few
+  pixels above the label's text line and clicks their centre, and tells two
+  parameter pages of one name apart (`page_n`); `params.py` writes module
+  parameter keys in bussard's selector form (`MD-2_M-13_MI-1_...`, `_MI-<n>`
+  for a `<Repeat>`) and keeps the case of a page name when it picks the module
+  instance, so an input read as 'Eingang l:' is no longer taken for
+  'Eingang L:' (#1054, #1050).
+- Flash: in a System B relative segment without `<Data>` whose full `LdCtrlRelSegment` declares `Mode="0"`, the octets no parameter places now take the record's `Fill` (`00` on every corpus program), as ETS writes them, instead of `ff`. The 11 Theben-made M-00EF programs of the sweep (77024 PowerBlock, InBlock, µBrick, PowerBlock DC, 3622 HomeControl) read identical (#1061).
+- A parameter value the device file sets and a Dynamic `<Assign>` replaces is no longer silent (#1070). `validate` warns with the new W050, and `plan`, `flash`, the MCP plan and the device view name the value, the value the `<Assign>` writes in its place, what it copies and its condition. What is written does not change: it is the assigned value, as ETS writes it. A module instance's `<Assign>` target is named the same way instead of by a page it needs (#1086).
+- A System B application whose complete load procedure writes only interface-object properties (no master reset, no segment allocation, no table load) is no longer run as a mask 0021 property-only device: `flash` refuses it, naming the shape, and `plan` and `knx_plan_device` say why its parameters are not compared. The property-only executor runs on mask 0021 alone. A property-only plan over MCP now says that `bussard flash` writes it, since it carries no `plan_digest` (#1071).
+- `flash` no longer leaves out a fixed property write (`InlineData`) to an
+  object its object walk did not find: the write goes to the index the load
+  procedure names, as ETS sends it, and a device without that object fails
+  the flash with the object and property named. A segment write to an object
+  the device lacks fails the flash instead of landing in another object's
+  segment. The read-back after a flash compares every property the flash
+  wrote, fixed values included, on every system: an MCB entry without the
+  CRC the device computes, the PEI type not at all. A skipped template step
+  for an absent object is named in the result. The object walk is no longer
+  cut at 16 objects (the Hager 07B0 actuators have 32), ends where a device
+  answers the device object again, runs once per session, and a stored
+  object table of exactly 16 is checked and read again when the device has
+  more (#1073).
+- System 7 (mask 0705): verify mode (`obj0/PID_DEVICE_CONTROL`) is now switched on after the first `LdCtrlAbsSegment` record, right before the first memory write, as ETS does, instead of before that record; a parameter-only download switches it on after LSM 3's `StartLoading`. A connection lost during the switch no longer lets the download continue without echo checks: the switch is retried on the next connection (System 7 and System B). The written state is unchanged; the operation order now matches every 0705 capture (#1076).
+- The offline oracle's partial-download comparison (`knxtrace statediff`)
+  reads a mask 0701 `AbsSegment` load-control record at the right offset,
+  with the same parser as the operation-order comparison, and keeps every
+  segment of an object. It read the record one octet early, so a 0701
+  `run=apply` or `run=params` row named its regions after the wrong
+  addresses (LSM 1 at 0x0040 instead of 0x4000). Verdicts do not change
+  (#1080).
+- Parameter segment without `<Data>` allocated with `Mode` 0: a parameter the configuration does not show is now written `00`, as ETS does, instead of the declared `Fill` (`syn-relseg-dataless-hidden`: `00 00`, not `a5 a5`). Segments with `<Data>`, pre-filling (`Mode` 1) allocations and `Fill="0"` are unchanged (#1084).
+- The offline oracle no longer reports a memory write bussard does not send: a
+  `--dump-images` plan marks an image that holds only its segment's pre-fill
+  octet as `fill_only`, and the operation-order check leaves it out, as the
+  flash and ETS both write none of it (#1088).
+- `apply` no longer refuses a Data Secure link on group object 0. Object 0 has
+  no group-object table entry, so it has no PID 61 security flag; its group
+  keys (PID 53) follow its links, as ETS writes them. A verified secured write
+  (and `adopt`, where the keyring and the flags agree) records the group
+  addresses of the device's group key table in `bussard.lock`
+  (`group_keys`); `plan` compares the project's keyed addresses with that
+  record and cross-checks the device's entry count. Without a key store or
+  without a record the key side is not compared, and the plan says so (#1094).
+- `knx_validate` now runs the rules `bussard validate` runs, through one function in the service: parameter values against the product data (E016, E017, I017, E026, W050), the file and lock rules (E020 to E023, E032, E033) and the bus-current lint (L002) were missing over MCP. Both reports name the rule families that ran (`checked`), and each diagnostic names its `device` and `parameter` where it has one (#1112).
+- Dry-run `plan.json`: a System 7 segment whose mask owns no octet is marked `fill_only`, since the writer streams nothing for it. The oracle's operation order no longer counts a memory write there, which ETS does not send either (`M-0048_A-4828`, `A-4858`, `A-855B`, #1117).
+- Offline oracle operation order: a memory write that lies in two overlapping System B segments now counts for the smallest segment that holds all of it. knx-sim places object 1 at 0xA000 inside a large object 3 at 0x8000, and the order comparison took ETS's write of object 1 for one to object 3 (`M-0085_A-00A5`, `M-008E_A-C030`, #1125).
+- Re-flashing the same application reads each memory control block from entry
+  1, entry by entry, as the standard numbers the entries and ETS reads them; it
+  read element 0, the number of entries, as entry 1. The download keeps only the
+  group-object table when its MCB matches, as ETS does on the house devices, and
+  only where the product declares that MCB check; the application object and the
+  address and association tables are always reloaded, so the lone unload of
+  object 5 and the program version write to a loaded object are gone. A refused
+  read reloads the object; a failure after the keep runs the download in full.
+  The parameter backup sums a multi-entry MCB table instead of taking entry 1
+  (#1128, #1127).
+- ETS sweep driver: the Katalog panel's Import button is found again when OCR joins the panel's close icon into its label ("X Import"); 31 imports in a row were refused on 2026-11-08 (#422).
+- ETS sweep driver: the Import click lands inside the word wherever OCR puts it in the line, and a driver restart on upload spawns its replacement before shutting down, so an upload no longer leaves the VM without a driver (#422, #932).
+- The ETS sweep driver stops serving before it closes its socket on a
+  self-restart, so a new upload no longer leaves the VM without a driver
+  (#422).
+- ETS sweep driver: the import result panel's OK is found by its text (fixed position as the fallback), and the catalog reset closes a result panel before closing ETS (#422).
+- knx-sim answers `PID_MCB_TABLE` of a loadable object the tool streamed
+  nothing into with an empty image (size 0, the CRC of no octets) instead of
+  refusing the read: ETS loads object 4 of the Schneider STYAS6xx programs
+  empty and reported a read of a protected memory area (#422).
+- knx-sim resolves the property writes of a module definition's load
+  procedure per module instance (`BaseObjIdx`, `BaseStartElement`), so the
+  objects a module instance addresses exist: the Schneider STXF121's metering
+  modules write PID 208 of objects 6 to 9, the sim held none of them, and ETS
+  reported "Die ausgewählte Geräte-Ressource ist zurzeit nicht verfügbar" (#422).
+- knx-sim allocates an application program segment at least as large as the
+  product's `LdCtrlWriteRelMem` writes into it: the Hager TYMS616D and
+  TYMS620D request 258 octets on object 4 and write 642 and 802, which the sim
+  refused, so ETS reported that the device does not respond (#422).
+- The ETS sweep records as learned only the identity ETS's log required, not
+  the values it seeded, drops earlier learned entries a seed supplies by
+  itself, and no longer seeds a module definition's relative parameters as
+  device properties: a bad seed stuck to four Schneider rows after its source
+  was fixed (#422).
+- The ETS sweep no longer seeds a device property from a parameter that names
+  the device object by type: the Schneider M-0009 programs' `HardwareType`
+  parameter disagrees with their own hardware-type compare, and ETS refused
+  four products as "Device not compatible" (#422).
+- The ETS sweep retries a failed ssh handshake to the VM instead of ending
+  the run (#422).
+- The ETS sweep puts the Topologie tree's splitter back where its layout
+  expects it, and checks both splitters before every catalog add (#422).
+- Internal (offline oracle): the security object's group-object security
+  flags (PID 61) compare as one element run, each of ETS's hashed writes
+  checked against the same flags of bussard's plan, so a Data Secure row no
+  longer differs only because ETS splits the flags by the device's maximum
+  APDU length (44 per write at 66) and the dry run by its nominal 233 (#423).
+- A Data Secure download of a device with two programs (the Busch-Jaeger
+  6179) programs the security object between the programs' version writes,
+  right before the application program's, as ETS does (#423).
+- knx-sim: a Data Secure device checks the GO flags (PID 61) against the
+  group-object table it is loading, not a 4095 fallback, so ETS can program
+  the flags of a device with more than 4095 group objects (#423).
+- knx-sim: a property-only device (mask 0021, a KNX IP interface such as the
+  Enertex IP Secure Interface) with a `security:` block now has the security
+  object and the Data Secure session, so ETS can commission it (#423).
+- Internal (ETS sweep): `vm.py install` uploads the driver beside the running
+  one and swaps it in with one rename, the running driver re-execs only from
+  a file that has settled and compiles (a half-written upload killed it
+  twice), the replacement's start-up output goes to `driver-start.log`,
+  install waits for `/health`, and a driver that does not answer raises a
+  clear error instead of returning an empty answer. The parameter sets draw
+  changes only for rows a model parameter of a fitting type has, and the
+  oracle maps parameters on pages ETS shows as sections of their parent page,
+  on pages named by a parameter, and in channels named by a placeholder (#424).
+- Internal (ETS sweep): the parameter editor reads rows where they are
+  (Windows OCR misplaced the lines of a mostly blank crop by about 20 px, so
+  a checkbox was read and clicked beside itself), tells a checkbox by its
+  side and tick (a fixed value shown as text is no checkbox), walks the page
+  tree to its last page, reaches a page of a collapsed channel by walking,
+  and reads every change back on its own page (#424).
+- Internal (ETS sweep): the parameter-set oracle reads a row's verdict from
+  the summary table (not its section heading), pins a property-only
+  program's parameter-only row on its properties, resolves changes in order
+  (a page switch before the changes it shows), prefers an exact page name
+  over a close one, and a dropdown ETS does not open is an unreachable
+  change, not a failed one (#424).
+- ETS sweep driver: the Katalog Import button is found when OCR reads the collapse arrow and close icon before it ("v X Import", 2026-11-10) (#478).
+- ETS sweep, links variant: the second address goes on an object of the same size (ETS refused a 1-byte object's address for a 1-bit object and left its link dialog open, which failed every import after it). The driver now cancels a link dialog ETS refuses an address in, records the reason, and closes a leftover link dialog before a link or an import (#478).
+- Internal (ETS sweep): the links variant records the object ETS linked when
+  OCR misreads a lone 1, reads the object table with the mouse off it (a
+  tooltip gave rows links ETS never made), answers ETS's datatype question
+  after a link, waits for an address ETS shows late, and prints every job
+  whose product import failed (#478).
+- `flash` refuses a System 7 table the one-octet form cannot hold (more than 254 group addresses, more than 255 associations, or a TSAP or ASAP past 255) at plan time, naming the table, the count and the limit; it used to leave the table out and stream the product's own `<Data>` table in its place (#739).
+- `bussard keys import` and every other load of an ETS `.knxkeys` accept a `<Backbone>` without `Key`, which ETS 6.4.1 writes when the IP backbone is not secured, and read it as no backbone key; the syn-secure oracle row now plans with a key store imported from its keyring and is identical, property writes included (#858).
+- knx-sim answers a frame it refuses as a real device does: the transport
+  layer still acknowledges an accepted numbered frame, and a refused property
+  read or write (absent object or PID, read-only, missing access, bad length)
+  gets the zero-count `A_PropertyValue_Response`. ETS used to repeat the frame
+  and report a dead device instead of the refusal (#869).
+- ETS sweep: each catalog row carries its manufacturer group header, and every result records whether the added row's header names the product file's manufacturer (`catalog_manufacturer`), for the analysis of ETS's manufacturer refusals (#881).
+- The assistant's flash and application load ask the factory-freshness gate
+  `bussard flash` decides with, instead of two private copies that answered
+  differently. A load still replaces an identified other application on the
+  yes to a plan that names it (the chat's `--force`); a device whose state
+  is unknown, that does not fit, or whose application cannot be identified
+  stays refused. The plan digest's device fingerprint is now the
+  `state_hash` the plan reports, and the lock-pin override rule lives in the
+  service (#895).
+- `bussard flash` no longer refuses a System B load procedure that declares
+  a property with `LdCtrlDeclarePropDesc` (the five Hager 07B0 actuators of
+  the ETS sweep and about 30 more applications in the catalogue). The
+  declaration sends nothing; the property write after it goes out in elements
+  of the declared type, with the value the parameters compose, as ETS writes
+  it (#938).
+- System B flash: a merged program without Application Program 2 now runs the complete download as ETS does (the `ap1` procedure): object 4 is loaded and gets its program version even without an allocation, object 5 is only unloaded, and an object the program's own blocks open is loaded (Hager 07B0 actuators, #942). Load-state controls that name their object by type go to that object as `A_FunctionPropertyExt_Command` PID 5 instead of to no object (Gira Eco, #961).
+- Group-object tables follow three more Dynamic constructs ETS honours: a `<when test="=N">` equality (Siemens `07 B0` channel functions; the property-load planner still refuses it), a parameter block's `ParamRefId` title, which activates that parameter for a default-only `<choose>` (Hager `A-E807`/`A-E808`), and the source of a reached `<Assign>`, now treated as its target (the DALI gateway program `A-DA11`) (#943, #949, #950).
+- `bussard plan` after a flash of a program whose parameters all live in interface-object properties (the Hager 07B0 actuators `M-0009_A-E804-10-98AD` and `M-0009_A-E805-10-B015`) no longer stops with "the parameter memory could not be read". It compares the properties the flash wrote, and the flash's read-back counts their parameters. Plan and verify work; apply waits for the ETS capture of #572: `apply` and `flash --parameters-only` refuse a changed property parameter on such a program and name the capture (item A.4), and a full `bussard flash` writes it (#944).
+- `apply` and `flash --parameters-only` write a parameter change to a program
+  whose parameters all live in interface-object properties (the Hager 07B0
+  actuators) instead of refusing it: the download matches ETS's
+  parameter-only download of such a program. The parameter backup taken
+  first records those properties, and `restore --parameters` puts them
+  back (#944).
+- A write to a property an `LdCtrlDeclarePropDesc` declared is sized by its
+  `Count` whether or not a parameter is placed in it, is read back after the
+  flash, keeps the application-id substitution on PID 13, and accepts
+  `PDT_BINARY_INFORMATION`. A write without `Count` is taken as one element
+  only when the declaration leaves room for no more; otherwise the plan
+  refuses it instead of guessing (#945).
+- `bussard flash` no longer refuses a load procedure that calls a function
+  property with `LdCtrlInvokeFunctionProp` (the Hager and Berker 0701
+  programs of the ETS sweep, two Hager and one Gira 07B0). The call goes out
+  as ETS sends it, and a device that answers with an error, or not at all,
+  fails the flash. System 7 programs that declare a property with
+  `LdCtrlDeclarePropDesc` are planned as on System B (#946).
+- Flash: a load-procedure property write without `InlineData` whose parameter value does not split into its `Count` elements is now sized as ETS sizes it from the property's description, instead of refusing the download: one element when the value is 1 to 20 octets, otherwise only the description read, with nothing written. The flash stops if the device describes such a property with a fixed-size type. The ise smart connect Programmable, Sonos and Hue applications now plan (#947).
+- A load procedure's property write of more than 255 elements is no longer
+  refused. It goes out in requests of at most 15 elements, as ETS sends it.
+  A procedure's own unload, start-loading or load-completed write to an
+  object's load state (ise smart connect, object 8) is confirmed by the state
+  the device answers instead of failing as an unconfirmed write, and the
+  offline oracle judges it with the load controls (#947).
+- The group-object table takes the ETS download-plugin shape (C on every declared object, `04 00` for the ones the configuration does not show) only when the program names a plugin GUID or its catalogue `LoadedImage` holds a group-object-table segment; an empty `EtsDownloadPlugin=""` no longer selects it. Siemens, Jung, M-00EF and M-00FD programs gain the shape, seven M-0008, M-007C and M-0048 programs lose it (#949).
+- `bussard flash` no longer writes a property the device holds already after
+  the procedure's parameter reset: the catalogue's `LoadedImage` lists those
+  values (objects relative to the mask's `FirstAppObjectIdx`), and ETS leaves
+  the writes out (the Hager STYM/STXM generation `M-0009_A-E0D0` to `A-E0D3`,
+  and `A-E0EE`). A write after another write of the procedure to the same
+  elements is always sent. bussard reads every such property during the
+  download and writes it as before when the device holds something else; the
+  post-flash read-back compares it with the project, and a parameter-only
+  download writes it. A count-less write the `LoadedImage` records as one
+  element is one element, and an undeclared write from a later element sends
+  that element, not the whole property (`A-E0EE`) (#951).
+- A System B property write that names its object by type no longer goes to
+  object 0: a program that is not Data Secure enabled writes it at the index
+  the device's object list gives the type, a Data Secure enabled one on the
+  extended services, as ETS does (#948). Declared property writes take an
+  object named by type, are no longer bounded by `MaxElements` or
+  `Writable`, and send nothing without a value (#948); their `InlineData` is
+  cut only over an all-zero tail and never ends in part of an element, and
+  both System B planners share one `Count` rule (#957).
+- `bussard flash` runs a module definition's load procedure once per module instance the configuration reaches, in place of the application procedure's `LdCtrlMerge`, with `BaseObjIdx`, `BaseStartElement` and `BaseOccurrence` added from the instance's arguments. Before, the ops ran once at the module definition's own offsets (the Hager `M-0009_A-E0F1`/`E0F2` wrote object 0 PID 208, the Gira S1 `M-0008_A-0004-75-0A9A` none of its module writes); a procedure bussard cannot resolve is refused naming the module (#959).
+- Offline oracle: `knxtrace imgdiff` compares property writes that do not align request by request as element runs, so a long write the dry run sends in one request (APDU 233) matches ETS's split at the device's max APDU (`M-0008_A-C02A-21-B6D8-O007C` PID 69: 25 elements against 14 + 11) (#960).
+- ETS sweep tooling: the offline oracle pairs a System B property write bussard plans by object type with ETS's write by index when the capture shows the object's type (PID_OBJECT_TYPE or PID_IO_LIST answers, #960); the sweep starts the sim at the address ETS gave the added device, so a coupler at 1.1.0 is downloaded and its oracle row uses that address (#876); the sweep seeds the brand's manufacturer id as PID_MANUFACTURER_ID for OEM hardware such as the Gewiss GW10966 (#881).
+- Property writes from a load procedure: the dry-run dump splits a System B
+  write to an object named by type into the requests the flash sends; a
+  program that is not Data Secure enabled has a by-type write with a PID past
+  8 bits refused at plan time instead of failing after the unload; the write
+  and the read-back find a by-type object with one lookup, also past a walk
+  that stops short; the all-zero PID 13 placeholder is refused on every write
+  when neither an application id nor a parameter supplies it, and takes the
+  id of the object it names; a declared property with one parameter placed by
+  index and another by type is refused instead of written in part; and an
+  undeclared write with `InlineData` honours its `Count` (#964).
+- The ETS sweep seeds a device-object property that the application's load
+  procedure compares against a range, using the bound of the range. ETS no
+  longer gives up on the Jung F50 Secure room controller because the sim
+  lacks object 0 PID 201 (#966).
+- System 7 flash: a program with an ETS download plugin (Berker, Hager 0701) gets the communication flag on every group object it declares, linked or not, as ETS writes it; numbering gaps still have it cleared (#970).
+- Declared property writes: a `<Union>` placed in an interface-object property now places its members there (the Schneider TXC513 overrun times on object 7 PID 208), an unshown parameter whose refs disagree on `Value` takes its own `Value`, and a non-zero `InlineData` tail of whole multi-octet elements past `Count` is dropped as ETS drops it instead of refusing the download (#951, #971).
+- knx-sim: a `properties:` override of a PID the interface object does not model is described with the generic data type of its length (`PDT_GENERIC_07` for 7 octets) instead of variable length, so ETS can judge the Jung F50's range compare on device-object PID 201 (#975).
+- knx-sim describes a property a System 7 load procedure writes without
+  `InlineData` with the size the product gives it: the text parameter placed
+  in it, else its `LdCtrlDeclarePropDesc`, else one octet. The MDT Central
+  Operation Unit Smart capture that showed one-octet label writes predates
+  this sizing (#841) and is retaken; tests now hold it (#980).
+- `bussard flash` asks a device without `PID_MAX_APDU_LENGTH` once per flash, not again on the connection after the restart. The reference installation's Jung 0705 and Theben 0701 devices answer the read with count 0 (`captures/campaign/2026-09-23/devices/1.1.32/`, `1.1.202/`) (#996).
+- knx-sim: a System 7 device has no `PID_MAX_APDU_LENGTH`, as the house's Jung 0705 devices answer, instead of reporting 15; a product that writes a property element longer than a standard frame (the 20-octet labels of the MDT BE-BZS86.01) gets the APDU that element needs, so ETS no longer refuses its download (#996).
+- ETS sweep driver: a delete confirmation still open after the click on "Ja" is answered with "Nein" before the delete reports the error, so the next import finds the Katalog panel (#997).
+- ETS sweep driver: when OCR reads the delete confirmation's Nein but not its Ja, the Ja is clicked at its place beside Nein and the dialog is checked afterwards; the error names what OCR read (#997).
+- ETS sweep driver: the delete confirmation's Ja is the one on the same line as its Nein, so a catalog cell reading "Ja" is not clicked instead; the dialog's image is kept when a click leaves it open (#997).
+- ETS sweep driver: a dialog button is matched as a whole word anywhere in its OCR line, so the delete confirmation's Ja is found when OCR joins it with Nein ("√ Ja X Nein", 2026-11-09, #997).
+- ETS sweep: the delete confirmation's "Ja" is found with the check mark OCR reads in front of it (`v Ja`), a confirmation left open is answered "Nein" before the next import or add, and a device left in the project is deleted before the add or recorded as `driver-error-cleanup`, so one failed delete no longer stops the run (#997).
+
+### Security
+
+- Update rustix to 1.1.6 for RUSTSEC-2026-0486, unsound extended-attribute reads on a zero-length buffer.
+- The repository no longer names the maintainer's network: the gateway
+  address and MAC in tests, docs and the synthetic captures are RFC 5737 and
+  RFC 7042 documentation values, the ETS sweep reads the VM's host and user
+  from `.env`, and CI refuses a private path, LAN address, home directory or
+  real MAC in a tracked file (`scripts/check-no-private-data.sh`).
+
 ## [0.10.0] - 2026-11-06
 
 The same code as 0.9.0 with the release pipeline repaired: the Windows asset

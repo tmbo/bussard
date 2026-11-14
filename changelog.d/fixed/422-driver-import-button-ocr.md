@@ -1,1 +1,0 @@
-- ETS sweep driver: the Katalog panel's Import button is found again when OCR joins the panel's close icon into its label ("X Import"); 31 imports in a row were refused on 2026-11-08 (#422).
