@@ -40,3 +40,4 @@ mod verify_mode_system_b;
 #[path = "../../../bussard-product/tests/it/value_sets.rs"]
 mod value_sets;
 mod view_acceptance;
+mod write_rel_mem_tail;
