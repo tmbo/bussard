@@ -229,7 +229,7 @@ Sweep manifest of 2026-11-14, coverage floor 95.0 %.
 | `0701` | 0 | 0 | 366 | 27 | 5 |
 | `0705` | 1 | 276 | 0 | 8 | 8 |
 | `07B0` | 3 | 797 | 0 | 21 | 40 |
-| all | 4 | 1072 | 366 | 56 | 52 |
+| all | 4 | 1072 | 366 | 56 | 53 |
 
 | Manufacturer | Proven | Likely | Known problems |
 |---|---|---|---|
