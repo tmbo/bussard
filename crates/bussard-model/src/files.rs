@@ -42,17 +42,28 @@ use crate::toml_io;
 /// - v4 (issue #752): a device's `serial_number`. v4 only adds that optional
 ///   key, so a lock without it is still written (and read) as v3 and an
 ///   older build keeps reading it; see [`lock_version_for`].
-pub const LOCK_VERSION: u32 = 4;
+/// - v5 (issue #1094): a device's `group_keys`, the record of its group key
+///   table. Optional too: a lock without it keeps its v3 or v4 version, and
+///   a missing record means "not compared" until an apply establishes it.
+pub const LOCK_VERSION: u32 = 5;
+
+/// The version a lock with a `serial_number` and no v5 key is written with.
+pub const LOCK_VERSION_V4: u32 = 4;
 
 /// The version a lock that uses no v4 key is written with, and the oldest one
 /// this build reads.
 pub const LOCK_VERSION_V3: u32 = 3;
 
-/// The version a lock with these device entries is written with: v4 when one
-/// of them carries a `serial_number`, v3 otherwise (issue #752).
+/// The version a lock with these device entries is written with: v5 when one
+/// of them carries `group_keys` (issue #1094), v4 when one carries a
+/// `serial_number` (issue #752), v3 otherwise. The lowest version that holds
+/// every key used, so an older build keeps reading a lock that uses none of
+/// the newer keys.
 pub(crate) fn lock_version_for(devices: &[LockDevice]) -> u32 {
-    if devices.iter().any(|d| d.serial_number.is_some()) {
+    if devices.iter().any(|d| d.group_keys.is_some()) {
         LOCK_VERSION
+    } else if devices.iter().any(|d| d.serial_number.is_some()) {
+        LOCK_VERSION_V4
     } else {
         LOCK_VERSION_V3
     }
@@ -61,7 +72,7 @@ pub(crate) fn lock_version_for(devices: &[LockDevice]) -> u32 {
 /// A fingerprint of the lock's schema (every struct field and origin kind the
 /// lock reads), recorded with [`LOCK_VERSION`]. A unit test recomputes it; when
 /// it fails, the schema changed: bump `LOCK_VERSION` and record the new value.
-pub const LOCK_SCHEMA_FINGERPRINT: u64 = 0x65c7_a802_d2c9_c865;
+pub const LOCK_SCHEMA_FINGERPRINT: u64 = 0x983e_7190_ab0e_bfd7;
 
 /// The `version` of a `bussard.lock`, read before anything else so a lock
 /// of another version is refused with the version message, never with a
@@ -170,6 +181,8 @@ pub(crate) struct LockDevice {
     pub sequence_number: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secure_senders: Vec<SecureSender>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_keys: Option<Vec<GroupAddress>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<LockChannel>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1048,6 +1061,7 @@ pub(crate) fn join_device(
         has_fdsk_certificate: lock.is_some_and(|l| l.has_fdsk_certificate),
         sequence_number: lock.and_then(|l| l.sequence_number),
         secure_senders: lock.map(|l| l.secure_senders.clone()).unwrap_or_default(),
+        group_keys: lock.and_then(|l| l.group_keys.clone()),
     };
     let security =
         (top.security.is_some() || security != DeviceSecurity::default()).then_some(security);
@@ -1428,6 +1442,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         has_fdsk_certificate: security.has_fdsk_certificate,
         sequence_number: security.sequence_number,
         secure_senders: security.secure_senders.clone(),
+        group_keys: security.group_keys.clone(),
         channels,
         module_bases,
         objects,
@@ -1446,6 +1461,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         && !entry.has_fdsk_certificate
         && entry.sequence_number.is_none()
         && entry.secure_senders.is_empty()
+        && entry.group_keys.is_none()
         && entry.channels.is_empty()
         && entry.module_bases.is_empty()
         && entry.objects.is_empty()

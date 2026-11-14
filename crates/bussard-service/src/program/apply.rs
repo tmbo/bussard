@@ -381,10 +381,14 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
                     crate::security_change::record_security_flags(
                         req.dir,
                         target,
-                        &inputs.secure_objects,
+                        crate::security_change::SecurityRecord {
+                            secured: &inputs.secure_objects,
+                            from_flags: false,
+                            group_keys: &inputs.keyed(&req.desired.addresses).into_iter().collect(),
+                        },
                     )
                     .map_err(|err| err.to_string()),
-                    inputs.secure_objects.len(),
+                    inputs.flagged_objects().len(),
                 )),
             };
         }

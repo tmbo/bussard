@@ -538,6 +538,38 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
     Ok(out)
 }
 
+/// Whether group object `object` has an element in a device's group-object
+/// security flags (PID 61, issue #1094). Each element belongs to the
+/// group-object table entry with the same index (Resources 03_05_01
+/// §6.3.15.2), and that table holds its length at index 0 and the descriptor
+/// of object n at index n (§4.18.6.2.4.1.1, Table 86). Group object 0 has no
+/// entry and so no flag: ETS downloads a secured link on it with its group
+/// key (PID 53) and no flag (`captures/synthetic/syn-secure/apply`).
+///
+/// The one rule every consumer shares: object 0 stays a secured object of
+/// the model and the lock, its group keys follow its links, and only the
+/// PID 61 element is skipped.
+pub fn has_go_flag_element(object: u16) -> bool {
+    object >= 1
+}
+
+/// The group objects each group address of `desired` links (the
+/// association table's TSAPs resolved through its address table).
+pub fn linked_objects(
+    desired: &crate::compute::DesiredTables,
+) -> BTreeMap<GroupAddress, BTreeSet<u16>> {
+    let mut linked: BTreeMap<GroupAddress, BTreeSet<u16>> = BTreeMap::new();
+    for &(tsap, asap) in &desired.associations {
+        if let Some(ga) = usize::from(tsap)
+            .checked_sub(1)
+            .and_then(|i| desired.addresses.get(i))
+        {
+            linked.entry(*ga).or_default().insert(asap);
+        }
+    }
+    linked
+}
+
 /// Builds the security program for `device` from its final address table
 /// (`addresses`, table order: element 1 first), its group-object count, the
 /// group objects to secure, the group addresses the project marks secure and
@@ -545,7 +577,9 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
 ///
 /// A group address gets a key-table entry when the keyring has a key for it.
 /// A group address the model marks secure without a key is refused. A group
-/// object is flagged when it is in `secure_objects`.
+/// object is flagged when it is in `secure_objects` and has a PID 61 element
+/// ([`has_go_flag_element`]: group object 0
+/// has none and is skipped, its keys still written, issue #1094).
 pub fn build_security_program(
     device: IndividualAddress,
     addresses: &[GroupAddress],
@@ -569,7 +603,7 @@ pub fn build_security_program(
         }
     }
     let mut flags = vec![0u8; usize::from(go_count)];
-    for &object in secure_objects {
+    for &object in secure_objects.iter().filter(|&&o| has_go_flag_element(o)) {
         let slot = usize::from(object)
             .checked_sub(1)
             .and_then(|i| flags.get_mut(i))
@@ -720,6 +754,26 @@ pub fn security_inputs_for(
 }
 
 impl SecurityInputs {
+    /// The secured objects PID 61 flags: those with an element
+    /// ([`has_go_flag_element`]).
+    pub fn flagged_objects(&self) -> BTreeSet<u16> {
+        self.secure_objects
+            .iter()
+            .copied()
+            .filter(|&o| has_go_flag_element(o))
+            .collect()
+    }
+
+    /// The secured objects without a PID 61 element (group object 0): their
+    /// keys are written, no flag.
+    pub fn unflagged_objects(&self) -> BTreeSet<u16> {
+        self.secure_objects
+            .iter()
+            .copied()
+            .filter(|&o| !has_go_flag_element(o))
+            .collect()
+    }
+
     /// The keyed group addresses of `addresses` (the address table being
     /// written), in table order: the ones the group key table will index.
     pub fn keyed(&self, addresses: &[GroupAddress]) -> Vec<GroupAddress> {
@@ -741,8 +795,10 @@ impl SecurityInputs {
             .iter()
             .map(ToString::to_string)
             .collect();
+        // What PID 61 receives: the flagged objects (group object 0 has no
+        // element, issue #1094); the keys are listed above.
         let objects: Vec<String> = self
-            .secure_objects
+            .flagged_objects()
             .iter()
             .map(ToString::to_string)
             .collect();
@@ -1334,6 +1390,51 @@ mod tests {
         .ok_or("expected an error")?;
         assert!(matches!(err, SecurityPlanError::MissingGroupKey { .. }));
         assert!(err.to_string().contains("0/3/47"));
+        Ok(())
+    }
+
+    /// Issue #1094, from `captures/synthetic/syn-secure/apply`: object 0 on
+    /// the keyed 1/0/1 and 1/0/2, object 1 on 1/0/3. Every key is written;
+    /// PID 61 has element 1 only (object 1 flagged), nothing for object 0.
+    #[test]
+    fn test_build_security_program_keys_object_0_and_skips_its_flag() -> TestResult {
+        let device: IndividualAddress = "1.1.1".parse()?;
+        let addresses = vec![ga("1/0/1")?, ga("1/0/2")?, ga("1/0/3")?];
+        let keys: HashMap<GroupAddress, Key16> = addresses
+            .iter()
+            .map(|a| (*a, Key16::new([7; 16])))
+            .collect();
+        let program = build_security_program(
+            device,
+            &addresses,
+            1,
+            &BTreeSet::from([0, 1]),
+            &BTreeSet::new(),
+            &keys,
+        )?;
+        assert_eq!(program.group_keys.len(), 3);
+        assert_eq!(program.go_flags, vec![GO_FLAGS_SECURE]);
+        Ok(())
+    }
+
+    /// Review of #1094, finding 8: the description says what is written. A
+    /// secured object 0 (a stale lock flag, no keyed link) is no PID 61 flag
+    /// and no key; only object 1's flag and the keyed address are listed.
+    #[test]
+    fn test_describe_lists_only_the_flags_pid_61_receives() -> TestResult {
+        let mut keys = HashMap::new();
+        keys.insert(ga("1/0/3")?, Key16::new([1; 16]));
+        let inputs = SecurityInputs {
+            secure_objects: BTreeSet::from([0, 1]),
+            group_keys: keys,
+            ..SecurityInputs::default()
+        };
+        let text = inputs.describe(&[ga("1/0/1")?, ga("1/0/3")?]);
+        assert!(text.contains("group key table: 1/0/3"), "{text}");
+        assert!(text.contains("group-object flags: secured 1,"), "{text}");
+        assert!(!text.contains("secured 0"), "{text}");
+        assert_eq!(inputs.flagged_objects(), BTreeSet::from([1]));
+        assert_eq!(inputs.unflagged_objects(), BTreeSet::from([0]));
         Ok(())
     }
 

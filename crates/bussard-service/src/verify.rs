@@ -95,7 +95,9 @@ impl ExpectedSecurity {
         ExpectedSecurity {
             group_keys: u16::try_from(inputs.keyed(addresses).len()).unwrap_or(u16::MAX),
             senders,
-            secured_objects: inputs.secure_objects.clone(),
+            // PID 61 reads back only the objects with an element (group
+            // object 0 has none, issue #1094).
+            secured_objects: inputs.flagged_objects(),
         }
     }
 

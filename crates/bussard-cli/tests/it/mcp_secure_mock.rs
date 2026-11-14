@@ -18,6 +18,7 @@
 //! never prints a key. The mock binds 127.0.0.1 and every run passes an
 //! explicit loopback `--gateway`.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -172,6 +173,8 @@ struct SecurityLog {
     /// The group key table's (PID 53) element count, as the writes leave it
     /// (the keys themselves are write-only, issue #349).
     pid53: u16,
+    /// How many times PID 53's element count was read (issue #1094).
+    pid53_reads: usize,
     /// What the device acknowledges and then drops (issue #349).
     dropped: Option<Dropped>,
     /// The security object's load state (PID 5) as the device reports it
@@ -257,7 +260,19 @@ fn secure_device_with(
                 *flag = 0x03;
             }
         }
-        log.lock().map_err(|_| "log poisoned")?.pid61 = flags;
+        let mut log = log.lock().map_err(|_| "log poisoned")?;
+        log.pid61 = flags;
+        // The group key table holds the keys of the addresses the secured
+        // objects run (issue #1094: the plan reads its count), unless the
+        // bench sets it.
+        if log.pid53 == 0 {
+            let keyed: BTreeSet<u16> = associations
+                .iter()
+                .filter(|(_, asap)| secured.contains(asap))
+                .map(|(tsap, _)| *tsap)
+                .collect();
+            log.pid53 = u16::try_from(keyed.len())?;
+        }
     }
     let mut address_table = u16::try_from(addresses.len())?.to_be_bytes().to_vec();
     for address in addresses {
@@ -410,9 +425,10 @@ fn secure_device_with(
                     // Only the element count (start 0): the keys are
                     // write-only.
                     let start = u16::from_be_bytes([*data.get(6)?, *data.get(7)?]);
-                    let log = log.lock().ok()?;
+                    let mut log = log.lock().ok()?;
                     let mut out = header;
                     if start == 0 {
+                        log.pid53_reads += 1;
                         out.extend_from_slice(&[1, 0, 0]);
                         out.extend_from_slice(&log.pid53.to_be_bytes());
                     } else {
@@ -1220,8 +1236,12 @@ fn test_mcp_unsecure_a_group_address_end_to_end() -> TestResult {
     assert_eq!(write["ok"], true, "write: {write}");
     assert_eq!(write["secured"], false, "write: {write}");
 
-    // One undo restores all three signals, the very key included.
-    let undo = server.call("knx_undo", json!({}))?;
+    // One undo restores all three signals, the very key included. The undo
+    // names the snapshot the edit took: the verified apply recorded the
+    // device's group key table in the lock since (issue #1094), and a plain
+    // undo would restore the lock before that record first.
+    let before_edit = set["snapshot"].as_str().ok_or("the edit's snapshot")?;
+    let undo = server.call("knx_undo", json!({"snapshot_id": before_edit}))?;
     assert_eq!(undo["ok"], true, "undo: {undo}");
     assert_eq!(undo["key_store"]["ok"], true, "undo: {undo}");
     let store = bussard_project::KeyStore::load(&dir, PASSWORD)?.ok_or("no key store")?;
@@ -1988,7 +2008,6 @@ fn test_cli_unsent_restart_stays_pending_and_the_next_apply_sends_it() -> TestRe
 fn test_cli_apply_line_restarts_and_leaves_the_lock_security_flags_alone() -> TestResult {
     let rt = tokio::runtime::Runtime::new()?;
     let (gw, _log, dir) = tables_bench(&rt, "line", SecurityLog::default(), None)?;
-    let device_file = std::fs::read_to_string(dir.join("devices").join("1.1.10.toml"))?;
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
         .env("BUSSARD_ADDRESS_PROBE_MS", "200")
@@ -2003,7 +2022,7 @@ fn test_cli_apply_line_restarts_and_leaves_the_lock_security_flags_alone() -> Te
         .arg(keyring_path())
         .stdin(Stdio::null())
         .output()?;
-    let after = std::fs::read_to_string(dir.join("devices").join("1.1.10.toml"));
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"));
     let _ = std::fs::remove_dir_all(&dir);
     let (stdout, stderr) = (
         String::from_utf8_lossy(&out.stdout),
@@ -2011,10 +2030,11 @@ fn test_cli_apply_line_restarts_and_leaves_the_lock_security_flags_alone() -> Te
     );
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert_eq!(restarts(&gw)?, 1, "{stdout}");
-    assert_eq!(
-        after?, device_file,
-        "the line apply leaves the device file alone"
-    );
+    // No com-object flag is recorded (the line's inputs come from the
+    // keyring alone); the PID 53 record is.
+    let lock = lock?;
+    assert!(!lock.contains("secure = true"), "{lock}");
+    assert!(lock.contains("group_keys = [\"1/2/3\"]"), "{lock}");
     Ok(())
 }
 
@@ -2127,5 +2147,465 @@ fn test_cli_apply_of_links_and_parameters_restarts_once() -> TestResult {
     let (success, stdout, stderr) = applied?;
     assert!(success, "{stdout}\n{stderr}");
     assert_eq!(restarts(&gw)?, 1, "one restart: {stdout}");
+    Ok(())
+}
+
+/// Adds the lock's record of 1.1.10's group key table (issue #1094):
+/// `group_keys` in its `[[device]]` entry.
+fn record_group_keys(dir: &Path, keys: &[&str]) -> TestResult {
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    let list: Vec<String> = keys.iter().map(|k| format!("\"{k}\"")).collect();
+    // `group_keys` is a v5 key (issue #1094).
+    let lock = lock.replacen("version = 3\n", "version = 5\n", 1).replacen(
+        "mask = \"07B0\"\n",
+        &format!("mask = \"07B0\"\ngroup_keys = [{}]\n", list.join(", ")),
+        1,
+    );
+    std::fs::write(dir.join("bussard.lock"), lock)?;
+    Ok(())
+}
+
+/// A model for [`test_mcp_secure_on_and_off_for_a_group_linked_only_through_object_0`]:
+/// 1.1.10 sends 1/2/0 from object 20, listens on the secured 1/2/3 with
+/// object 22, and listens on the plain 1/2/4 with group object 0 only. The
+/// lock records the device's group key table as 1/2/3.
+fn object_zero_model_dir(tag: &str) -> TestResult<PathBuf> {
+    let dir = model_dir(tag)?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Status\", dpt = \"1.001\" },\n  \
+         { address = \"1/2/3\", name = \"Secured level\", dpt = \"5.001\", secure = true },\n  \
+         { address = \"1/2/4\", name = \"Scene\", dpt = \"17.001\" },\n]\n",
+    )?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
+         [links]\n0.listen = [\"1/2/4\"]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}objects = [\n  {{ number = 0, flags = \"CW\" }},\n  \
+             {{ number = 20, flags = \"CT\" }},\n  \
+             {{ number = 22, flags = \"CW\", secure = true }},\n]\n"
+        ),
+    )?;
+    record_group_keys(&dir, &["1/2/3"])?;
+    let mut store = bussard_project::KeyStore::new("Synthetic");
+    store.merge_keyring(&keyring()?);
+    store.save(&dir, PASSWORD)?;
+    Ok(dir)
+}
+
+/// Issue #1094: Data Secure on and off for a group address linked only
+/// through group object 0, which has no PID 61 element. The key side is
+/// read from PID 53's count: the plan shows the key joining (leaving) the
+/// group key table, the apply writes PID 53, the next plan is a no-op, and
+/// `bussard validate` is clean (the lock keeps object 0's `secure`).
+#[test]
+fn test_mcp_secure_on_and_off_for_a_group_linked_only_through_object_0() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog {
+        pid53: 1,
+        ..SecurityLog::default()
+    }));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x57)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3", "1/2/4"],
+                &[(1, 20), (2, 22), (3, 0)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    let dir = object_zero_model_dir("object-zero")?;
+    let store_path = bussard_project::KeyStore::path(&dir);
+    let mut server = Server::spawn(
+        &dir,
+        gw.port(),
+        &["--allow-programming", "--allow-writes"],
+        &store_path,
+    )?;
+    let pid53 = || -> TestResult<u16> { Ok(log.lock().map_err(|_| "log poisoned")?.pid53) };
+    let validate = |dir: &Path| -> TestResult<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+            .args(["validate", "--dir"])
+            .arg(dir)
+            .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
+            .output()?;
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    };
+
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    assert_eq!(plan["noop"], true, "the device runs the model: {plan}");
+
+    for (secure, mark, keys, word) in [(true, "+", 2, "on"), (false, "-", 1, "off")] {
+        let set = server.call("knx_set_group", json!({"ga": "1/2/4", "secure": secure}))?;
+        assert_eq!(set["ok"], true, "set: {set}");
+        let plan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+        assert_eq!(plan["noop"], false, "secure {word}: {plan}");
+        let sentences = plan["sentences"].as_str().unwrap_or_default();
+        assert!(
+            sentences.contains(&format!(
+                "{mark} security object: Data Secure {word} for 1/2/4 (Scene)"
+            )) && sentences.contains("group key table (PID 53)")
+                && sentences.contains("no PID 61 element"),
+            "secure {word}: {plan}"
+        );
+        let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+        let applied = server.call(
+            "knx_apply_device",
+            json!({"address": "1.1.10", "plan_digest": digest}),
+        )?;
+        assert_eq!(applied["ok"], true, "secure {word}: {applied}");
+        assert_eq!(pid53()?, keys, "secure {word}: PID 53 written");
+        let replan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+        assert_eq!(replan["noop"], true, "secure {word}: {replan}");
+        let report = validate(&dir)?;
+        assert!(!report.contains("W041"), "secure {word}: {report}");
+    }
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// `bussard <args> 1.1.10` on `dir` against `gw` with the raw tool key only
+/// (no keyring, no key store): whether it succeeded, stdout and stderr.
+fn run_cli_tool_key(
+    gw: &MockGateway,
+    dir: &Path,
+    args: &[&str],
+) -> TestResult<(bool, String, String)> {
+    let hex: String = tool_key()?.iter().map(|b| format!("{b:02x}")).collect();
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env_remove("BUSSARD_KEYRING_PASSWORD")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .args(args)
+        .arg("1.1.10")
+        .arg("--dir")
+        .arg(dir)
+        .arg("--gateway")
+        .arg(format!("127.0.0.1:{}", gw.port()))
+        .args(["--tool-key", &hex])
+        .stdin(Stdio::null())
+        .output()?;
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// Review of #1094, finding 1: with a raw `--tool-key` and no key store the
+/// project's group keys are unknown, so the key side is not compared (and
+/// the plan says so). On an in-sync device holding two keys, plan and apply
+/// are no-ops: the security object is never rewritten with zero keys.
+#[test]
+fn test_cli_plan_and_apply_with_a_tool_key_only_are_noops_on_an_in_sync_device() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog {
+        pid53: 2,
+        ..SecurityLog::default()
+    }));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x56)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3"],
+                &[(1, 20), (2, 22)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    // No group marked secure in the project; object 22's lock flag carries
+    // the device's PID 61, so the flags agree. Without a key store the
+    // project's keys are unknown: the old count comparison would have
+    // rewritten the table with zero keys.
+    let dir = model_dir("tool-key-only")?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Status\", dpt = \"1.001\" },\n  \
+         { address = \"1/2/3\", name = \"Level\", dpt = \"5.001\" },\n]\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}objects = [\n  {{ number = 20, flags = \"CT\" }},\n  \
+             {{ number = 22, flags = \"CW\", secure = true }},\n]\n"
+        ),
+    )?;
+    record_group_keys(&dir, &["1/2/3", "1/2/9"])?;
+    let planned = run_cli_tool_key(&gw, &dir, &["plan"]);
+    let applied = run_cli_tool_key(&gw, &dir, &["apply", "--yes"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = planned?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("group keys (PID 53) not compared"),
+        "the plan says the key side was not compared: {stdout}"
+    );
+    assert!(!stdout.contains("security object:"), "{stdout}");
+    let (success, stdout, stderr) = applied?;
+    assert!(success, "{stdout}\n{stderr}");
+    let log = log.lock().map_err(|_| "log poisoned")?;
+    assert!(log.controls.is_empty(), "nothing written: {log:?}");
+    assert_eq!(log.pid53, 2, "the keys stay");
+    Ok(())
+}
+
+/// Review of #1094, finding 2: offsetting key changes on group object 0.
+/// Object 0 listens on the secured 1/2/4 and the plain 1/2/5; `secure 1/2/4
+/// off` with `secure 1/2/5 on` keeps the key count, and no PID 61 flag
+/// moves. The lock's record of the device's group key table shows both: the
+/// plan names both addresses, the apply writes PID 53, the replan is a
+/// no-op.
+#[test]
+fn test_mcp_offsetting_key_changes_on_object_0_are_both_planned() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog {
+        pid53: 2,
+        ..SecurityLog::default()
+    }));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x55)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3", "1/2/4", "1/2/5"],
+                &[(1, 20), (2, 22), (3, 0), (4, 0)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    let dir = model_dir("offsetting")?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Status\", dpt = \"1.001\" },\n  \
+         { address = \"1/2/3\", name = \"Secured level\", dpt = \"5.001\", secure = true },\n  \
+         { address = \"1/2/4\", name = \"Scene\", dpt = \"17.001\", secure = true },\n  \
+         { address = \"1/2/5\", name = \"Night\", dpt = \"1.001\" },\n]\n",
+    )?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
+         [links]\n0.listen = [\"1/2/4\", \"1/2/5\"]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}objects = [\n  {{ number = 0, flags = \"CW\", secure = true }},\n  \
+             {{ number = 20, flags = \"CT\" }},\n  \
+             {{ number = 22, flags = \"CW\", secure = true }},\n]\n"
+        ),
+    )?;
+    record_group_keys(&dir, &["1/2/3", "1/2/4"])?;
+    let mut store = bussard_project::KeyStore::new("Synthetic");
+    store.merge_keyring(&keyring()?);
+    store
+        .group_keys
+        .insert(ga("1/2/4")?, Key16::new([0x44; 16]));
+    store.save(&dir, PASSWORD)?;
+    let store_path = bussard_project::KeyStore::path(&dir);
+    let mut server = Server::spawn(
+        &dir,
+        gw.port(),
+        &["--allow-programming", "--allow-writes"],
+        &store_path,
+    )?;
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    assert_eq!(plan["noop"], true, "in sync: {plan}");
+    for (ga, secure) in [("1/2/4", false), ("1/2/5", true)] {
+        let set = server.call("knx_set_group", json!({"ga": ga, "secure": secure}))?;
+        assert_eq!(set["ok"], true, "set {ga}: {set}");
+    }
+    let plan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    assert_eq!(plan["noop"], false, "{plan}");
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.contains("Data Secure off for 1/2/4 (Scene)")
+            && sentences.contains("Data Secure on for 1/2/5 (Night)"),
+        "{plan}"
+    );
+    let change = plan["changes"][0]["sentence"].as_str().unwrap_or_default();
+    assert!(!change.contains("1/2/3"), "1/2/3 does not change: {plan}");
+    let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+    let applied = server.call(
+        "knx_apply_device",
+        json!({"address": "1.1.10", "plan_digest": digest}),
+    )?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    let key_writes = log
+        .lock()
+        .map_err(|_| "log poisoned")?
+        .writes
+        .iter()
+        .filter(|w| w.0 == PID_GRP_KEY_TABLE)
+        .count();
+    assert!(key_writes > 0, "PID 53 written");
+    let replan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    assert_eq!(replan["noop"], true, "{replan}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Review of #1094, finding 5: the plan digest covers the group key table's
+/// entry count. Another tool rewrites the security object after the plan
+/// (the count changes): `knx_apply_device` with the old digest is refused.
+/// Finding 7: the count is read only for a device the lock records.
+#[test]
+fn test_mcp_apply_refuses_a_digest_after_the_key_count_changed() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog {
+        pid53: 1,
+        ..SecurityLog::default()
+    }));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x54)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3", "1/2/4"],
+                &[(1, 20), (2, 22), (3, 0)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    let dir = object_zero_model_dir("digest-keys")?;
+    let store_path = bussard_project::KeyStore::path(&dir);
+    let mut server = Server::spawn(
+        &dir,
+        gw.port(),
+        &["--allow-programming", "--allow-writes"],
+        &store_path,
+    )?;
+    let set = server.call("knx_set_group", json!({"ga": "1/2/4", "secure": true}))?;
+    assert_eq!(set["ok"], true, "set: {set}");
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    assert_eq!(plan["noop"], false, "{plan}");
+    let reads = log.lock().map_err(|_| "log poisoned")?.pid53_reads;
+    assert!(reads > 0, "a recorded device's count is read");
+    let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+    log.lock().map_err(|_| "log poisoned")?.pid53 = 3;
+    let applied = server.call(
+        "knx_apply_device",
+        json!({"address": "1.1.10", "plan_digest": digest}),
+    )?;
+    assert_eq!(applied["ok"], false, "{applied}");
+    assert_eq!(applied["refused"], true, "{applied}");
+    assert!(
+        log.lock().map_err(|_| "log poisoned")?.controls.is_empty(),
+        "nothing written"
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Without a record the count is not read at all.
+    let unrecorded = Arc::new(Mutex::new(SecurityLog::default()));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x53)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device(Arc::clone(&unrecorded))?)
+            .start(),
+    )?;
+    let dir = model_dir("digest-unrecorded")?;
+    let run = run_cli(&gw, &dir, "plan");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = run?;
+    assert!(success, "{stdout}\n{stderr}");
+    assert!(stdout.contains("an apply establishes it"), "{stdout}");
+    assert_eq!(
+        unrecorded.lock().map_err(|_| "log poisoned")?.pid53_reads,
+        0
+    );
+    Ok(())
+}
+
+/// Review of #1094, finding 4: an apply records the model's secured set,
+/// object 0 included. A link of object 0 to the already secured 1/2/3 sets
+/// its lock `secure` after the verified write, so `validate` raises no W041.
+#[test]
+fn test_cli_apply_records_object_0_secure_after_a_secured_link() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog::default()));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x52)
+            .tunnel_address(0x11C8)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device(Arc::clone(&log))?)
+            .start(),
+    )?;
+    let dir = model_dir("object-zero-lock")?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
+         [links]\n0.listen = [\"1/2/3\"]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}objects = [\n  {{ number = 0, flags = \"CW\" }},\n  \
+             {{ number = 20, flags = \"CT\" }},\n  \
+             {{ number = 22, flags = \"CW\", secure = true }},\n]\n"
+        ),
+    )?;
+    let applied = run_cli(&gw, &dir, "apply");
+    let validated = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["validate", "--dir"])
+        .arg(&dir)
+        .output();
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = applied?;
+    assert!(success, "{stdout}\n{stderr}");
+    let validated = validated?;
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&validated.stdout),
+        String::from_utf8_lossy(&validated.stderr)
+    );
+    assert!(!report.contains("W041"), "{report}");
+    let lock = lock?;
+    assert!(
+        lock.contains("number = 0, flags = \"CW\", secure = true"),
+        "{lock}"
+    );
+    assert!(
+        lock.contains("group_keys = [\"1/2/3\"]"),
+        "the key record: {lock}"
+    );
     Ok(())
 }

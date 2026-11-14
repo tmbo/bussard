@@ -78,8 +78,8 @@ pub use doc::{DocError, DocFile, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use files::{
-    LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, LOCK_VERSION_V3, hidden_mem_key, is_hidden_mem_key,
-    label_mem_key, lock_written_by, param_mem_key,
+    LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, LOCK_VERSION_V3, LOCK_VERSION_V4, hidden_mem_key,
+    is_hidden_mem_key, label_mem_key, lock_written_by, param_mem_key,
 };
 pub use flags::{Flags, FlagsParseError, Priority};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};

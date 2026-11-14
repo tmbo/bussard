@@ -480,6 +480,14 @@ pub struct DeviceSecurity {
     /// accepting senders the model does not describe. Not key material.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secure_senders: Vec<SecureSender>,
+    /// The group addresses the device's group key table (PID 53) holds a key
+    /// for, recorded after a verified secured write or by `bussard adopt`
+    /// (issue #1094). PID 53 is write-only, so this record is what a plan
+    /// compares the project's keyed addresses with; the live entry count
+    /// cross-checks it. `None`: not recorded, the key side is not compared
+    /// until an apply establishes it. Addresses only, never a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_keys: Option<Vec<GroupAddress>>,
 }
 
 /// One entry of a device's security individual address table (PID 54): a

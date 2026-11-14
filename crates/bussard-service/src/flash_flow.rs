@@ -842,10 +842,28 @@ pub fn record_lock(
     };
     let recorded = crate::admission::record_secure_senders(dir, target, senders)
         .map_err(|err| err.to_string());
+    let group_keys: std::collections::BTreeSet<bussard_model::GroupAddress> = plan
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            bussard_download::FlashStep::SecurityGroupKeys { entries } => Some(entries),
+            _ => None,
+        })
+        .flatten()
+        .map(|entry| entry.group_address)
+        .collect();
     let flags = crate::security_change::flash_secured_objects(plan).map(|objects| {
         (
-            crate::security_change::record_security_flags(dir, target, &objects)
-                .map_err(|err| err.to_string()),
+            crate::security_change::record_security_flags(
+                dir,
+                target,
+                crate::security_change::SecurityRecord {
+                    secured: &objects,
+                    from_flags: true,
+                    group_keys: &group_keys,
+                },
+            )
+            .map_err(|err| err.to_string()),
             objects.len(),
         )
     });

@@ -744,11 +744,15 @@ async fn visit(
     // the device; record it in the lock, as `adopt` does (issue #297),
     // whatever the restart does. A reload of the group-object table alone
     // does not write it.
-    if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change)
-        && let Err(err) =
-            crate::admission::record_secure_senders(dir, target.address, &inputs.senders)
-    {
-        note.warn(&format!("warning: {}: {err}", target.address));
+    if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change) {
+        let keyed = inputs.keyed(&desired.addresses).into_iter().collect();
+        let recorded =
+            crate::admission::record_secure_senders(dir, target.address, &inputs.senders).and_then(
+                |_| crate::security_change::record_group_keys(dir, target.address, &keyed),
+            );
+        if let Err(err) = recorded {
+            note.warn(&format!("warning: {}: {err}", target.address));
+        }
     }
     if let Some(Err(why)) = &written.restarted {
         return DeviceStatus::Failed(backed_up(&one_line(&why.to_string())));

@@ -108,8 +108,9 @@ pub use program::{
 pub use security::{
     GroupKeyEntry, SecureSenderEntry, SecurityInputs, SecurityPlanError, SecurityReadback,
     TableCapacity, build_security_program, check_planned_capacity, device_security_view,
-    program_security_object, read_security_flags, read_security_object, read_security_sender_table,
-    secured_senders, security_inputs_for, sender_table_bytes,
+    has_go_flag_element, linked_objects, program_security_object, read_security_flags,
+    read_security_object, read_security_sender_table, secured_senders, security_inputs_for,
+    sender_table_bytes,
 };
 pub use security_diag::{
     SecurityDiagnostics, clear_security_diagnostics, read_security_diagnostics,

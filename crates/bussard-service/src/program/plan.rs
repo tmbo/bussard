@@ -99,9 +99,24 @@ pub fn plan_device(inputs: &PlanInputs<'_>, read: &DeviceRead<LiveTables>) -> Pl
         let keys = inputs.group_keys.unwrap_or(&empty);
         let security =
             bussard_download::security_inputs_for(Some(inputs.model), target, inputs.desired, keys);
-        SecurityObjectChange::compare(target, inputs.desired, &security, flags)
+        // The key side needs the project's group keys and the lock's record
+        // of the device's table (issue #1094).
+        let record = inputs
+            .model
+            .devices
+            .get(&target)
+            .and_then(|d| d.device.security.as_ref())
+            .and_then(|s| s.group_keys.as_deref());
+        SecurityObjectChange::compare(target, inputs.desired, &security, flags).with_keys(
+            inputs.desired,
+            &security,
+            inputs.group_keys.is_some(),
+            record,
+            read.group_keys.as_ref(),
+        )
     });
     if let Some(change) = &security_change {
+        change.add_notes(&mut built.plan);
         change.add_to(&mut built.plan, &report, Some(inputs.model));
     }
     // After every reason to rewrite the link tables is known (issue #1095):
@@ -227,6 +242,15 @@ pub fn live_fingerprint(read: &DeviceRead<LiveTables>) -> [u8; 32] {
         put(&mut h, b"pid61");
         put(&mut h, flags);
     }
+    // The group key table's entry count the plan compared (issue #1094).
+    match &read.group_keys {
+        Some(Ok(count)) => {
+            put(&mut h, b"pid53");
+            put(&mut h, &count.to_be_bytes());
+        }
+        Some(Err(_)) => put(&mut h, b"pid53-unread"),
+        None => {}
+    }
     h.finalize().into()
 }
 
@@ -264,6 +288,19 @@ pub fn model_fingerprint(
         }
         None => put(&mut h, b"plain"),
     }
+    // The lock's record of the device's group key table (issue #1094).
+    put(
+        &mut h,
+        format!(
+            "{:?}",
+            model
+                .devices
+                .get(&target)
+                .and_then(|d| d.device.security.as_ref())
+                .map(|s| &s.group_keys)
+        )
+        .as_bytes(),
+    );
     put(
         &mut h,
         format!(
