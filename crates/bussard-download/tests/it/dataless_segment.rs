@@ -177,6 +177,47 @@ async fn test_flash_dataless_segment_keeps_what_the_device_held() -> TestResult 
     Ok(())
 }
 
+/// ETS writes the hidden parameter's octets as `00`, neither its default
+/// (`12 34`) nor the declared `Fill` (`a5`): `syn-relseg-dataless-hidden/
+/// defaults`, `mem-write 0x6000` of `01 01 2c 00 00` (issue #1084).
+#[tokio::test]
+async fn test_flash_dataless_segment_writes_a_hidden_parameter_as_zero() -> TestResult {
+    let (product, _tmp) = product("syn-relseg-dataless-hidden")?;
+    let app = product.applications.first().ok_or("one application")?;
+    let plan = plan_of(&product, app, &BTreeMap::new())?;
+    assert_eq!(parameter_image(&plan)?[..5], [0x01, 0x01, 0x2C, 0x00, 0x00]);
+    let held = device()?.with_memory(BASE, &[0x77; 16]);
+    let gw = MockGateway::builder().device(held).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(&mut session, &plan, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "the flash verifies: {outcome:?}");
+    // The independent read-back: the parameter regions as the device holds
+    // them, decoded against the model.
+    let after = regions(&mut session, &plan).await;
+    let _ = session.into_disconnect().await;
+    let memory = regions_memory(&after);
+    let readings = bussard_download::param_plan::non_default_parameters(
+        app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &memory,
+    );
+    assert!(readings.is_empty(), "{readings:?}");
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(writes_into(&dev, BASE, BASE + 16), vec![(BASE, 5)]);
+    assert_eq!(dev.read_mem(BASE, 5), vec![0x01, 0x01, 0x2C, 0x00, 0x00]);
+    assert_eq!(dev.read_mem(BASE + 5, 11), vec![0x77; 11], "not touched");
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_flash_dataless_segment_fails_when_a_written_octet_reads_back_wrong() -> TestResult {
     let (product, _tmp) = product("syn-relseg-dataless-hidden")?;

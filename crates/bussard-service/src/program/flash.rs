@@ -460,8 +460,9 @@ pub async fn execute(
     }
     if exec.differential {
         observer.event(Event::Note(Note::Warn(
-            "differential download: objects whose resident image already matches are skipped \
-             (pass --full to re-stream everything)"
+            "differential download: the group-object table is kept when its MCB entries match \
+             the image, as ETS keeps it; every other object is reloaded (pass --full to reload \
+             everything)"
                 .to_string(),
         )));
     }
@@ -1214,7 +1215,7 @@ pub fn plan_offline(req: &OfflineRequest<'_>) -> Result<Offline, OfflineStop> {
                 ),
                 Freshness::Mismatch { reason } | Freshness::Unknown { reason } => reason.clone(),
             };
-            let par = plan.is_par_procedure();
+            let par = plan.procedure_kind() == bussard_download::ProcedureKind::CompleteByPar;
             let skipped = if !plan.is_sys7()
                 && crate::flash::skip_unchanged(choices.full, &plan, freshness)
             {

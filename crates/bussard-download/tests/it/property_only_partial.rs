@@ -1024,7 +1024,7 @@ fn test_parameters_only_on_another_system_b_mask_takes_its_master_par_procedure(
         &memo,
     );
     let cut = plan.parameters_only(&BTreeMap::new())?;
-    assert!(!cut.is_built_from_par_procedure());
+    assert!(cut.procedure_kind() != bussard_download::ProcedureKind::ParametersByPar);
     assert!(shape(&cut).contains(&"allocate 4 6".to_string()));
     // The product's master declares the par procedure for 17B0.
     let master_par =
@@ -1041,7 +1041,7 @@ fn test_parameters_only_on_another_system_b_mask_takes_its_master_par_procedure(
         &memo,
     );
     let par = plan.parameters_only(&BTreeMap::new())?;
-    assert!(par.is_built_from_par_procedure());
+    assert!(par.procedure_kind() == bussard_download::ProcedureKind::ParametersByPar);
     assert!(shape(&par).contains(&"table-ref 4".to_string()));
     Ok(())
 }

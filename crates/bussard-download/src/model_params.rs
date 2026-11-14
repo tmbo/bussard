@@ -124,27 +124,14 @@ pub fn plan_for_readback(
     device_mask: u16,
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<FlashPlan, crate::PlanError> {
-    let (overrides, bases) = model_parameters(model, target);
-    let template_ops = template_ops_for(product_data, app);
-    let table_images = build_table_images(model, target, app, &overrides, memo);
-    let object_flags = linked_object_flags(model, target);
-    plan_flash(
-        app,
-        &target.to_string(),
-        device_mask,
-        &overrides,
-        &bases,
-        template_ops.as_deref(),
-        &table_images,
-        &object_flags,
-        memo,
-    )
+    plan_from_model(product_data, app, model, target, device_mask, memo, false)
 }
 
 /// [`plan_for_readback`] for a parameter write (`apply`, `restore
 /// --parameters`): with the mask's parameter-only procedure added
-/// ([`crate::add_par_procedure`], issue #1052), so the write, its backup and
-/// its read-back run what that procedure writes.
+/// ([`crate::add_par_procedure`], issues #1052, #1085), so the write, its
+/// backup and its read-back run what that procedure writes. Both lowerings
+/// take the same inputs, computed once.
 ///
 /// # Errors
 ///
@@ -157,24 +144,49 @@ pub fn plan_for_parameters(
     device_mask: u16,
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<FlashPlan, crate::PlanError> {
-    let mut plan = plan_for_readback(product_data, app, model, target, device_mask, memo)?;
-    if !plan.takes_par_procedure() {
-        return Ok(plan);
-    }
+    plan_from_model(product_data, app, model, target, device_mask, memo, true)
+}
+
+/// The plan of [`plan_for_readback`], with the `par` lowering added when
+/// `par` asks for it.
+fn plan_from_model(
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+    device_mask: u16,
+    memo: &DynamicMemo<'_, ApplicationProgram>,
+    par: bool,
+) -> Result<FlashPlan, crate::PlanError> {
     let (overrides, bases) = model_parameters(model, target);
+    let template_ops = template_ops_for(product_data, app);
     let table_images = build_table_images(model, target, app, &overrides, memo);
     let object_flags = linked_object_flags(model, target);
-    crate::add_par_procedure(
-        &mut plan,
+    let device = target.to_string();
+    let mut plan = plan_flash(
         app,
-        &target.to_string(),
+        &device,
+        device_mask,
         &overrides,
         &bases,
-        par_template_ops_for(product_data, app).as_deref(),
+        template_ops.as_deref(),
         &table_images,
         &object_flags,
         memo,
-    );
+    )?;
+    if par && plan.takes_par_procedure() {
+        crate::add_par_procedure(
+            &mut plan,
+            app,
+            &device,
+            &overrides,
+            &bases,
+            par_template_ops_for(product_data, app).as_deref(),
+            &table_images,
+            &object_flags,
+            memo,
+        );
+    }
     Ok(plan)
 }
 

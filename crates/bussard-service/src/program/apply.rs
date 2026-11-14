@@ -96,9 +96,12 @@ pub fn check_backup_covers(
     if regions.is_empty() && !properties.iter().any(|p| p.device.is_some()) {
         return Err(BackupError::NoParameterMemory);
     }
+    // A fixed write (`InlineData`, issue #1085) is no parameter: the
+    // download writes the product's constant, and a restore writes that
+    // same constant, so its unread value does not block the write.
     let unread: Vec<String> = properties
         .iter()
-        .filter(|p| p.device.is_none())
+        .filter(|p| p.device.is_none() && !p.fixed)
         .map(bussard_download::ParamProperty::label)
         .collect();
     if !unread.is_empty() {

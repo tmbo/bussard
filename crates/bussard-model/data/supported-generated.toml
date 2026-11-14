@@ -5,13 +5,13 @@
 
 [source]
 sweep_manifest = "tools/ets-sweep/evidence/manifest.json"
-sweep_generated = "2026-11-10T04:04:20+00:00"
+sweep_generated = "2026-11-14T12:43:54+00:00"
 synthetic_manifest = "captures/synthetic/manifest.json"
 coverage_floor = 95.0
 
 [[family]]
 mask = "0701"
-blocked = 364
+blocked = 366
 synthetic = 5
 
 [[family]]
@@ -22,7 +22,7 @@ synthetic = 8
 [[family]]
 mask = "07B0"
 blocked = 0
-synthetic = 38
+synthetic = 39
 
 [[rule]]
 id = "sweep-1"
@@ -181,6 +181,7 @@ likely = [
   { id = "0004501765", name = "LS-Touch (..459D1S..)", masks = ["07B0"], coverage = 100.0 },
   { id = "0004705C11", name = "Cont.action contr.w.pushbutton interface 705C11 (2178 TS)", masks = ["0705"], coverage = 100.0 },
   { id = "0004705D11", name = "Object contr. with pushbutton interf.4-fold 705D11 (2178 ORTS)", masks = ["0705"], coverage = 100.0 },
+  { id = "0004705E11", name = "Continous action controller 705E11 (2178)", masks = ["0705"], coverage = 100.0 },
   { id = "0004706311", name = "Input 706311 (2128REG)", masks = ["0705"], coverage = 100.0 },
   { id = "0004706411", name = "Continuous controller 706411 (5178TSM)", masks = ["0705"], coverage = 100.0 },
   { id = "0004802811", name = "Multi station 802811 (23066REGHE)", masks = ["07B0"], coverage = 100.0 },
@@ -189,6 +190,7 @@ likely = [
   { id = "0004A01711", name = "Brightness controller A01711 (2096LUX)", masks = ["0705"], coverage = 100.0 },
   { id = "0004B00911", name = "Weather station B00911 (2224 WH)", masks = ["0705"], coverage = 100.0 },
   { id = "0004B01002", name = "Energy meter (2103 REG ES)", masks = ["0705"], coverage = 100.0 },
+  { id = "0004B01521", name = "Sonos-Gateway (MR-SONOS-REG)", masks = ["07B0"], coverage = 100.0 },
   { id = "0004D14121", name = "Push-button sensor module Universal 1-gang D14121 (52911ST)", masks = ["07B0"], coverage = 100.0 },
   { id = "0004D14321", name = "Push-button sensor module Universal 3-gang D14321 (52931ST)", masks = ["07B0"], coverage = 100.0 },
   { id = "0004D14421", name = "Push-button sensor module Universal 4-gang D14421 (52941ST)", masks = ["07B0"], coverage = 100.0 },
@@ -266,6 +268,7 @@ likely = [
   { id = "0008502121", name = "Room climate sensor standard 502121 (2004 00)", masks = ["07B0"], coverage = 100.0 },
   { id = "0008502221", name = "Room climate sensor HVAC comfort 502221 (2007 00)", masks = ["07B0"], coverage = 100.0 },
   { id = "0008502321", name = "Room climate sensor HVAC standard 502321 (2006 00)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0008601020", name = "Gira L1 (2070 00)", masks = ["07B0"], coverage = 100.0 },
   { id = "0008706611", name = "Input 706611 (2126 00)", masks = ["0705"], coverage = 100.0 },
   { id = "0008706811", name = "Input 706811 (2128 00)", masks = ["0705"], coverage = 100.0 },
   { id = "0008707221", name = "Push-button interface 2-gang comfort 707221 (5192 00)", masks = ["07B0"], coverage = 100.0 },
@@ -415,6 +418,7 @@ likely = [
   { id = "0064330010", name = "Dimming Switch Blind 3300/1.0 (MTN6710-0102)", masks = ["07B0"], coverage = 100.0 },
   { id = "0064480611", name = "Switch.Logic.Currentdet.PWM 4806/1.1 (MTN647395)", masks = ["0705"], coverage = 100.0 },
   { id = "0064580010", name = "Switch Blind 5800/1.0 (MTN6705-0008)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0064713310", name = "KNX IP Interface secure 7133/1.0 (MTN6502-0105)", masks = ["07B0"], coverage = 100.0 },
   { id = "0064731010", name = "DALIControl IP 1 DCA 7310/1.0 (MTN6725-0001)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071124110", name = "KLIC-MITT 1.0 (ZCL-MITT)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071125111", name = "KLIC-LG1 1.1 (ZCL-LG1)", masks = ["07B0"], coverage = 100.0 },
@@ -429,6 +433,9 @@ likely = [
   { id = "007112E110", name = "KLIC-DA v2 1.0 (ZCLDAV2)", masks = ["07B0"], coverage = 100.0 },
   { id = "007112F110", name = "KLIC-SG 1.0 (ZCLSG)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071131121", name = "Multiroom Climate Controller 2.1 (ZCL-MCC)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0071132111", name = "KIPI-RC 1.1 (ZSYKIPIRC)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0071133116", name = "KIPI-RC SC 1.6 (ZSYKIPRCSC)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0071134114", name = "KIPI-RC SC v2 1.4 (ZSYKRSCV2)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071142113", name = "KLIC-MITT v3 1.3 (ZCLMITTV3)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071143111", name = "KLIC-FJT 1.1 (ZCLFJT)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071241112", name = "AudioInRoom 1.2 (ZMU-AUIR)", masks = ["07B0"], coverage = 100.0 },
@@ -567,6 +574,8 @@ likely = [
   { id = "00714D6121", name = "IndustrialBOX Current 12 2.1 (ZIOINBC12)", masks = ["07B0"], coverage = 100.0 },
   { id = "00714D7121", name = "IndustrialBOX Current 8 2.1 (ZIOINBC8)", masks = ["07B0"], coverage = 100.0 },
   { id = "00714D8121", name = "IndustrialBOX Current 2 2.1 (ZIOINBC2)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00714E1122", name = "MicroBOX 12 2.2 (ZIOMCB12)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00714E2123", name = "MicroBOX 22 2.3 (ZIOMCB22)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071517123", name = "Z41 Lite 2.3 (ZVI-Z41LIT)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071518136", name = "Z41 Pro 3.6 (ZVI-Z41PRO)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071519111", name = "Z41 COM 1.1 (ZVI-Z41COM)", masks = ["07B0"], coverage = 100.0 },
@@ -591,6 +600,7 @@ likely = [
   { id = "0071544111", name = "Square TMD 6 1.1 (ZVI-SQTMD6)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071551113", name = "Z70 1.3 (ZVIZ70)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071555141", name = "RemoteBOX 4.1 (ZSYRBOX)", masks = ["07B0"], coverage = 100.0 },
+  { id = "0071556143", name = "ZennIoT 4.3 (ZSYIOT)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071561110", name = "IWAC Display 1.0 (ZVI-IWACD)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071562110", name = "IDAC 1.0 (ZVIIDAC)", masks = ["07B0"], coverage = 100.0 },
   { id = "0071563121", name = "IWAC Display v2 2.1 (ZVIIWACDV2)", masks = ["07B0"], coverage = 100.0 },
@@ -659,6 +669,14 @@ likely = [
   { id = "007600E602", name = "TouchIT_V2 (2231xxxx)", masks = ["07B0"], coverage = 100.0 },
   { id = "00772F0210", name = "FJACKNX1i (INKNXFGL001I000)", masks = ["07B0"], coverage = 100.0 },
   { id = "0077300211", name = "KNX-Modbus RTU Gateway-DIN rail (INKNXMBMxxx02)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C000110", name = "ise smart connect KNX Programmable (1-0004-005, 1-0005-006)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C000230", name = "ise smart connect KNX Sonos (1-0001-002)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C000343", name = "ise smart connect KNX Hue (1-0002-003)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C000620", name = "ise smart connect KNX Vaillant (1-0006-007)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C000E20", name = "ise smart connect KNX viega (1-000A-008)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C001020", name = "ise smart connect KNX Nussbaum (1-000E-002)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C001211", name = "ise smart connect KNX Panasonic (1-000C-000)", masks = ["07B0"], coverage = 100.0 },
+  { id = "007C001320", name = "ise smart connect KNX Saunier Duval (1-0006-018)", masks = ["07B0"], coverage = 100.0 },
   { id = "0080701210", name = "ESYLUX_PD_TOUCH (EP10460104)", masks = ["0705"], coverage = 100.0 },
   { id = "0080702120", name = "ESYLUX_RCI (EM10015489)", masks = ["0705"], coverage = 100.0 },
   { id = "0080709010", name = "ESYLUX_PD_FLAT (EP10451768)", masks = ["0705"], coverage = 100.0 },
@@ -860,6 +878,7 @@ likely = [
   { id = "009A200B00", name = "EMKNT003 (EM KNT 003)", masks = ["07B0"], coverage = 100.0 },
   { id = "009A200F00", name = "DINUY_IRKNT044 (IR KNT 044)", masks = ["07B0"], coverage = 100.0 },
   { id = "009A201510", name = "TMKNT001_002 (TM KNT 001_002)", masks = ["07B0"], coverage = 100.0 },
+  { id = "009A300110", name = "KNX IP Interface Secure CO KNT IPI (CO KNT IPI)", masks = ["07B0"], coverage = 100.0 },
   { id = "00A6000B10", name = "MeTa Starter/Standard/Premium (00001157)", masks = ["0705"], coverage = 100.0 },
   { id = "00A6002530", name = "IP-Systemgeräte - Zusatzfunktion (1164 - 1168)", masks = ["07B0"], coverage = 100.0 },
   { id = "00A6002610", name = "Enertex KNX PowerSupply (1152-3, 1173)", masks = ["07B0"], coverage = 100.0 },
@@ -956,6 +975,7 @@ likely = [
   { id = "00C8320410", name = "Dimming Actuator 1-10 V (93980)", masks = ["0705"], coverage = 100.0 },
   { id = "00C8330410", name = "Shutter/blinds actuator 4 fold (93930, 93931)", masks = ["0705"], coverage = 100.0 },
   { id = "00C8740512", name = "KNX/DALI Gateway (93338)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00C8800210", name = "LAN-IF/KNXs REG (90404)", masks = ["07B0"], coverage = 100.0 },
   { id = "00C8800410", name = "BIA-4-KNX REG (90405)", masks = ["07B0"], coverage = 100.0 },
   { id = "00C8800C10", name = "BIA4-KNXs REG (90411)", masks = ["07B0"], coverage = 100.0 },
   { id = "00C8800D10", name = "BIP4-KNXs REG (90412)", masks = ["07B0"], coverage = 100.0 },
@@ -1001,6 +1021,17 @@ likely = [
   { id = "00EF604111", name = "6041x-LarghoRX_V1.1.0 (60413-XX)", masks = ["07B0"], coverage = 100.0 },
   { id = "00EF830110", name = "81513_Piazza3GT_V1.0.0 (81513-03)", masks = ["07B0"], coverage = 100.0 },
   { id = "00EF840112", name = "81471_PiazzaSense_V1.2.0 (81471-00)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC1111", name = "77024-PowerBlock o8-11-0111 (77024-180-01)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC1212", name = "77024-PowerBlock o16-12-0112 (77024-180-02)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC1311", name = "Actuator io64-01-0111 (72130-180-06, 77024-180-03)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC2110", name = "77024-PowerBlock o8 Multi-21-0110 (77024-180-04)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC2210", name = "77024-PowerBlock o16 Multi-22-0110 (77024-180-05)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAC3010", name = "77024-InBlock i8-30-0110 (77024-180-30)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFACA210", name = "72130-µBrick s4-13-0110 (72130-180-13)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFACA410", name = "72130-µBrick s6x-14-0110 (72130-180-14)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFACA510", name = "72130-µBrick s9-15-0110 (72130-180-15)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFAD1110", name = "77024-PowerBlock s4 DC_V1.0.0 (77024-180-11)", masks = ["07B0"], coverage = 100.0 },
+  { id = "00EFCB0610", name = "3622-HomeControl-01-0110 (3622-141-11)", masks = ["07B0"], coverage = 100.0 },
   { id = "00EFDA1121", name = "DaliControl e64 Pro_V2.1.0 (4101-145-02, 4101-145-03)", masks = ["07B0"], coverage = 100.0 },
   { id = "00EFDA1122", name = "DaliControl e64 Pro_V2.2.0 (4101-145-02)", masks = ["07B0"], coverage = 100.0 },
   { id = "00EFDA2010", name = "DaliControl gc16-01-0110 (4101-145-11)", masks = ["07B0"], coverage = 100.0 },
@@ -1030,6 +1061,7 @@ likely = [
   { id = "00FD920510", name = "QMX6.P37 (QMX6.P37)", masks = ["07B0"], coverage = 100.0 },
   { id = "00FD920711", name = "QMX6.P40 (QMX6.P40)", masks = ["07B0"], coverage = 100.0 },
   { id = "00FD920811", name = "QMX6.P44 (QMX6.P44)", masks = ["07B0"], coverage = 100.0 },
+  { id = "011E365210", name = "IPI200S IP Interface Secure (5003652)", masks = ["07B0"], coverage = 100.0 },
   { id = "011E368010", name = "TD4x - KNX 4\" Touch Display (5003680)", masks = ["07B0"], coverage = 100.0 },
   { id = "011EB09615", name = "XD100 Motion, Brightness Sensor/1.5 (48022)", masks = ["0705"], coverage = 100.0 },
   { id = "011EBBA510", name = "Switch Actuator,4-Channel 16A/1.0 (48037)", masks = ["0705"], coverage = 100.0 },
@@ -1069,13 +1101,10 @@ likely = [
 [differs]
 reason = "differs from ETS in the sweep"
 entries = [
-  { id = "0002A08711", name = "Room Master3/1.1c (2CDG 110 165 R0011)", masks = ["0701"], issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix" },
   { id = "0004146D11", name = "Room controller display compact module 146D11 (5192KRMTSD)", masks = ["07B0"], issue = 1062, cause = "Fill=255 segment with Data: ETS leaves the tail at the fill, bussard writes the Data" },
-  { id = "0004705E11", name = "Continous action controller 705E11 (2178)", masks = ["0705"], issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix" },
   { id = "0004706811", name = "Input 706811 (2128REG)", masks = ["0705"], issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix" },
   { id = "0004A03011", name = "Valve drive (motor-operated) with controller A03011 (2177SVR)", masks = ["07B0"], issue = 1062, cause = "Fill=255 segment with Data: ETS leaves the tail at the fill, bussard writes the Data" },
   { id = "0004B00C01", name = "KNX Multiroom amplifier 8fold (MR-AMP4.4 , MR-AMP4.8)", masks = ["0701"], issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix" },
-  { id = "0004B01521", name = "Sonos-Gateway (MR-SONOS-REG)", masks = ["07B0"], issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own" },
   { id = "0004C00D12", name = "DALI Gateway C00D12 EN (2098REGHE)", masks = ["07B0"], issue = 1058, cause = "a vendor ETS plugin writes octets the product data does not hold" },
   { id = "0004C02012", name = "DALI Gateway TW C02012 EN (2099REGHE)", masks = ["07B0"], issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own" },
   { id = "0008000475", name = "Gira S1 (2089 00)", masks = ["07B0"], issue = 959, cause = "module load procedures merged as absolute operations" },
@@ -1110,21 +1139,11 @@ entries = [
   { id = "0009E82010", name = "WAK201x (WAK201x)", masks = ["07B0"], issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read" },
   { id = "0048DA2221", name = "DALI-Gateway S64 KNX V2 (4940301)", masks = ["07B0"], issue = 1068, cause = "differs, no named cause yet" },
   { id = "0048E03220", name = "iONprime CP 4 KNX (4969300)", masks = ["07B0"], issue = 1058, cause = "a vendor ETS plugin writes octets the product data does not hold" },
-  { id = "0071132111", name = "KIPI-RC 1.1 (ZSYKIPIRC)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
-  { id = "0071133116", name = "KIPI-RC SC 1.6 (ZSYKIPRCSC)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
-  { id = "0071134114", name = "KIPI-RC SC v2 1.4 (ZSYKRSCV2)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
   { id = "0071322111", name = "LUMENTO X4 RGBW 1.1 (ZN1DI-RGBX4)", masks = ["0701"], issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data" },
   { id = "0071322311", name = "LUMENTO X4 WHITE 1.1 (ZN1DI-RGBX4)", masks = ["0701"], issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data" },
   { id = "0071332114", name = "DALIBOX Interface 64/32 1.4 (ZDI-DLI)", masks = ["07B0"], issue = 1068, cause = "differs, no named cause yet" },
   { id = "0071422120", name = "KES 3xSingle-phase 2.0 (ZN1IO-KES)", masks = ["0701"], issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data" },
-  { id = "0071556143", name = "ZennIoT 4.3 (ZSYIOT)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
   { id = "0076002215", name = "SK08-UNI (30801XXX, 30802XXX, +7)", masks = ["0701"], issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix" },
-  { id = "007C000230", name = "ise smart connect KNX Sonos (1-0001-002)", masks = ["07B0"], issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own" },
-  { id = "007C000343", name = "ise smart connect KNX Hue (1-0002-003)", masks = ["07B0"], issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send" },
-  { id = "007C000620", name = "ise smart connect KNX Vaillant (1-0006-007)", masks = ["07B0"], issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send" },
-  { id = "007C000E20", name = "ise smart connect KNX viega (1-000A-008)", masks = ["07B0"], issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own" },
-  { id = "007C001020", name = "ise smart connect KNX Nussbaum (1-000E-002)", masks = ["07B0"], issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own" },
-  { id = "007C001320", name = "ise smart connect KNX Saunier Duval (1-0006-018)", masks = ["07B0"], issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send" },
   { id = "0083025521", name = "Time Switch with colour display (SCN-RTC20.02)", masks = ["0705"], issue = 1068, cause = "differs, no named cause yet" },
   { id = "00A6003531", name = "SmartMeter² (1182-800, 1182-85)", masks = ["07B0"], issue = 1068, cause = "differs, no named cause yet" },
   { id = "00B6DA2211", name = "EK-BF1-TP-D1_V1.1.0 (EK-BF1-TP-D1)", masks = ["07B0"], issue = 1068, cause = "differs, no named cause yet" },
@@ -1134,18 +1153,4 @@ entries = [
   { id = "00C8272160", name = "STD_V6.x (93363)", masks = ["0705"], issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it" },
   { id = "00C82A0110", name = "VOC (93806)", masks = ["0705"], issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it" },
   { id = "00C8310810", name = "switch 1.0 (90139)", masks = ["0705"], issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it" },
-  { id = "00C8800210", name = "LAN-IF/KNXs REG (90404)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
-  { id = "00E1A00D10", name = "COMIP2 (87341)", masks = ["0701"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
-  { id = "00EFAC1111", name = "77024-PowerBlock o8-11-0111 (77024-180-01)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAC1212", name = "77024-PowerBlock o16-12-0112 (77024-180-02)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAC1311", name = "Actuator io64-01-0111 (72130-180-06, 77024-180-03)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAC2110", name = "77024-PowerBlock o8 Multi-21-0110 (77024-180-04)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAC2210", name = "77024-PowerBlock o16 Multi-22-0110 (77024-180-05)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAC3010", name = "77024-InBlock i8-30-0110 (77024-180-30)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFACA210", name = "72130-µBrick s4-13-0110 (72130-180-13)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFACA410", name = "72130-µBrick s6x-14-0110 (72130-180-14)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFACA510", name = "72130-µBrick s9-15-0110 (72130-180-15)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFAD1110", name = "77024-PowerBlock s4 DC_V1.0.0 (77024-180-11)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "00EFCB0610", name = "3622-HomeControl-01-0110 (3622-141-11)", masks = ["07B0"], issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending" },
-  { id = "011E365210", name = "IPI200S IP Interface Secure (5003652)", masks = ["07B0"], issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix" },
 ]

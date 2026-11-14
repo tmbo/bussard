@@ -1,5 +1,5 @@
 {
- "generated": "2026-11-10T04:04:20+00:00",
+ "generated": "2026-11-14T12:43:54+00:00",
  "ets_version": null,
  "run": null,
  "apps": {
@@ -101,9 +101,9 @@
    "manufacturer": "M-0001",
    "outcome": "captured",
    "verdict": "not-comparable",
-   "loadctl": "missing",
-   "desc": "missing",
-   "coverage": "-"
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "0.0%"
   },
   "M-0001_A-7500-06-F8D3": {
    "file": "N305__750006.knxprod",
@@ -2960,7 +2960,7 @@
    "mask": "0701",
    "manufacturer": "M-0002",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -5305,8 +5305,8 @@
    "mask": "0705",
    "manufacturer": "M-0004",
    "outcome": "captured",
-   "verdict": "differs",
-   "loadctl": "differs",
+   "verdict": "identical",
+   "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
   },
@@ -5619,7 +5619,7 @@
    "mask": "07B0",
    "manufacturer": "M-0004",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -9236,10 +9236,10 @@
    "mask": "07B0",
    "manufacturer": "M-0008",
    "outcome": "captured",
-   "verdict": "not-comparable",
-   "loadctl": "missing",
-   "desc": "missing",
-   "coverage": "-"
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
   },
   "M-0008_A-7066-11-4D19-O000A": {
    "file": "21269100.knxprod",
@@ -13391,10 +13391,10 @@
    "mask": "07B0",
    "manufacturer": "M-0064",
    "outcome": "captured",
-   "verdict": "not-comparable",
-   "loadctl": "missing",
-   "desc": "missing",
-   "coverage": "-"
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
   },
   "M-0064_A-7240-10-BA39-O000C": {
    "file": "MTN676090-01_ETS4_2011_11_EN_DA_DE_ES_FR_IT_NL_SE.knxprod",
@@ -13683,7 +13683,7 @@
    "mask": "07B0",
    "manufacturer": "M-0071",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -13693,7 +13693,7 @@
    "mask": "07B0",
    "manufacturer": "M-0071",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -13703,7 +13703,7 @@
    "mask": "07B0",
    "manufacturer": "M-0071",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -15707,15 +15707,21 @@
    "file": "[Cert.]_MicroBOX_12_2.2_EIFAItRUk.knxprod",
    "mask": "07B0",
    "manufacturer": "M-0071",
-   "outcome": "driver-error",
-   "verdict": "driver-error"
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
   },
   "M-0071_A-4E21-23-769C": {
    "file": "[Cert.]_MicroBOX_22_2.3_EIFAItRUk.knxprod",
    "mask": "07B0",
    "manufacturer": "M-0071",
-   "outcome": "driver-error",
-   "verdict": "driver-error"
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
   },
   "M-0071_A-5111-43-906E": {
    "file": "InZennio_Z38_4.3_EIFA_CERT.knxprod",
@@ -16102,7 +16108,7 @@
    "mask": "07B0",
    "manufacturer": "M-0071",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -17215,17 +17221,17 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "not-comparable",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
-   "coverage": "0.4%"
+   "coverage": "100.0%"
   },
   "M-007C_A-0002-30-DC22": {
    "file": "1-0001-002_iseSmartConnectKNXSonos_V3.0.knxprod",
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -17235,7 +17241,7 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -17252,7 +17258,7 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -17269,7 +17275,7 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -17279,7 +17285,7 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -17289,17 +17295,17 @@
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "not-comparable",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
-   "coverage": "20.7%"
+   "coverage": "100.0%"
   },
   "M-007C_A-0013-20-F6B9": {
    "file": "1-0006-018_iseSmartConnectKNXSaunierDuval_V2.0.knxprod",
    "mask": "07B0",
    "manufacturer": "M-007C",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "identical",
    "coverage": "100.0%"
@@ -20398,10 +20404,10 @@
    "mask": "07B0",
    "manufacturer": "M-009A",
    "outcome": "captured",
-   "verdict": "not-comparable",
-   "loadctl": "missing",
-   "desc": "missing",
-   "coverage": "-"
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
   },
   "M-009A_A-FF41-11-DA31": {
    "file": "RE_K5X_MI_K5X.knxprod",
@@ -20432,7 +20438,7 @@
    "mask": "0021",
    "manufacturer": "M-00A6",
    "outcome": "captured",
-   "verdict": "not-comparable",
+   "verdict": "identical",
    "loadctl": "not-comparable",
    "desc": "identical",
    "coverage": "0.0%"
@@ -22036,7 +22042,7 @@
    "mask": "07B0",
    "manufacturer": "M-00C8",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23340,7 +23346,7 @@
    "mask": "0701",
    "manufacturer": "M-00E1",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23602,7 +23608,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23612,7 +23618,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23622,7 +23628,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23632,7 +23638,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23642,7 +23648,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23652,7 +23658,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23662,7 +23668,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23672,7 +23678,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23682,7 +23688,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23692,7 +23698,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -23702,7 +23708,7 @@
    "mask": "07B0",
    "manufacturer": "M-00EF",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -24645,7 +24651,7 @@
    "mask": "07B0",
    "manufacturer": "M-011E",
    "outcome": "captured",
-   "verdict": "differs",
+   "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
    "coverage": "100.0%"
@@ -25051,6 +25057,360 @@
    "verdict": "identical",
    "loadctl": "identical",
    "desc": "none",
+   "coverage": "100.0%"
+  }
+ },
+ "links": {
+  "M-0002_A-A087-11-2888": {
+   "file": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
+   "mask": "0701",
+   "manufacturer": "M-0002",
+   "outcome": "skipped-older-version",
+   "verdict": "skipped-older-version"
+  },
+  "M-0002_A-A0AA-14-2BB7": {
+   "file": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0002",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0004_A-10FA-12-8ACE-O000A": {
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-0004",
+   "outcome": "skipped-not-in-catalog",
+   "verdict": "skipped-not-in-catalog"
+  },
+  "M-0004_A-B015-21-F7AD-O007C": {
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0004",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-0004_A-C001-02-1792-O000A": {
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "mask": "0701",
+   "manufacturer": "M-0004",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "differs",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0006_A-E00D-01-28AB-O0009": {
+   "file": "PS_75341104_V0097.KNXPROD",
+   "mask": "0701",
+   "manufacturer": "M-0006",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "differs",
+   "coverage": "99.5%"
+  },
+  "M-0007_A-20BA-11-05A3-O000A": {
+   "file": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-0007",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0007_A-A0AB-14-2841-O0002": {
+   "file": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0007",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0008_A-0004-75-0A9A-O007C": {
+   "file": "Gira_S1_v7.5.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0008",
+   "outcome": "captured",
+   "verdict": "differs",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0009_A-20B3-10-C338": {
+   "file": "PS_TXB601B_V106_T2.KNXPROD",
+   "mask": "0701",
+   "manufacturer": "M-0009",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "differs",
+   "coverage": "99.0%"
+  },
+  "M-0009_A-E0EE-10-ADF8": {
+   "file": "PS_TXF121_V106_T6.KNXPROD",
+   "mask": "07B0",
+   "manufacturer": "M-0009",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-0048_A-E032-20-2E0E-O0228": {
+   "file": "KNX_DB_D_GB_F_iONprime_CP_4_KNX_V2_0_knxprod_2601.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0048",
+   "outcome": "captured",
+   "verdict": "differs",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0071_A-3171-12-19F2": {
+   "file": "DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0071",
+   "outcome": "skipped-older-version",
+   "verdict": "skipped-older-version"
+  },
+  "M-0071_A-4131-32-17BF": {
+   "file": "ACTINBOX_MAX6_3.2_EI.knxprod",
+   "mask": "0701",
+   "manufacturer": "M-0071",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0071_A-4231-11-7CAF": {
+   "file": "KCI_4_S0_1_1_EIFAItRSP.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0071",
+   "outcome": "captured",
+   "verdict": "not-comparable",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "5.6%"
+  },
+  "M-0071_A-4611-10-CDF1": {
+   "file": "BIN_44_1_0_EIFAItRS_ETS5_CERT.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0071",
+   "outcome": "skipped-older-version",
+   "verdict": "skipped-older-version"
+  },
+  "M-0071_A-4621-10-BB03": {
+   "file": "BIN_4X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0071",
+   "outcome": "skipped-older-version",
+   "verdict": "skipped-older-version"
+  },
+  "M-0071_A-4631-10-A468": {
+   "file": "BIN_2X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-0071",
+   "outcome": "skipped-older-version",
+   "verdict": "skipped-older-version"
+  },
+  "M-0076_A-0022-15-D6FE": {
+   "file": "Arc_S8.knxprod",
+   "mask": "0701",
+   "manufacturer": "M-0076",
+   "outcome": "captured",
+   "verdict": "differs",
+   "loadctl": "differs",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-0001-10-2A85": {
+   "file": "1-0004-005_iseSmartConnectKNXProgrammable_V1.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-0002-30-DC22": {
+   "file": "1-0001-002_iseSmartConnectKNXSonos_V3.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-0003-43-4813": {
+   "file": "1-0002-003_iseSmartConnectKNXHue_V4.3.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-0006-20-C776": {
+   "file": "1-0006-007_iseSmartConnectKNXVaillant_V2.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-000E-20-E64D": {
+   "file": "1-000A-008_iseSmartConnectKNXViega_V2.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-007C_A-0013-20-F6B9": {
+   "file": "1-0006-018_iseSmartConnectKNXSaunierDuval_V2.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-007C",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-0080_A-70A0-10-BD8F": {
+   "file": "ESYLUX SMARTDRIVER xX  KNX.KNXPROD",
+   "mask": "0705",
+   "manufacturer": "M-0080",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0083_A-000E-23-2274": {
+   "file": "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-0083",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-0083_A-0054-14-0D63": {
+   "file": "MDT_KP_BE_Central_Operation_Unit_Smart_V14.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-0083",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-0083_A-0255-21-0ECA": {
+   "file": "MDT_KP_SCN_02_Time_Switch_V21.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-0083",
+   "outcome": "captured",
+   "verdict": "differs",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-009A_A-200F-00-1CE1": {
+   "file": "IRKNT044.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-009A",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-00A6_A-0014-10-2517": {
+   "file": "1168-ETS-KNXIPSecureInterface-1.001.knxprod",
+   "mask": "0021",
+   "manufacturer": "M-00A6",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "not-comparable",
+   "desc": "identical",
+   "coverage": "0.0%"
+  },
+  "M-00B6_A-4537-03-DE59": {
+   "file": "APEKE72TP03.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-00B6",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-00B6_A-4945-10-C905-O00C5": {
+   "file": "APEKIE1SECTP01.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-00B6",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-00C5_A-0704-10-6B92": {
+   "file": "Weinzierl_770_KNX_IP_BAOS_ETS4.knxprod",
+   "mask": "0701",
+   "manufacturer": "M-00C5",
+   "outcome": "captured",
+   "verdict": "not-comparable",
+   "loadctl": "differs",
+   "desc": "none",
+   "coverage": "99.9%"
+  },
+  "M-00EF_A-DA11-22-A545": {
+   "file": "ETS_4101-145-02_DALIControle64Pro_V2.2.0.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-00EF",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
+   "coverage": "100.0%"
+  },
+  "M-00FC_A-00C0-00-D71C-O009A": {
+   "file": "879_414_knx.knxprod",
+   "mask": "0705",
+   "manufacturer": "M-00FC",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "none",
+   "coverage": "100.0%"
+  },
+  "M-00FD_A-1101-35-1D8C": {
+   "file": "RDG200KN__110135_ets5.knxprod",
+   "mask": "07B0",
+   "manufacturer": "M-00FD",
+   "outcome": "captured",
+   "verdict": "identical",
+   "loadctl": "identical",
+   "desc": "identical",
    "coverage": "100.0%"
   }
  }

@@ -1714,6 +1714,19 @@ pub(super) async fn read_memory_resumable<C: Connector>(
     resume!(session, load::read_memory(session.l4(), addr, len).await)
 }
 
+/// Session-aware, resume-on-drop [`bussard_mgmt::read_mcb_entries_for`]
+/// (issue #1128): reads, so replaying them is safe.
+pub(super) async fn read_mcb_entries_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    len: usize,
+) -> Result<Vec<bussard_mgmt::McbEntry>, WriteError> {
+    resume!(
+        session,
+        bussard_mgmt::read_mcb_entries_for(session.l4(), obj, len).await
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -84,10 +84,11 @@ pub use error::{MgmtError, Result, SilenceKind, return_code_name};
 pub use io_list::{ObjectTableSource, PID_IO_LIST, discover_object_table, read_io_list};
 pub use load::{
     IntermediatePoll, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext,
-    MAX_RESTART_PROCESS_WAIT, MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE,
-    PID_PROGRAM_VERSION, SegmentAllocation, WriteError, allocate_segment, compare_property,
-    compare_rel_mem, crc16_ccitt, encode_rel_segment, is_connection_death, master_reset, mcb_entry,
-    process_time_wait, read_load_state, read_manufacturer_id, read_mcb_table, read_program_version,
+    MAX_MCB_ENTRIES, MAX_RESTART_PROCESS_WAIT, MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL,
+    PID_MCB_TABLE, PID_PROGRAM_VERSION, SegmentAllocation, WriteError, allocate_segment,
+    compare_property, compare_rel_mem, crc16_ccitt, encode_rel_segment, is_connection_death,
+    master_reset, mcb_entries_match, mcb_entry, process_time_wait, read_load_state,
+    read_manufacturer_id, read_mcb_entries_for, read_mcb_table, read_program_version,
     read_property_elements, read_table_reference, restart_process_wait, write_load_control,
     write_load_control_unless_absent, write_load_control_with_poll, write_property,
 };
