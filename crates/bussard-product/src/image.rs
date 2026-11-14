@@ -2770,14 +2770,9 @@ struct ResolvedPropertyParameter<'a> {
 pub struct WrittenOctets {
     /// The octet range of the property value it wrote.
     pub range: Range<usize>,
-    /// Whether the configuration reaches the parameter, so the project can
-    /// set its value; an unreached one writes its default.
-    pub reached: bool,
-    /// The parameter: the ref the configuration reaches it through, else
-    /// its own id.
-    pub parameter: String,
-    /// Its text (`Text`, else `Name`), for a message.
-    pub text: String,
+    /// The parameter's id (`Parameter/@Id`), as
+    /// [`PropertyParameters::changed_from`] names it.
+    pub id: String,
 }
 
 impl<'a> PropertyParameters<'a> {
@@ -2886,6 +2881,42 @@ impl<'a> PropertyParameters<'a> {
         self.params.iter().any(|p| p.key == (object, prop_id))
     }
 
+    /// The property-located parameters whose placement differs from the one
+    /// `defaults` (the same program resolved with no value set) gives: a
+    /// value the project changed, directly or through a calculation or an
+    /// `<Assign>`. Keyed by parameter id, each with its name for a message:
+    /// `param@<ref> "<text>"` (the device-file key) when the configuration
+    /// reaches it, else its id. What a planner asks before it refuses a
+    /// write it cannot place with certainty: at the defaults nothing has
+    /// changed (issue #1049).
+    pub fn changed_from(&self, defaults: &PropertyParameters<'_>) -> BTreeMap<String, String> {
+        let at_default: HashMap<&str, &ResolvedPropertyParameter<'_>> = defaults
+            .params
+            .iter()
+            .map(|p| (p.param.id.as_str(), p))
+            .collect();
+        let mut out = BTreeMap::new();
+        for p in &self.params {
+            let same = at_default.get(p.param.id.as_str()).is_some_and(|d| {
+                d.value == p.value && d.keeps_base == p.keeps_base && d.key == p.key
+            });
+            if !same {
+                let text = p
+                    .param
+                    .text
+                    .as_deref()
+                    .or(p.param.name.as_deref())
+                    .unwrap_or_default();
+                let name = match &p.reached_ref {
+                    Some(r) => format!("param@{r} \"{text}\""),
+                    None => format!("{} \"{text}\"", p.param.id),
+                };
+                out.insert(p.param.id.clone(), name);
+            }
+        }
+        out
+    }
+
     /// The value of every property the parameters live in, composed over
     /// nothing (see [`compute_property_values`]).
     ///
@@ -2966,14 +2997,7 @@ impl<'a> PropertyParameters<'a> {
             let range = place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
             written.push(WrittenOctets {
                 range,
-                reached: p.reached_ref.is_some(),
-                parameter: p.reached_ref.clone().unwrap_or_else(|| p.param.id.clone()),
-                text: p
-                    .param
-                    .text
-                    .clone()
-                    .or_else(|| p.param.name.clone())
-                    .unwrap_or_default(),
+                id: p.param.id.clone(),
             });
         }
         Ok(out)

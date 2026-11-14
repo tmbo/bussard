@@ -385,6 +385,9 @@ pub(super) fn plan_flash_sys7(
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
     // The parameters placed in properties, resolved once (issue #945).
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
+    // The parameters set away from their defaults: only their placement can
+    // refuse a write (issue #1049).
+    let changed = super::declare::changed_parameters(app, &property_params, overrides, memo);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -732,6 +735,7 @@ pub(super) fn plan_flash_sys7(
                         op,
                         &property_values,
                         &property_params,
+                        &changed,
                         app,
                         false,
                     )?);
@@ -844,7 +848,7 @@ pub(super) fn plan_flash_sys7(
     let code_segments = sys7_code_segments(&steps, &images, declared, &param_images, &placed);
     // No parameter placed in a property the procedure writes is left off
     // the device (issue #1049).
-    super::declare::check_parameter_coverage(&steps, &property_params, app)?;
+    super::declare::check_parameter_coverage(&steps, &property_params, &changed, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);

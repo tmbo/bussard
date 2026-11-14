@@ -416,6 +416,7 @@ pub(super) fn lower_write_prop(
     op: &LoadOp,
     values: &PropertyValues,
     params: &PropertyParameters<'_>,
+    changed: &BTreeMap<String, String>,
     app: &ApplicationProgram,
     typed_by_list: bool,
 ) -> Result<FlashStep, PlanError> {
@@ -460,6 +461,7 @@ pub(super) fn lower_write_prop(
                 placeholder: false,
             },
             params,
+            changed,
             app,
         )
         .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?,
@@ -894,6 +896,9 @@ pub(super) fn plan_flash_properties(
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
     let params = bussard_product::PropertyParameters::resolve(app, &config);
+    // The parameters set away from their defaults: only their placement can
+    // refuse a write (issue #1049).
+    let changed = super::declare::changed_parameters(app, &params, overrides, memo);
     let values = params
         .values()
         .map_err(|e| PlanError::UnsupportedWriteProp {
@@ -906,9 +911,9 @@ pub(super) fn plan_flash_properties(
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
-            LoadOp::WriteProp { .. } => {
-                steps.push(lower_write_prop(step, op, &values, &params, app, false)?)
-            }
+            LoadOp::WriteProp { .. } => steps.push(lower_write_prop(
+                step, op, &values, &params, &changed, app, false,
+            )?),
             LoadOp::CompareProp { .. } => steps.push(lower_compare_prop(step, op)?),
             other => {
                 return Err(PlanError::UnsupportedOp {
@@ -919,7 +924,7 @@ pub(super) fn plan_flash_properties(
     }
     // No parameter placed in a property the procedure writes is left off
     // the device (issue #1049).
-    super::declare::check_parameter_coverage(&steps, &params, app)?;
+    super::declare::check_parameter_coverage(&steps, &params, &changed, app)?;
     // The description reads ETS makes before it first touches a property it
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);
@@ -1137,7 +1142,15 @@ mod tests {
         expected[0] = 9;
         expected[15] = 1;
         assert_eq!(
-            lower_write_prop(1, &op, &values, &no_params(&app), &app, false)?,
+            lower_write_prop(
+                1,
+                &op,
+                &values,
+                &no_params(&app),
+                &BTreeMap::new(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(12),
                 prop_id: 208,
@@ -1163,7 +1176,15 @@ mod tests {
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
         assert_eq!(
-            lower_write_prop(1, op, &values, &no_params(&app), &app, false)?,
+            lower_write_prop(
+                1,
+                op,
+                &values,
+                &no_params(&app),
+                &BTreeMap::new(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(12),
                 prop_id: 208,
@@ -1182,7 +1203,15 @@ mod tests {
         let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
-        match lower_write_prop(1, op, &values, &no_params(&app), &app, false) {
+        match lower_write_prop(
+            1,
+            op,
+            &values,
+            &no_params(&app),
+            &BTreeMap::new(),
+            &app,
+            false,
+        ) {
             Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
                 assert!(reason.contains("does not make up"), "{reason}");
             }
@@ -1193,7 +1222,15 @@ mod tests {
         let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
         let values = bussard_product::compute_property_values(&app, &config)?;
         let op = &app.load_procedures[0].ops[0];
-        match lower_write_prop(1, op, &values, &no_params(&app), &app, false) {
+        match lower_write_prop(
+            1,
+            op,
+            &values,
+            &no_params(&app),
+            &BTreeMap::new(),
+            &app,
+            false,
+        ) {
             Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
                 assert!(reason.contains("size of its elements"), "{reason}");
             }
@@ -1222,7 +1259,15 @@ mod tests {
             })
             .ok_or("the label write is taken")?;
         assert_eq!(
-            lower_write_prop(2, label, &values, &no_params(&app), &app, false)?,
+            lower_write_prop(
+                2,
+                label,
+                &values,
+                &no_params(&app),
+                &BTreeMap::new(),
+                &app,
+                false
+            )?,
             FlashStep::WriteProp {
                 object: PropObject::Index(6),
                 prop_id: 60,
@@ -1245,7 +1290,15 @@ mod tests {
                 )
             })
             .ok_or("the inline write is unguarded")?;
-        match lower_write_prop(3, inline, &values, &no_params(&app), &app, false)? {
+        match lower_write_prop(
+            3,
+            inline,
+            &values,
+            &no_params(&app),
+            &BTreeMap::new(),
+            &app,
+            false,
+        )? {
             FlashStep::WriteProp {
                 count,
                 value,
@@ -1282,6 +1335,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&guarded_app()?),
+                &BTreeMap::new(),
                 &guarded_app()?,
                 false
             ),
@@ -1351,6 +1405,7 @@ mod tests {
                 &ise_write(64, 500),
                 &values,
                 &no_params(&guarded_app()?),
+                &BTreeMap::new(),
                 &guarded_app()?,
                 false
             )?,
@@ -1375,6 +1430,7 @@ mod tests {
                 &ise_write(69, 64),
                 &values,
                 &no_params(&guarded_app()?),
+                &BTreeMap::new(),
                 &guarded_app()?,
                 false
             )?,
@@ -1401,6 +1457,7 @@ mod tests {
             &ise_write(64, 988),
             &values,
             &no_params(&guarded_app()?),
+            &BTreeMap::new(),
             &guarded_app()?,
             false,
         )? {
@@ -1444,6 +1501,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
@@ -1463,6 +1521,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
@@ -1487,6 +1546,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             ),
@@ -1500,6 +1560,7 @@ mod tests {
                 &op,
                 &PropertyValues::new(),
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             ),
@@ -1537,6 +1598,7 @@ mod tests {
                 &count_write(64, 500),
                 &values,
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
@@ -1563,6 +1625,7 @@ mod tests {
             &count_write(64, 4096),
             &values,
             &no_params(&app),
+            &BTreeMap::new(),
             &app,
             false,
         ) {
@@ -1579,6 +1642,7 @@ mod tests {
                 &count_write(64, 4095),
                 &values,
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
@@ -1600,6 +1664,7 @@ mod tests {
                 &count_write(64, 237),
                 &values,
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
@@ -1618,6 +1683,7 @@ mod tests {
                 &count_write(68, 64),
                 &values,
                 &no_params(&app),
+                &BTreeMap::new(),
                 &app,
                 false
             )?,
