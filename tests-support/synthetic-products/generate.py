@@ -340,9 +340,16 @@ class Product:
             # syn-com-objects (#604 row 27): `dpt` is optional (no DPT has
             # 3, 5, 6 or 7 bits), `size` one of ETS's ObjectSize values.
             check_keys(ow, o, {"number", "name", "text", "function_text", "size", "flags", "priority"},
-                       {"dpt"}, {"ref", "translations"})
-            if o["size"] not in OBJECT_SIZES:
-                raise SpecError(f"{ow}: size is one of {', '.join(OBJECT_SIZES)}")
+                       {"dpt", "ref_size"}, {"ref", "translations"})
+            # syn-object-size-ref (#1065): `ref_size` is the ComObjectRef's
+            # own ObjectSize, which overrides the object's; only then may the
+            # object declare `LegacyVarData`, a size without a type code.
+            sizes = OBJECT_SIZES + (("LegacyVarData",) if "ref_size" in o else ())
+            if o["size"] not in sizes:
+                raise SpecError(f"{ow}: size is one of {', '.join(OBJECT_SIZES)}"
+                                " (`LegacyVarData` with a `ref_size`)")
+            if "ref_size" in o and o["ref_size"] not in OBJECT_SIZES:
+                raise SpecError(f"{ow}: ref_size is one of {', '.join(OBJECT_SIZES)}")
             bad = set(o["flags"]) - set(FLAGS)
             if bad:
                 raise SpecError(f"{ow}: unknown flags {sorted(bad)}; use {list(FLAGS)}")
@@ -1268,7 +1275,7 @@ def render_application(p: Product) -> bytes:
     x.close("ComObjectTable")
     x.open("ComObjectRefs")
     for o in p.objects.values():
-        x.empty("ComObjectRef", [("Id", o["ref"]), ("RefId", o["id"])])
+        x.empty("ComObjectRef", [("Id", o["ref"]), ("RefId", o["id"]), ("ObjectSize", o.get("ref_size"))])
     x.close("ComObjectRefs")
     x.empty("AddressTable", table_location(p, "address_table_segment")
             + [("MaxEntries", a["address_table_max_entries"])])
