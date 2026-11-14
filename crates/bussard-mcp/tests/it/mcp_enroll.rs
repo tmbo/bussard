@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -272,15 +272,24 @@ fn spawn_call(
     tokio::spawn(async move { call(&client, tool, args).await })
 }
 
-/// Waits until `pages` returns a page, the pairing page opened.
-async fn opened_page(pages: impl Fn() -> Vec<String>) -> Result<String, BoxError> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+/// Waits until `pages` returns a page, the pairing page opened, or until
+/// `call_ended` says the call returned without one.
+///
+/// No deadline of its own (#1118): before the page opens the server derives
+/// the session code, a million PBKDF2 rounds (`SESSION_CODE_ITERATIONS`),
+/// which took 4 to 9 s of wall time under a loaded workspace run and so ran
+/// into the 10 s deadline this wait had. A call that hangs is ended by
+/// nextest's slow-timeout.
+async fn opened_page(
+    pages: impl Fn() -> Vec<String>,
+    call_ended: impl Fn() -> bool,
+) -> Result<String, BoxError> {
     loop {
         if let Some(page) = pages().first() {
             return Ok(page.clone());
         }
-        if Instant::now() > deadline {
-            return Err("the pairing page did not open".into());
+        if call_ended() {
+            return Err("the call returned before the pairing page opened".into());
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -437,16 +446,26 @@ fn element_text<'a>(html: &'a str, id: &str) -> Result<&'a str, BoxError> {
     Ok(&rest[open..open + close])
 }
 
-/// The key and the session code of `link`.
+/// The key and the session code of `link`. The code is a million PBKDF2
+/// rounds, so each link's code is derived once per test (#1118).
 fn key_and_code(link: &str) -> Result<(String, String), BoxError> {
+    static CODES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     let params = fragment(link)?;
     let key = params.get("k").cloned().ok_or("no key")?;
+    let codes = CODES.get_or_init(Mutex::default);
+    if let Some(code) = codes.lock().map_err(|_| "poisoned")?.get(link) {
+        return Ok((key, code.clone()));
+    }
     let b_pk: [u8; 32] = URL_SAFE_NO_PAD.decode(&key)?.as_slice().try_into()?;
     let sid: [u8; 16] = URL_SAFE_NO_PAD
         .decode(params.get("s").ok_or("no sid")?)?
         .as_slice()
         .try_into()?;
     let code = bussard_secure::enroll::fingerprint(&sid, &b_pk);
+    codes
+        .lock()
+        .map_err(|_| "poisoned")?
+        .insert(link.to_string(), code.clone());
     Ok((key, code))
 }
 
@@ -466,11 +485,27 @@ fn pairing_link(url: &str) -> Result<String, BoxError> {
     Ok(link)
 }
 
-/// The pairing page's live status.
-fn pairing_status(url: &str) -> Result<Value, BoxError> {
-    let body: Value =
-        serde_json::from_str(&ureq::get(&format!("{url}status")).call()?.into_string()?)?;
-    Ok(body["status"].clone())
+/// The pairing page's last status, read as the page's own script reads it:
+/// a long poll (`status?after=<version>`) kept open until the status says
+/// the session ended. The page serves only [`FINISH_GRACE`] after the end,
+/// so the end must reach a poll that is already waiting, not a request sent
+/// once the test has done other work (#1118).
+///
+/// [`FINISH_GRACE`]: bussard_viz::pairing_page::FINISH_GRACE
+fn pairing_end_status(url: &str) -> Result<Value, BoxError> {
+    let mut after: Option<u64> = None;
+    loop {
+        let query = after.map_or(String::new(), |v| format!("?after={v}"));
+        let body: Value = serde_json::from_str(
+            &ureq::get(&format!("{url}status{query}"))
+                .call()?
+                .into_string()?,
+        )?;
+        if body["status"]["running"] == false {
+            return Ok(body["status"].clone());
+        }
+        after = Some(body["version"].as_u64().ok_or("no version")?);
+    }
 }
 
 /// Asserts that neither `link`, nor its session code, nor its key, nor the
@@ -541,7 +576,11 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     // The call stays open until the phone finishes (#831).
     let call_human = human.clone();
     let enrolment = spawn_call(&client, "knx_enroll_certificates", json!({"local": true}));
-    opened_page(|| call_human.shown().into_iter().map(|s| s.url).collect()).await?;
+    opened_page(
+        || call_human.shown().into_iter().map(|s| s.url).collect(),
+        || enrolment.is_finished(),
+    )
+    .await?;
     let pairing = shown_pairing_page(&human)?;
     let link = pairing_link(&pairing)?;
     assert!(link.starts_with("http://127.0.0.1:"), "{link}");
@@ -555,6 +594,10 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     shown.push_str(&again.to_string());
     assert_eq!(again["refused"], true, "{again}");
     assert_eq!(human.shown().len(), 1);
+
+    // The pairing page, open in the browser, follows the session to its end.
+    let page_url = pairing.clone();
+    let page_end = tokio::task::spawn_blocking(move || pairing_end_status(&page_url));
 
     // The page is served on the link's origin, and the phone stores labels.
     let phone_link = link.clone();
@@ -650,8 +693,7 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
 
     // The pairing page lists the same certificates by serial number, in
     // the glossary's words, and shows the end; it is gone shortly after.
-    let page_url = pairing.clone();
-    let page = tokio::task::spawn_blocking(move || pairing_status(&page_url)).await??;
+    let page = page_end.await??;
     assert_eq!(page["running"], false, "{page}");
     assert_eq!(page["certificates"][0]["serial"], "00FA01020304", "{page}");
     assert_eq!(page["certificates"][0]["badge"], "added", "{page}");
@@ -692,7 +734,7 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
 
     let enrolment = spawn_call(&client, "knx_enroll_certificates", json!({}));
     let opened = browser.clone();
-    let pairing = opened_page(|| opened.opened()).await?;
+    let pairing = opened_page(|| opened.opened(), || enrolment.is_finished()).await?;
     assert!(human.shown().is_empty());
     let page_url = pairing.clone();
     let (link, html) = tokio::task::spawn_blocking(move || -> Result<_, BoxError> {
@@ -716,8 +758,17 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     })
     .await??;
 
-    // The phone may read its result before the status records it: wait.
-    let running = call(&client, "knx_enroll_status", json!({"wait_seconds": 10})).await?;
+    // The phone may read its result before the status records it. A
+    // `wait_seconds` call waits for a result newer than the call, so when the
+    // record came first it sat out its whole wait (10 s of the test's 35 s
+    // under load, #1118): ask until the status has it.
+    let running = loop {
+        let status = call(&client, "knx_enroll_status", json!({})).await?;
+        if status["certificates"] != 0 {
+            break status;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(running["session"], "running", "{running}");
     assert_eq!(running["certificates"], 1, "{running}");
     // Counts only while it runs; serial numbers on request.
@@ -747,7 +798,11 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     // A new session can start once the last one ended, on a new page.
     let second = spawn_call(&client, "knx_enroll_certificates", json!({}));
     let opened = browser.clone();
-    let next_pairing = opened_page(|| opened.opened().into_iter().skip(1).collect()).await?;
+    let next_pairing = opened_page(
+        || opened.opened().into_iter().skip(1).collect(),
+        || second.is_finished(),
+    )
+    .await?;
     assert_ne!(next_pairing, pairing);
     let page_url = next_pairing.clone();
     let next_link = tokio::task::spawn_blocking(move || pairing_link(&page_url)).await??;
@@ -913,7 +968,7 @@ async fn test_knx_enroll_certificates_multi_round_trip_shows_link() -> TestResul
     let second = tokio::spawn(async move { round.call_tool_once(params).await });
     // Its first progress notification says it waits.
     let waiting = human.clone();
-    opened_page(|| waiting.progress()).await?;
+    opened_page(|| waiting.progress(), || second.is_finished()).await?;
     let status = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(status["end"], "stopped", "{status}");
     let second = tokio::time::timeout(Duration::from_secs(30), second).await???;
@@ -1005,9 +1060,11 @@ async fn test_knx_enroll_certificates_cancel_leaves_session_running() -> TestRes
         .send_cancellable_request(request, PeerRequestOptions::no_options())
         .await?;
     let waiting = human.clone();
-    opened_page(|| waiting.progress()).await?;
+    // The cancellable request has no handle to ask; a refusal would show
+    // as a hang, which nextest's slow-timeout ends.
+    opened_page(|| waiting.progress(), || false).await?;
     let opened = browser.clone();
-    let pairing = opened_page(|| opened.opened()).await?;
+    let pairing = opened_page(|| opened.opened(), || false).await?;
 
     // Esc in the chat app: the call ends, the session does not.
     handle
