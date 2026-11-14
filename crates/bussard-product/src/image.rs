@@ -2897,8 +2897,13 @@ impl<'a> PropertyParameters<'a> {
             .collect();
         let mut out = BTreeMap::new();
         for p in &self.params {
+            // The octets each would write, so an override spelled otherwise
+            // than the default (`1.0`, `01`, an enumeration's text) that
+            // encodes to the same octets is not a change.
             let same = at_default.get(p.param.id.as_str()).is_some_and(|d| {
-                d.value == p.value && d.keeps_base == p.keeps_base && d.key == p.key
+                d.keeps_base == p.keeps_base
+                    && d.key == p.key
+                    && (p.keeps_base || self.encoded(d) == self.encoded(p))
             });
             if !same {
                 let text = p
@@ -2915,6 +2920,34 @@ impl<'a> PropertyParameters<'a> {
             }
         }
         out
+    }
+
+    /// The octets `p` places, laid at its offset (a bit field over zeros),
+    /// and the range they take; `None` when its value does not encode.
+    fn encoded(&self, p: &ResolvedPropertyParameter<'_>) -> Option<(Range<usize>, Vec<u8>)> {
+        let app = self.app;
+        let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
+        let placement = encode_value(
+            app,
+            pname,
+            parameter_type_of(app, p.param),
+            p.value.as_deref(),
+            p.source,
+        )
+        .ok()?;
+        let mut image = Vec::new();
+        let range = place_checked(
+            app,
+            pname,
+            &mut image,
+            p.offset,
+            p.bit_offset,
+            &placement,
+            None,
+        )
+        .ok()?;
+        let octets = image.get(range.clone())?.to_vec();
+        Some((range, octets))
     }
 
     /// The value of every property the parameters live in, composed over

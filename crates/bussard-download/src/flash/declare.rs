@@ -490,14 +490,71 @@ pub(super) fn declaration_at(
     at: usize,
     op: &LoadOp,
 ) -> Result<Option<PropDecl>, PlanError> {
+    let LoadOp::WriteProp {
+        obj_idx,
+        obj_type,
+        occurrence,
+        prop_id: Some(prop_id),
+        ..
+    } = op
+    else {
+        return Ok(None);
+    };
+    let Ok(object) = prop_object(at + 1, *obj_idx, *obj_type, *occurrence) else {
+        return Ok(None);
+    };
+    // Only the declarations of the write's own property are lowered, so an
+    // unrelated one cannot fail the lookup.
     let mut declared: Vec<PropDecl> = Vec::new();
     for (i, o) in ops.get(..at).unwrap_or_default().iter().enumerate() {
-        if matches!(o, LoadOp::DeclarePropDesc { .. }) {
-            let decl = lower_declare_prop(i + 1, o)?;
-            declared.push(decl);
+        if let LoadOp::DeclarePropDesc {
+            obj_idx,
+            obj_type,
+            occurrence,
+            prop_id: Some(declared_id),
+            ..
+        } = o
+            && declared_id == prop_id
+            && prop_object(i + 1, *obj_idx, *obj_type, *occurrence).ok() == Some(object)
+        {
+            declared.push(lower_declare_prop(i + 1, o)?);
         }
     }
     effective_declaration(&declared, at + 1, op, ops.get(at + 1..).unwrap_or_default())
+}
+
+/// What a write lowered against its declaration (`lowered`) gives: its
+/// step, or `None` for the caller to lower it as undeclared. A write before
+/// its declaration (`declared_before` false) that the declared lowering
+/// refuses plans as main did, undeclared, while every parameter that may be
+/// stored in `object`/`prop_id` holds its default; with a changed one the
+/// refusal stands and names it (issue #1049). The one rule of the System B
+/// and System 7 planners.
+///
+/// # Errors
+///
+/// The declared lowering's refusal of a write after its declaration, and a
+/// [`PlanError::PropertyParameter`] naming the changed parameter otherwise.
+pub(super) fn settle_declared_later(
+    lowered: Result<Option<FlashStep>, PlanError>,
+    declared_before: bool,
+    object: PropObject,
+    prop_id: u32,
+    changed: &Changed<'_, '_>,
+) -> Result<Option<Option<FlashStep>>, PlanError> {
+    match lowered {
+        Ok(step) => Ok(Some(step)),
+        Err(e) if declared_before => Err(e),
+        Err(e) => match changed.in_property(object, prop_id) {
+            Some(who) => Err(PlanError::PropertyParameter(format!(
+                "the parameter {who} is set away from its default and placed in {object} PID \
+                 {prop_id}, which the procedure declares only after this write, and the write \
+                 cannot be lowered against that declaration ({e}); with the parameter at its \
+                 default the write plans as before"
+            ))),
+            None => Ok(None),
+        },
+    }
 }
 
 /// An `LdCtrlWriteProp` with a concrete `InlineData` to a property its
@@ -723,11 +780,10 @@ pub(super) fn check_parameter_coverage(
                  back to its default"
             ))
         };
+        // Every property parameter names its object
+        // (`PropertyParameters::resolve` keeps only those).
         let Some(name) = PropertyObjectRef::of(loc) else {
-            return Err(refuse(format!(
-                "PID {} of no named object",
-                loc.property_id
-            )));
+            continue;
         };
         let key = (name, loc.property_id);
         if !composed.iter().any(|(k, _)| *k == key) {
@@ -952,6 +1008,28 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn test_declaration_at_ignores_another_property_s_declaration() -> TestResult {
+        // Issue #1049: only the write's own property's declarations are
+        // lowered; one of another property that does not lower does not
+        // fail the lookup.
+        let bad = LoadOp::DeclarePropDesc {
+            obj_idx: Some(10),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(56),
+            prop_type: Some("PDT_NOT_A_TYPE".to_string()),
+            max_elements: Some(1),
+            writable: Some(true),
+            read_access: Some(0),
+            write_access: Some(0),
+        };
+        assert!(lower_declare_prop(1, &bad).is_err());
+        let write = write(Some(vec![0x11]), Some(1));
+        assert!(declaration_at(&[bad, write.clone()], 1, &write)?.is_none());
+        Ok(())
+    }
 
     fn declare(prop_type: &str, max_elements: u32) -> LoadOp {
         LoadOp::DeclarePropDesc {

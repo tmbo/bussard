@@ -704,41 +704,65 @@ pub(super) fn plan_flash_sys7(
                 // declared type (issue #946).
                 // A write carrying InlineData to a property declared only
                 // later is lowered as declared too (issue #1049).
-                if let Some(decl) = super::declare::effective_declaration(
+                let decl = super::declare::effective_declaration(
                     &declared,
                     step_no,
                     op,
                     ops.get(i + 1..).unwrap_or_default(),
-                )? {
-                    let inline = match op {
-                        LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
-                        _ => None,
-                    };
-                    // A write with neither `InlineData` nor a parameter placed
-                    // in the property sends nothing, as ETS on the Hager
-                    // STXE530's object 6 PID 52 (`M-0009_A-20BB-10-0991`).
-                    steps.extend(super::declare::lower_declared_write_prop(
-                        step_no,
-                        op,
-                        &decl,
-                        inline,
-                        &property_params,
-                        app,
-                        false,
-                    )?);
-                } else {
-                    // A property write with its Count and Verify (issue #390):
-                    // the 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the
-                    // MDT 0705 label properties their parameters compose.
-                    steps.push(super::plan_props::lower_write_prop(
-                        step_no,
-                        op,
-                        &property_values,
-                        &property_params,
-                        &changed,
-                        app,
-                        false,
-                    )?);
+                )?;
+                // A write with neither `InlineData` nor a parameter placed in
+                // the property sends nothing, as ETS on the Hager STXE530's
+                // object 6 PID 52 (`M-0009_A-20BB-10-0991`). One before its
+                // declaration that the declared lowering refuses plans as
+                // before (undeclared) while its property holds defaults
+                // (`settle_declared_later`, the System B rule).
+                let settled = match &decl {
+                    Some(decl) => {
+                        let inline = match op {
+                            LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
+                            _ => None,
+                        };
+                        let prop = match op {
+                            LoadOp::WriteProp {
+                                prop_id: Some(p), ..
+                            } => *p,
+                            _ => decl.prop_id,
+                        };
+                        super::declare::settle_declared_later(
+                            super::declare::lower_declared_write_prop(
+                                step_no,
+                                op,
+                                decl,
+                                inline,
+                                &property_params,
+                                app,
+                                false,
+                            ),
+                            super::declare::declaration_for(&declared, step_no, op).is_some(),
+                            decl.object,
+                            prop,
+                            &changed,
+                        )?
+                    }
+                    None => None,
+                };
+                match settled {
+                    Some(lowered) => steps.extend(lowered),
+                    None => {
+                        // A property write with its Count and Verify (issue
+                        // #390): the 0701 programs' `ObjIdx=3 PropId=204
+                        // Count=2` and the MDT 0705 label properties their
+                        // parameters compose.
+                        steps.push(super::plan_props::lower_write_prop(
+                            step_no,
+                            op,
+                            &property_values,
+                            &property_params,
+                            &changed,
+                            app,
+                            false,
+                        )?);
+                    }
                 }
             }
             LoadOp::LoadImageProp {

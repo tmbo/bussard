@@ -745,15 +745,19 @@ fn plan_flash_as(
                 assemble_ops_tagged(app, template_ops, &config, Download::Full)
                     .map(|(ops, tags, ..)| (ops, tags))
             });
+            // An op without a tag (the master template's) or one the complete
+            // download does not hold is a lookup that failed, as an error is.
             let found = match full {
                 Ok((full, tags)) => match op_tags.get(i).copied().flatten() {
                     Some(tag) => match tags.iter().position(|t| *t == Some(tag)) {
-                        Some(at) => super::declare::declaration_at(full, at, op),
-                        None => Ok(None),
+                        Some(at) => {
+                            super::declare::declaration_at(full, at, op).map_err(|e| e.to_string())
+                        }
+                        None => Err("the complete download does not hold this write".to_string()),
                     },
-                    None => Ok(None),
+                    None => Err("the write comes from the master template".to_string()),
                 },
-                Err(e) => Err(e.clone()),
+                Err(e) => Err(e.to_string()),
             };
             declared_write = match found {
                 Ok(decl) => decl,
@@ -774,13 +778,13 @@ fn plan_flash_as(
                 }
             };
         }
-        // A write lowered against a declaration that comes after it plans as
-        // main did (undeclared) when the declared lowering would refuse it
-        // and every parameter in its property holds its default; only a
-        // changed parameter makes that refusal stand (issue #1049).
+        // A write to a declared property is lowered once, here: a write
+        // before its declaration that the declared lowering refuses plans
+        // as main did (undeclared) while its property holds defaults
+        // (`settle_declared_later`, issue #1049).
         let declared_target = super::declare::declaration_for(&declared, step_no, op).is_some();
-        if !declared_target
-            && let Some(decl) = declared_write.as_ref()
+        let mut declared_lowered: Option<Option<FlashStep>> = None;
+        if let Some(decl) = declared_write.clone()
             && let LoadOp::WriteProp {
                 prop_id,
                 inline_data,
@@ -789,7 +793,9 @@ fn plan_flash_as(
         {
             let prop = prop_id.unwrap_or(decl.prop_id);
             let name = format!("the declared {} PID {prop}", decl.object);
-            let refused = maybe_substitute_app_id(
+            // The template; `lower_declared_write_prop` lays the parameters
+            // placed in the property over it, once.
+            let lowered = maybe_substitute_app_id(
                 &name,
                 prop,
                 inline_data.as_deref(),
@@ -804,15 +810,21 @@ fn plan_flash_as(
                 super::declare::lower_declared_write_prop(
                     step_no,
                     op,
-                    decl,
+                    &decl,
                     inline.as_deref(),
                     &property_params,
                     app,
                     typed_objects_by_list,
                 )
-            })
-            .is_err();
-            if refused && changed.in_property(decl.object, prop).is_none() {
+            });
+            declared_lowered = super::declare::settle_declared_later(
+                lowered,
+                declared_target,
+                decl.object,
+                prop,
+                &changed,
+            )?;
+            if declared_lowered.is_none() {
                 declared_write = None;
             }
         }
@@ -1279,37 +1291,11 @@ fn plan_flash_as(
             // A write to a declared property: `Count` elements of the declared
             // type, the value the parameters compose (issue #938), the
             // template's application-id placeholder replaced by the one rule
-            // for it (issues #945, #957, #964).
-            LoadOp::WriteProp {
-                prop_id,
-                inline_data,
-                ..
-            } if declared_write.is_some() => {
-                let Some(decl) = declared_write else { continue };
-                let prop = prop_id.unwrap_or(decl.prop_id);
-                let name = format!("the declared {} PID {prop}", decl.object);
-                // The template; `lower_declared_write_prop` lays the
-                // parameters placed in the property over it, once.
-                let substituted = maybe_substitute_app_id(
-                    &name,
-                    prop,
-                    inline_data.as_deref(),
-                    program_ids.for_object(decl.object),
-                    || super::declare::is_placed(&name, decl.object, prop, &property_params, app),
-                )
-                .map_err(|reason| PlanError::UnsupportedWriteProp {
-                    step: step_no,
-                    reason,
-                })?;
-                let mut lowered = super::declare::lower_declared_write_prop(
-                    step_no,
-                    op,
-                    &decl,
-                    substituted.as_deref(),
-                    &property_params,
-                    app,
-                    typed_objects_by_list,
-                )?;
+            // for it (issues #945, #957, #964), lowered above.
+            LoadOp::WriteProp { .. } if declared_write.is_some() => {
+                let Some(mut lowered) = declared_lowered.take() else {
+                    continue;
+                };
                 // A write that comes before its declaration keeps the
                 // undeclared System B arm's `Verify` rule (not honoured,
                 // issue #390); only its composition follows the later
@@ -5953,6 +5939,12 @@ mod tests {
                 && reason.contains("object 9 PID 208 at octet 0"),
             "{reason}"
         );
+        // An override spelled otherwise than the default but writing the
+        // same octets is no change.
+        assert_eq!(
+            pid_208_writes(ops, &params, &[1], &[("P-1_R-1", "07")])?,
+            Ok(vec![])
+        );
         Ok(())
     }
 
@@ -5974,7 +5966,12 @@ mod tests {
             Ok(vec![(vec![0x11, 0x22], true, 1, 1)])
         );
         let reason = refused(pid_208_writes(&ops, &params, &[1], &[("P-1_R-1", "8")])?)?;
-        assert!(reason.contains("Count"), "{reason}");
+        assert!(
+            reason.contains("param@P-1_R-1 \"p1\"")
+                && reason.contains("Count")
+                && reason.contains("at its default the write plans as before"),
+            "{reason}"
+        );
         Ok(())
     }
 
