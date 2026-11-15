@@ -605,6 +605,9 @@ pub struct FlashSummary {
     pub differential: bool,
     /// Whether the links are written after the download (issue #779).
     pub links_after_download: bool,
+    /// The text values the download writes with replaced characters (issue
+    /// #1065, W051).
+    pub text_warnings: Vec<String>,
 }
 
 /// The load of the pinned application.
@@ -914,6 +917,12 @@ pub fn flash_image(ctx: &FlashFor<'_>, need: FlashNeed<'_>) -> Result<FlashImage
         factory_reset: plan.has_factory_reset(),
         differential: options.skip_matching_mcb,
         links_after_download: links_after,
+        text_warnings: bussard_download::param_decode::lossy_text_notes(
+            app,
+            inputs.overrides(),
+            inputs.base_offsets(),
+            &bussard_product::dynamic::DynamicMemo::new(app),
+        ),
     };
     let binds = format!(
         "{:?}|{:?}|{:?}",

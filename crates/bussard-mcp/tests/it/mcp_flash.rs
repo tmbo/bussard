@@ -188,14 +188,14 @@ pub(super) fn device_at(
     Ok(dev)
 }
 
-/// Packs the synthetic application into a `.knxprod`.
-fn knxprod(path: &Path) -> anyhow::Result<()> {
+/// Packs the synthetic application `xml` into a `.knxprod`.
+fn knxprod(path: &Path, xml: &str) -> anyhow::Result<()> {
     let mut writer = zip::ZipWriter::new(std::fs::File::create(path)?);
     writer.start_file(
         "M-00FA/M-00FA_A-0002.xml",
         zip::write::SimpleFileOptions::default(),
     )?;
-    writer.write_all(APP_XML.as_bytes())?;
+    writer.write_all(xml.as_bytes())?;
     writer.finish()?;
     Ok(())
 }
@@ -203,10 +203,15 @@ fn knxprod(path: &Path) -> anyhow::Result<()> {
 /// The model: 1.1.4 runs the app with object 2 on (the change), the archive
 /// stored in `products/` and pinned in `bussard.lock`. Returns its SHA-256.
 pub(super) fn write_model(dir: &Path) -> anyhow::Result<String> {
+    write_model_of(dir, APP_XML)
+}
+
+/// [`write_model`] with the application `xml`.
+fn write_model_of(dir: &Path, xml: &str) -> anyhow::Result<String> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::create_dir_all(dir.join("products"))?;
     let archive = dir.join("products").join("flash-test.knxprod");
-    knxprod(&archive)?;
+    knxprod(&archive, xml)?;
     let sha: String = sha2::Sha256::digest(std::fs::read(&archive)?)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -557,6 +562,67 @@ async fn test_knx_apply_device_loads_the_application_into_a_fresh_device() -> an
     );
     assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
 
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #1065: the flash plan carries the W051 note of a text default the
+/// download writes with a replaced character (the program declares no
+/// `TextParameterEncoding`, and `℃` has no Windows-1252 octet), in the
+/// result the chat sees.
+#[tokio::test]
+async fn test_knx_plan_device_flash_names_a_lossy_text_default() -> anyhow::Result<()> {
+    let xml = APP_XML
+        .replace(
+            r#"Size="2" LoadStateMachine="4" Offset="0"><Data>AAA=</Data>"#,
+            r#"Size="8" LoadStateMachine="4" Offset="0"><Data>AAAAAAAAAAA=</Data>"#,
+        )
+        .replace(
+            "</ParameterTypes>",
+            r#"<ParameterType Id="M-00FA_A-0002_PT-2" Name="label"><TypeText SizeInBit="48" /></ParameterType></ParameterTypes>"#,
+        )
+        .replace(
+            "</Parameters>",
+            r#"<Parameter Id="M-00FA_A-0002_P-2" Name="unit" Text="Unit" ParameterType="M-00FA_A-0002_PT-2" Value="T ℃"><Memory CodeSegment="M-00FA_A-0002_RS-2" Offset="2" BitOffset="0" /></Parameter></Parameters>"#,
+        )
+        .replace(
+            "</ParameterRefs>",
+            r#"<ParameterRef Id="M-00FA_A-0002_P-2_R-3" RefId="M-00FA_A-0002_P-2" /></ParameterRefs>"#,
+        )
+        .replace(
+            r#"<ParameterRefRef RefId="M-00FA_A-0002_P-1_R-2" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0002_P-1_R-2" /><ParameterRefRef RefId="M-00FA_A-0002_P-2_R-3" />"#,
+        )
+        .replace(
+            r#"<LdCtrlRelSegment LsmIdx="4" Size="2" AppliesTo="par" />
+                <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="2" AppliesTo="par" />"#,
+            r#"<LdCtrlRelSegment LsmIdx="4" Size="8" AppliesTo="par" />
+                <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="8" AppliesTo="par" />"#,
+        );
+    assert!(xml.contains("T ℃") && xml.contains(r#"Size="8" AppliesTo="par""#));
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_UNLOADED)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model_of(dir.path(), &xml)?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    let warnings = plan["flash"]["text_warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(warnings.len(), 1, "{plan}");
+    let warning = warnings[0].as_str().unwrap_or_default();
+    assert!(
+        warning.contains(r#"= "T ℃" is written as "T ?""#),
+        "{warning}"
+    );
     client.cancel().await?;
     task.abort();
     Ok(())

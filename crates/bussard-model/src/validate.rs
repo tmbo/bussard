@@ -12,7 +12,7 @@ use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::{ApduSize, Dpt};
 use crate::flags::Flags;
 use crate::loader::Model;
-use crate::param_model::{ParamKind, ProductModels, key_to_param_id};
+use crate::param_model::{ParamKind, ProductModels};
 
 /// The severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -241,6 +241,9 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 ///   (the importer omits these, but a hand edit can reintroduce one).
 /// * **W050** — a reached `<Assign>` replaces a stored value with another
 ///   (issue #1070): the download writes the assigned value, as ETS does.
+/// * **W051** — a text value holds characters the program's code page has no
+///   octet for, which the download writes as Windows' best-fit look-alike or
+///   `?` (issue #1065).
 fn check_parameters(
     model: &Model,
     models: &ProductModels,
@@ -293,27 +296,29 @@ fn check_parameters(
         for (key, value) in &dev.parameters {
             let loc = format!("{file} parameters.{key:?}");
 
-            let Some(param_id) = key_to_param_id(key) else {
-                diags.push(Diagnostic::new(
-                    "E016",
-                    Severity::Error,
-                    loc,
-                    format!("parameter key {key:?} is malformed (expected `<name>@<ref-id>`)"),
-                ));
-                continue;
-            };
-
-            let Some(def) = product_model.parameters.get(&param_id) else {
-                diags.push(Diagnostic::new(
-                    "E016",
-                    Severity::Error,
-                    loc,
-                    format!(
-                        "unknown parameter {param_id:?} (from key {key:?}); the product {} has no such parameter",
-                        app_ref.unwrap_or("?")
-                    ),
-                ));
-                continue;
+            let def = match product_model.parameter_for_key(key) {
+                Ok(def) => def,
+                Err(None) => {
+                    diags.push(Diagnostic::new(
+                        "E016",
+                        Severity::Error,
+                        loc,
+                        format!("parameter key {key:?} is malformed (expected `<name>@<ref-id>`)"),
+                    ));
+                    continue;
+                }
+                Err(Some(param_id)) => {
+                    diags.push(Diagnostic::new(
+                        "E016",
+                        Severity::Error,
+                        loc,
+                        format!(
+                            "unknown parameter {param_id:?} (from key {key:?}); the product {} has no such parameter",
+                            app_ref.unwrap_or("?")
+                        ),
+                    ));
+                    continue;
+                }
             };
 
             if let Some(reason) = value_error(&def.kind, value) {
@@ -324,6 +329,14 @@ fn check_parameters(
                     reason,
                 ));
                 continue;
+            }
+            if let Some(reason) = text_substitution(&def.kind, value) {
+                diags.push(Diagnostic::new(
+                    "W051",
+                    Severity::Warning,
+                    loc.clone(),
+                    reason,
+                ));
             }
 
             let vendor_default = crate::param_model::key_to_model_ref(key)
@@ -369,6 +382,31 @@ fn check_parameters(
             );
         }
     }
+}
+
+/// Why a text value is lossy, or `None`: the characters of `value` the
+/// parameter's code page does not write as themselves (a Windows best fit or
+/// `?`; issue #1065, W051), named once each. Two values that differ only in
+/// such characters are the same device content.
+pub fn text_substitution(kind: &ParamKind, value: &str) -> Option<String> {
+    let ParamKind::Text { encoding, .. } = kind else {
+        return None;
+    };
+    let chars =
+        crate::text_codec::TextCodec::from_declaration(encoding.as_deref()).substituted(value);
+    if chars.is_empty() {
+        return None;
+    }
+    let list = chars
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "text {value:?} holds {list}, which the program's code page does not hold: the download \
+         writes a look-alike (Windows best fit) or `?` for each, as ETS does on a \
+         Western-European (Windows-1252) PC, and the device reads the replacement back"
+    ))
 }
 
 /// Checks a parameter value against its definition, returning the reason it is
@@ -1601,13 +1639,29 @@ mod tests {
         );
         let utf8 = parameter_value_error(&kind(Some("utf-8")), "Scènario");
         assert!(utf8.is_some_and(|e| e.contains("9 octets")));
-        // No declaration: ISO 8859-1, as ETS writes it (issue #416).
+        // No declaration: Windows-1252 with best fit, as ETS writes it
+        // (issues #416, #1065): every character is accepted.
         assert_eq!(parameter_value_error(&kind(None), "Scènario"), None);
-        let euro = parameter_value_error(&kind(None), "5€");
-        assert!(euro.is_some_and(|e| e.contains("#416")));
+        assert_eq!(parameter_value_error(&kind(None), "5€"), None);
         let unknown = parameter_value_error(&kind(Some("shift_jis")), "Scènario");
         assert!(unknown.is_some_and(|e| e.contains("#401")));
         assert_eq!(parameter_value_error(&kind(None), "Scene"), None);
+    }
+
+    /// Issue #1065: a character Windows-1252 does not hold is written as its
+    /// best fit or `?`; the value is accepted (no E017) and named lossy
+    /// (W051).
+    #[test]
+    fn test_text_substitution_names_the_replaced_characters() {
+        let kind = |encoding: Option<&str>| ParamKind::Text {
+            len: Some(8),
+            encoding: encoding.map(str::to_string),
+        };
+        assert_eq!(parameter_value_error(&kind(None), "Küche ✓"), None);
+        let w = text_substitution(&kind(None), "Küche ✓").unwrap_or_default();
+        assert!(w.contains("`✓`") && w.contains("`?`"), "{w}");
+        assert_eq!(text_substitution(&kind(None), "Küche"), None);
+        assert_eq!(text_substitution(&kind(Some("utf-8")), "Küche ✓"), None);
     }
 
     /// Issue #616: a colour parameter takes `#` and two hex digits per

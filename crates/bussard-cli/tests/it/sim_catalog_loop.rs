@@ -2321,8 +2321,8 @@ mod tests {
     }
 
     /// A drawn text fits its field in the program's code page (#401): MDT's
-    /// eight-octet labels in ISO 8859-15, UTF-8, ISO 8859-1 when undeclared
-    /// (#416), and ASCII for a declared name bussard does not know.
+    /// eight-octet labels in ISO 8859-15, UTF-8, Windows-1252 when undeclared
+    /// (#416, #1065), and ASCII for a declared name bussard does not know.
     #[test]
     fn test_draw_value_text_fits_the_field_and_the_code_page() -> TestResult {
         let mut rng = SplitMix64::new(401);

@@ -171,6 +171,12 @@ pub struct ParamPlan {
     /// holds them (issue #411, [`crate::flash::KeptOctets`]): not written, so not
     /// among the changes. `old` is the device's value, `new` the model's.
     pub kept: Vec<ParamChange>,
+    /// The text values the download writes with replaced characters (issue
+    /// #1065): a program without `TextParameterEncoding` writes what
+    /// Windows-1252 lacks as a look-alike or `?`. One note each, for the
+    /// values the device file does not store (the stored-value note, W051,
+    /// names those).
+    pub lossy_text: Vec<String>,
 }
 
 impl ParamPlan {
@@ -226,6 +232,7 @@ pub fn param_plan(
         unknown: decoded.unknown,
         note,
         kept: decoded.kept,
+        lossy_text: decoded.lossy_text,
     }
 }
 

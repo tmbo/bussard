@@ -1,0 +1,269 @@
+# A synthetic product of the catalogue (#1065), syn-text-undeclared with
+# another default. Rendered by ../generate.py into xml/; see ../README.md.
+
+[doc]
+purpose = """
+syn-text-undeclared with the 14-octet text default "Temp ℃" and one 8-octet
+probe per character class, each between the ASCII guards A and Z, in a
+program without TextParameterEncoding (#1065). ETS 6.4.1 wrote Windows-1252
+with Windows' best fit (captures/synthetic/syn-text-unmapped/defaults,
+2026-11-14): `?` for ℃, CJK and Cyrillic, `L` `A` `A` `=` `O` for Ł Ā Ａ ≤ Ω,
+99 96 93 85 80 9C A4 BD for ™ – “ … € œ ¤ ½, `3F 3F` for the emoji;
+bussard writes the same since."""
+construct = "TypeText default with a character no Latin code page holds, no TextParameterEncoding"
+issues = [1065, 416]
+
+[product]
+text = "Nest thermometer display"
+order_number = "NEST-WARM"
+hardware_name = "NEST-WARM"
+hardware_serial = "00FA0027002B"
+bus_current = 10
+
+[application]
+number = 0x272B
+version = 0x10
+name = "Nest thermometer display"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Nestthermometeranzeige" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "Message"
+kind = "text"
+size_octets = 14
+
+[[parameter_type]]
+name = "Probe"
+kind = "text"
+size_octets = 8
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct: a text default with a character no candidate code page
+# holds, in a program that declares no TextParameterEncoding.
+[[parameter]]
+name = "alarm_text"
+type = "Message"
+text = "Alarm text"
+default = "Temp ℃"
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+# One probe per character class (#1065): the character between the ASCII
+# guards A and Z, so the octets ETS writes for it sit at offset 1 of the
+# 8-octet field, whatever their count.
+
+# control: captured as ? in M-0085_A-0098-12-75FF
+[[parameter]]
+name = "probe_celsius"
+type = "Probe"
+text = "Probe celsius"
+default = "A℃Z"
+memory = { segment = "main", offset = 17, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_l_stroke"
+type = "Probe"
+text = "Probe l stroke"
+default = "AŁZ"
+memory = { segment = "main", offset = 25, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_a_macron"
+type = "Probe"
+text = "Probe a macron"
+default = "AĀZ"
+memory = { segment = "main", offset = 33, bit_offset = 0 }
+
+# best-fit candidate (fullwidth)
+[[parameter]]
+name = "probe_fullwidth_a"
+type = "Probe"
+text = "Probe fullwidth a"
+default = "AＡZ"
+memory = { segment = "main", offset = 41, bit_offset = 0 }
+
+# best-fit candidate
+[[parameter]]
+name = "probe_less_equal"
+type = "Probe"
+text = "Probe less equal"
+default = "A≤Z"
+memory = { segment = "main", offset = 49, bit_offset = 0 }
+
+# CJK
+[[parameter]]
+name = "probe_cjk"
+type = "Probe"
+text = "Probe cjk"
+default = "A中Z"
+memory = { segment = "main", offset = 57, bit_offset = 0 }
+
+# Cyrillic
+[[parameter]]
+name = "probe_cyrillic"
+type = "Probe"
+text = "Probe cyrillic"
+default = "AЖZ"
+memory = { segment = "main", offset = 65, bit_offset = 0 }
+
+# Greek
+[[parameter]]
+name = "probe_greek"
+type = "Probe"
+text = "Probe greek"
+default = "AΩZ"
+memory = { segment = "main", offset = 73, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_trade_mark"
+type = "Probe"
+text = "Probe trade mark"
+default = "A™Z"
+memory = { segment = "main", offset = 81, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_en_dash"
+type = "Probe"
+text = "Probe en dash"
+default = "A–Z"
+memory = { segment = "main", offset = 89, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_left_quote"
+type = "Probe"
+text = "Probe left quote"
+default = "A“Z"
+memory = { segment = "main", offset = 97, bit_offset = 0 }
+
+# Windows-1252 only
+[[parameter]]
+name = "probe_ellipsis"
+type = "Probe"
+text = "Probe ellipsis"
+default = "A…Z"
+memory = { segment = "main", offset = 105, bit_offset = 0 }
+
+# Windows-1252 0x80, ISO 8859-15 0xA4
+[[parameter]]
+name = "probe_euro"
+type = "Probe"
+text = "Probe euro"
+default = "A€Z"
+memory = { segment = "main", offset = 113, bit_offset = 0 }
+
+# Windows-1252 0x9C, ISO 8859-15 0xBD
+[[parameter]]
+name = "probe_oe"
+type = "Probe"
+text = "Probe oe"
+default = "AœZ"
+memory = { segment = "main", offset = 121, bit_offset = 0 }
+
+# ISO 8859-1 and Windows-1252 only, not ISO 8859-15
+[[parameter]]
+name = "probe_currency"
+type = "Probe"
+text = "Probe currency"
+default = "A¤Z"
+memory = { segment = "main", offset = 129, bit_offset = 0 }
+
+# ISO 8859-1 and Windows-1252 only, not ISO 8859-15
+[[parameter]]
+name = "probe_half"
+type = "Probe"
+text = "Probe half"
+default = "A½Z"
+memory = { segment = "main", offset = 137, bit_offset = 0 }
+
+# beyond U+FFFF; drop this parameter if ETS refuses the product
+[[parameter]]
+name = "probe_astral"
+type = "Probe"
+text = "Probe astral"
+default = "A😀Z"
+memory = { segment = "main", offset = 145, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "alarm_text", "probe_celsius", "probe_l_stroke", "probe_a_macron", "probe_fullwidth_a", "probe_less_equal", "probe_cjk", "probe_cyrillic", "probe_greek", "probe_trade_mark", "probe_en_dash", "probe_left_quote", "probe_ellipsis", "probe_euro", "probe_oe", "probe_currency", "probe_half", "probe_astral"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

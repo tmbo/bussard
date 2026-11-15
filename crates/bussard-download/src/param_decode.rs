@@ -30,7 +30,7 @@
 //! section with the model's values, decode every shown ref, feed what differs
 //! back in, and repeat until the shown set settles.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bussard_product::application::{ApplicationProgram, Parameter, ParameterType};
 use bussard_product::dynamic::{DynamicMemo, Union, UnionMember, split_selector};
@@ -83,6 +83,9 @@ pub struct DecodedParameters {
     /// (issue #959), so every octet was read as written. `None` when they
     /// were.
     pub incomplete: Option<String>,
+    /// The text values the image writes with replaced characters (issue
+    /// #1065, [`lossy_text_notes`]), one note each.
+    pub lossy_text: Vec<String>,
 }
 
 /// Decodes `current` (the parameter segments read off a device, keyed by
@@ -237,7 +240,82 @@ pub fn decode_parameters(
         unshown: unshown_overrides(app, overrides, &keys, memo),
         kept,
         incomplete,
+        lossy_text: lossy_text_of(app, overrides, &placements(overrides)),
     }
+}
+
+/// The notes of the text values the image under `overrides` writes with
+/// replaced characters (issue #1065): a program without
+/// `TextParameterEncoding` writes a character Windows-1252 lacks as a
+/// best-fit look-alike or `?` (`Text for unit` = `℃` written as `?` on the
+/// KNX Smart Touch S3). Each slot's value is the one the encoder writes
+/// (`placements`: the configuration's value, an `<Assign>`'s, a hidden or
+/// calculated slot's default, per module instance). A value the device file
+/// stores is left out: the stored-value note names it (W051). Empty unless
+/// the program declares no encoding. ([`decode_parameters`] reports them
+/// with the decode's own placements.)
+pub fn lossy_text_notes(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    memo: &DynamicMemo<'_, ApplicationProgram>,
+) -> Vec<String> {
+    if app.text_parameter_encoding.is_some() {
+        return Vec::new();
+    }
+    let keys = KeyForms::new(overrides);
+    let placed = placements_of(app, overrides, base_offsets, &keys, memo);
+    lossy_text_of(app, overrides, &placed)
+}
+
+/// [`lossy_text_notes`] over the placements of `overrides`.
+fn lossy_text_of(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    placements: &[Placed<'_>],
+) -> Vec<String> {
+    let codec = bussard_model::text_codec::TextCodec::from_declaration(
+        app.text_parameter_encoding.as_deref(),
+    );
+    if codec != bussard_model::text_codec::TextCodec::Undeclared {
+        return Vec::new();
+    }
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut out = Vec::new();
+    for p in placements {
+        let Some(bussard_product::ParameterType::Text { size_bits }) = parameter_type(app, p.param)
+        else {
+            continue;
+        };
+        let Some(value) = p.stated.as_deref() else {
+            continue;
+        };
+        if overrides.contains_key(&p.key) || !seen.insert(p.key.as_str()) {
+            continue;
+        }
+        let replaced = codec.substituted(value);
+        if replaced.is_empty() {
+            continue;
+        }
+        let len = (size_bits.unwrap_or(0) / 8) as usize;
+        let written = codec
+            .encode(value, len)
+            .map(|octets| codec.decode(&octets))
+            .unwrap_or_default();
+        let list = replaced
+            .iter()
+            .map(|c| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(format!(
+            "`{}` ({}) = {value:?} is written as {written:?}: the program declares no \
+             TextParameterEncoding, and {list} has no Windows-1252 octet, so the download \
+             writes a look-alike or `?`, as ETS does on a Western-European (Windows-1252) PC",
+            display_name(p.param),
+            p.key
+        ));
+    }
+    out
 }
 
 /// The override keys whose ref the Dynamic walk under `overrides` does not
@@ -646,6 +724,9 @@ struct Placed<'a> {
     reached: bool,
     /// The value the configuration writes, canonical.
     desired: Option<String>,
+    /// That value as the configuration states it, before the encoder's
+    /// round trip (a text value with the characters the code page lacks).
+    stated: Option<String>,
     /// The vendor default of the ref, canonical.
     default: Option<String>,
     /// The bit ranges of the field (absolute bit positions in the segment)
@@ -781,24 +862,26 @@ fn dynamic_placements<'a>(
                 bussard_product::canonical_parameter_value(app, slot.parameter, v.as_deref())
             };
             let reached = slot.param_ref_id.is_some();
-            let (key, user_value, desired, default) = match slot.param_ref_id.as_deref() {
+            let (key, user_value, stated, default) = match slot.param_ref_id.as_deref() {
                 Some(ref_id) => (
                     keys.key(config.module_instance_id(slot.module), ref_id),
                     !config.is_assigned(slot.module, ref_id),
-                    canonical(config.value(app, slot.module, ref_id)),
+                    config.value(app, slot.module, ref_id),
                     canonical(config.vendor_default(app, slot.module, ref_id)),
                 ),
                 None => {
-                    let d = canonical(bussard_product::hidden_slot_value(app, &config, &slot));
+                    let v = bussard_product::hidden_slot_value(app, &config, &slot);
                     let rel = relative_id(app, &slot.parameter.id);
                     // A module parameter is hidden per instance (issue #835).
                     let key = match slot.module {
                         Some(_) => keys.key(config.module_instance_id(slot.module), &rel),
                         None => rel,
                     };
-                    (key, false, d.clone(), d)
+                    let d = canonical(v.clone());
+                    (key, false, v, d)
                 }
             };
+            let desired = canonical(stated.clone());
             Placed {
                 key,
                 param: slot.parameter,
@@ -808,6 +891,7 @@ fn dynamic_placements<'a>(
                 user_value,
                 reached,
                 desired,
+                stated,
                 default,
                 shadowed: Vec::new(),
             }
@@ -891,6 +975,7 @@ fn static_placements<'a>(
                 user_value: true,
                 reached: true,
                 desired: canonical(param, s.value.as_deref()),
+                stated: s.value.clone(),
                 default: canonical(param, s.default.as_deref()),
                 shadowed: Vec::new(),
             })

@@ -9,15 +9,22 @@
 //! characters, in an eight-octet field, which only a one-octet-per-character
 //! code page holds.
 //!
-//! A program that declares no encoding takes ISO 8859-1 (Latin-1), as ETS
-//! does (issue #416): ETS 6.4.1 downloaded the synthetic product
-//! `syn-text-undeclared` (no `TextParameterEncoding`, a 14-octet `TypeText`
-//! at its default "Störung") as `53 74 F6 72 75 6E 67 00 00 00 00 00 00 00`,
-//! captured in `captures/synthetic/syn-text-undeclared/defaults/`: one octet
-//! per character, `ö` as `F6`, NUL-padded. That octet is the same in
-//! Windows-1252 and ISO 8859-15; the capture does not show which of them ETS
-//! uses where they differ, so the characters whose octet depends on that
-//! choice are refused rather than guessed (see [`TextCodec::Undeclared`]).
+//! A program that declares no encoding is written in Windows-1252, the way
+//! ETS 6 writes it (issue #1065): a character Windows-1252 holds is its
+//! octet, a character it does not hold goes through Windows' best-fit table
+//! (`Ł` as `L`, `Ā` and fullwidth `Ａ` as `A`, `≤` as `=`, `Ω` as `O`), and
+//! anything still unmapped is `?`, one per UTF-16 code unit (an emoji is
+//! `??`). That is .NET's `Encoding.GetEncoding(1252)` with its default
+//! best-fit fallback. ETS 6.4.1 downloaded the synthetic `syn-text-unmapped`
+//! (one probe per character class, `captures/synthetic/syn-text-unmapped/
+//! defaults/`, VM session 6, 2026-11-14) and wrote exactly that: `?` for
+//! `℃`, CJK and Cyrillic, the best-fit octets above, `99 96 93 85 80 9C A4
+//! BD` for `™ – “ … € œ ¤ ½`, `3F 3F` for `😀`; the KNX Smart Touch S3
+//! `M-0085_A-0098-12-75FF` has `3F` for its `℃`, and `syn-text-undeclared`
+//! `F6` for `ö`. The table is [`crate::cp1252_best_fit`]. One uncertainty
+//! stays: ETS may encode with the Windows ANSI code page of the machine it
+//! runs on (the VM is a Western-European install, code page 1252), so ETS on
+//! another locale might write other octets; bussard always writes 1252.
 //!
 //! A program that declares a name this module does not know has no stated
 //! code page: ASCII text is the same octets in every candidate and is written,
@@ -37,12 +44,10 @@ pub enum TextCodec {
     Windows1252,
     /// `us-ascii`: 7-bit text only.
     Ascii,
-    /// No declaration: ISO 8859-1, as ETS writes it (issue #416), limited to
-    /// the characters whose octet is the same in ISO 8859-1, Windows-1252 and
-    /// ISO 8859-15: ASCII and U+00A0 to U+00FF without the eight Latin-9
-    /// replaces. A character outside that set (the euro sign, `Š`, a C1
-    /// control, anything beyond U+00FF) is refused: no capture shows what ETS
-    /// writes for it.
+    /// No declaration: Windows-1252 with Windows' best-fit fallback, as ETS
+    /// writes it (issues #416, #1065; module docs). Never refuses a
+    /// character: one without an octet or a best fit is `?` per UTF-16 code
+    /// unit.
     Undeclared,
     /// A declared name this module does not know: ASCII text is written (the
     /// same octets in every candidate), anything else refused.
@@ -124,7 +129,8 @@ impl TextCodec {
         match self {
             TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Unknown => None,
             TextCodec::Latin1 => u8::try_from(code).ok(),
-            TextCodec::Undeclared => u8::try_from(code).ok().filter(|b| undeclared_octet(*b)),
+            // Windows-1252 with best fit, `?` for the rest (issue #1065).
+            TextCodec::Undeclared => Some(best_fit_1252(c)),
             TextCodec::Latin9 => {
                 if let Some((b, _)) = LATIN9.iter().find(|(_, ch)| *ch == c) {
                     return Some(*b);
@@ -149,7 +155,18 @@ impl TextCodec {
         match self {
             TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Unknown => None,
             TextCodec::Latin1 => Some(char::from(b)),
-            TextCodec::Undeclared => undeclared_octet(b).then(|| char::from(b)),
+            // Windows-1252; its five unassigned octets read as the C1
+            // control of the same value, as Windows reads them.
+            TextCodec::Undeclared => match b {
+                0x80..=0x9F => Some(
+                    CP1252_HIGH
+                        .get(usize::from(b - 0x80))
+                        .copied()
+                        .flatten()
+                        .unwrap_or(char::from(b)),
+                ),
+                _ => Some(char::from(b)),
+            },
             TextCodec::Latin9 => Some(
                 LATIN9
                     .iter()
@@ -171,18 +188,48 @@ impl TextCodec {
     /// The reason, as a sentence fragment, when a character has no octet in
     /// this code page or the text needs more than `len` octets.
     pub fn encode(self, text: &str, len: usize) -> Result<Vec<u8>, String> {
-        let mut out = match self {
+        let (mut out, _) = self.convert(text)?;
+        if out.len() > len {
+            return Err(format!(
+                "text `{text}` is {} octets in {} but the field holds {len}",
+                out.len(),
+                self.name()
+            ));
+        }
+        out.resize(len, 0);
+        Ok(out)
+    }
+
+    /// `text` converted with this code page, unpadded, and the characters
+    /// it does not write as themselves (a best fit or `?`, in order, once
+    /// each; issue #1065): the one conversion [`Self::encode`] and
+    /// [`Self::substituted`] both read.
+    ///
+    /// # Errors
+    ///
+    /// The reason, as a sentence fragment, when a character has no octet in
+    /// this code page.
+    fn convert(self, text: &str) -> Result<(Vec<u8>, Vec<char>), String> {
+        let mut replaced: Vec<char> = Vec::new();
+        let mut note = |c: char| {
+            if !replaced.contains(&c) {
+                replaced.push(c);
+            }
+        };
+        let out = match self {
             TextCodec::Utf8 => text.as_bytes().to_vec(),
             _ => {
-                let mut out = Vec::with_capacity(len);
+                let mut out = Vec::with_capacity(text.len());
                 for c in text.chars() {
+                    // One `?` per UTF-16 code unit for a character beyond
+                    // U+FFFF, as ETS writes it (issue #1065).
+                    if self == TextCodec::Undeclared && c.len_utf16() == 2 {
+                        out.extend_from_slice(b"??");
+                        note(c);
+                        continue;
+                    }
                     let Some(b) = self.octet(c) else {
                         return Err(match self {
-                            TextCodec::Undeclared => format!(
-                                "text `{text}` holds `{c}`, and the program declares no \
-                                 TextParameterEncoding: ETS writes such text in ISO 8859-1, \
-                                 but for `{c}` its octet is not known (issue #416)"
-                            ),
                             TextCodec::Unknown => format!(
                                 "text `{text}` holds `{c}`, and the program declares a \
                                  TextParameterEncoding bussard does not know, so only ASCII \
@@ -194,20 +241,15 @@ impl TextCodec {
                             ),
                         });
                     };
+                    if self.char_of(b) != Some(c) {
+                        note(c);
+                    }
                     out.push(b);
                 }
                 out
             }
         };
-        if out.len() > len {
-            return Err(format!(
-                "text `{text}` is {} octets in {} but the field holds {len}",
-                out.len(),
-                self.name()
-            ));
-        }
-        out.resize(len, 0);
-        Ok(out)
+        Ok((out, replaced))
     }
 
     /// The text a field holds: its octets up to the last non-NUL one,
@@ -227,6 +269,16 @@ impl TextCodec {
         }
     }
 
+    /// The characters of `text` this code page does not write as
+    /// themselves (issue #1065): a best fit (`Ł` as `L`) or `?`, in order,
+    /// once each. A value holding one is lossy: it reads back with the
+    /// replacement in their place.
+    pub fn substituted(self, text: &str) -> Vec<char> {
+        self.convert(text)
+            .map(|(_, replaced)| replaced)
+            .unwrap_or_default()
+    }
+
     /// The code page's name in messages.
     pub fn name(self) -> &'static str {
         match self {
@@ -234,18 +286,27 @@ impl TextCodec {
             TextCodec::Latin1 => "ISO 8859-1",
             TextCodec::Latin9 => "ISO 8859-15",
             TextCodec::Windows1252 => "Windows-1252",
-            TextCodec::Undeclared => "ISO 8859-1 (no TextParameterEncoding declared)",
+            TextCodec::Undeclared => "Windows-1252 (no TextParameterEncoding declared)",
             TextCodec::Ascii | TextCodec::Unknown => "ASCII",
         }
     }
 }
 
-/// The octet `b` of an undeclared program's text stands for the same character
-/// in ISO 8859-1, Windows-1252 and ISO 8859-15 (issue #416): ASCII, or 0xA0
-/// to 0xFF other than Latin-9's eight replacements. 0x80 to 0x9F are C1
-/// controls in ISO 8859-1 but printable in Windows-1252.
-fn undeclared_octet(b: u8) -> bool {
-    b < 0x80 || (b >= 0xA0 && !LATIN9.iter().any(|(o, _)| *o == b))
+/// The Windows-1252 octet of `c` with Windows' best fit, `?` where the
+/// table has none (issue #1065, [`crate::cp1252_best_fit`]). Only a BMP
+/// character has an entry; the caller writes a character beyond U+FFFF as
+/// two `?`.
+fn best_fit_1252(c: char) -> u8 {
+    let table = &crate::cp1252_best_fit::CP1252_BEST_FIT;
+    u16::try_from(u32::from(c))
+        .ok()
+        .and_then(|code| {
+            table
+                .binary_search_by_key(&code, |(k, _)| *k)
+                .ok()
+                .and_then(|i| table.get(i))
+        })
+        .map_or(b'?', |(_, octet)| *octet)
 }
 
 #[cfg(test)]
@@ -349,7 +410,7 @@ mod tests {
     /// `captures/synthetic/syn-text-undeclared/defaults/`): "Störung" in the
     /// 14-octet field of a program without `TextParameterEncoding`.
     #[test]
-    fn test_encode_undeclared_is_latin1_nul_padded_as_ets_writes() -> TestResult {
+    fn test_encode_undeclared_is_one_octet_per_character_nul_padded_as_ets_writes() -> TestResult {
         let octets = TextCodec::Undeclared.encode("Störung", 14)?;
         assert_eq!(
             octets,
@@ -363,18 +424,63 @@ mod tests {
         Ok(())
     }
 
-    /// A character whose octet ETS's choice of code page would decide, or
-    /// that no one-octet candidate holds, is refused for an undeclared program.
+    /// ETS 6.4.1's download of `syn-text-unmapped` (issue #1065,
+    /// `captures/synthetic/syn-text-unmapped/defaults/`): one probe per
+    /// character class, each written as Windows-1252 with best fit.
     #[test]
-    fn test_encode_undeclared_refuses_outside_the_common_latin1_range() -> TestResult {
-        for text in ["5€", "Šum", "Grün ✓", "\u{0085}", "¤"] {
-            let err = TextCodec::Undeclared
-                .encode(text, 16)
-                .err()
-                .ok_or("encoded")?;
-            assert!(err.contains("issue #416"), "{err}");
+    fn test_encode_undeclared_is_windows_1252_with_best_fit_as_ets_writes() -> TestResult {
+        let cases: [(&str, &[u8]); 17] = [
+            ("℃", b"?"),
+            ("Ł", b"L"),
+            ("Ā", b"A"),
+            ("Ａ", b"A"),
+            ("≤", b"="),
+            ("中", b"?"),
+            ("Ж", b"?"),
+            ("Ω", b"O"),
+            ("™", &[0x99]),
+            ("–", &[0x96]),
+            ("“", &[0x93]),
+            ("…", &[0x85]),
+            ("€", &[0x80]),
+            ("œ", &[0x9C]),
+            ("¤", &[0xA4]),
+            ("½", &[0xBD]),
+            ("😀", b"??"),
+        ];
+        for (c, octets) in cases {
+            let mut want = b"A".to_vec();
+            want.extend_from_slice(octets);
+            want.push(b'Z');
+            want.resize(8, 0);
+            assert_eq!(
+                TextCodec::Undeclared.encode(&format!("A{c}Z"), 8)?,
+                want,
+                "{c}"
+            );
         }
-        assert_eq!(TextCodec::Undeclared.decode(b"5\x80"), "5\u{FFFD}");
+        assert_eq!(TextCodec::Undeclared.decode(b"5\x80\x9c"), "5€œ");
+        Ok(())
+    }
+
+    /// ETS's download of `M-0085_A-0098-12-75FF` (issue #1065): `℃` in the
+    /// 3-octet `Text for unit` is `3F 00 00`. Every replaced character is
+    /// named by `substituted`, best fits included.
+    #[test]
+    fn test_encode_undeclared_names_every_replaced_character() -> TestResult {
+        assert_eq!(TextCodec::Undeclared.encode("℃", 3)?, [0x3F, 0x00, 0x00]);
+        assert_eq!(TextCodec::Undeclared.encode("Grün ✓", 8)?, b"Gr\xFCn ?\0\0");
+        // One octet per BMP character, two for an emoji: the field bounds it.
+        assert!(TextCodec::Undeclared.encode("℃℃℃℃", 3).is_err());
+        assert!(TextCodec::Undeclared.encode("A😀Z", 3).is_err());
+        // A declared code page keeps refusing: no capture shows ETS there.
+        assert!(TextCodec::Latin1.encode("℃", 3).is_err());
+        assert_eq!(
+            TextCodec::Undeclared.substituted("Küche ✓ Ł ✓ € 😀"),
+            vec!['✓', 'Ł', '😀']
+        );
+        assert!(TextCodec::Undeclared.substituted("Küche €œ").is_empty());
+        assert!(TextCodec::Latin1.substituted("✓").is_empty());
         Ok(())
     }
 

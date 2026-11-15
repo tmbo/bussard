@@ -228,8 +228,8 @@ Sweep manifest of 2026-11-14, coverage floor 95.0 %.
 |---|---|---|---|---|---|
 | `0701` | 0 | 0 | 366 | 27 | 5 |
 | `0705` | 1 | 276 | 0 | 8 | 8 |
-| `07B0` | 3 | 797 | 0 | 21 | 41 |
-| all | 4 | 1072 | 366 | 56 | 54 |
+| `07B0` | 3 | 797 | 0 | 21 | 42 |
+| all | 4 | 1072 | 366 | 56 | 55 |
 
 | Manufacturer | Proven | Likely | Known problems |
 |---|---|---|---|
@@ -446,11 +446,16 @@ after 2 seconds.
   (VBScript), a Jung LED dimmer (JavaScript) and the synthetic product that
   changes a calculation's input.
 - **Text parameters.** A text parameter is written in the code page its
-  program declares. A program that declares none is written in ISO 8859-1, as
-  ETS does; a character whose octet differs between ISO 8859-1,
-  Windows-1252 and ISO 8859-15 (the euro sign, for example) or lies beyond
-  U+00FF is refused there. A declared code page bussard does not know takes
-  ASCII only.
+  program declares. A program that declares none is written as ETS 6 writes
+  it on a Western-European PC, in Windows-1252: a character Windows-1252
+  lacks becomes Windows' best-fit look-alike (`Ł` as `L`, `≤` as `=`), and
+  anything else becomes `?` (two for an emoji). `validate` warns about such a
+  stored value (W051). The `plan`, `apply` and `flash` output, their `--json`
+  form and the MCP plan name every value the download writes this way, the
+  vendor defaults included. ETS may follow the Windows code page of the PC it
+  runs on; the captures are from a Western-European install (code page 1252),
+  and bussard always writes 1252. A declared code page bussard does not know
+  takes ASCII only.
 - **System 1 and System 2.** BCU1 and BCU2 devices are identified and
   described, but not programmed, except the property-only applications on
   `0021` above.
