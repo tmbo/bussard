@@ -596,6 +596,7 @@ impl StepExecutor for SystemB<'_> {
                 offset,
                 image,
                 target,
+                held_tail,
             } => {
                 // Prefer this object's own allocated base (the multi-object
                 // template allocates every object before writing any, so the
@@ -634,6 +635,20 @@ impl StepExecutor for SystemB<'_> {
                     .and_then(|obj| self.segment_fills.get(&obj).copied())
                     .unwrap_or(self.last_alloc_fill)
                     .prefill();
+                // A tail the plan leaves to this write's allocation (issue
+                // #1065, [`super::HeldTail`]) needs an allocation that fills:
+                // without one nothing would put the fill there, so nothing
+                // is written.
+                if let Some(tail) = held_tail.as_ref().filter(|t| t.filled)
+                    && fill.is_none()
+                {
+                    return Err(WriteError::HeldTailNotFilled {
+                        address: session.l4().target(),
+                        segment: image.segment_id.clone(),
+                        start: tail.start,
+                        end: tail.end,
+                    });
+                }
                 // The device-supplied segment base plus the vendor offset must fit
                 // the 24-bit extended-memory space. `write_image` picks the plain
                 // A_Memory_Write (≤0xFFFF, byte-identical to before) or the
@@ -808,10 +823,9 @@ impl StepExecutor for SystemB<'_> {
                 // right after the write and before any restart (the
                 // application may rewrite such an `Access="None"` value at
                 // start), and a device that did not fill fails the flash.
-                // An allocation that keeps the memory (`Mode` 0, the
-                // parameter-only procedure) fills nothing: the device keeps
-                // what it holds there, as the plan says.
-                if let (Some(tail), Some(_)) = (plan.held_tail_of(image), fill) {
+                // A device-held tail (the parameter-only download) is read
+                // and compared by the parameter read-back instead.
+                if let Some(tail) = held_tail.as_ref().filter(|t| t.filled) {
                     let at = addr + (tail.start - image.offset) as u32;
                     let want = vec![tail.fill; tail.end - tail.start];
                     let got = super::session::read_memory_range_resumable(session, at, want.len())

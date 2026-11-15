@@ -413,6 +413,7 @@ pub fn plan_flash(
         object_flags,
         memo,
         Download::Full,
+        &BTreeMap::new(),
     )
 }
 
@@ -444,6 +445,13 @@ pub fn add_par_procedure(
     if plan.par_steps.is_some() || !plan.takes_par_procedure() {
         return;
     }
+    // The tails the complete download leaves to its filling allocations
+    // (issue #1065): the parameter-only procedure keeps the memory there, so
+    // the device holds what the complete download left.
+    let complete_tails: BTreeMap<String, (u8, usize)> = plan
+        .held_tails()
+        .map(|(_, t)| (t.segment.clone(), (t.fill, t.end)))
+        .collect();
     plan.par_steps = Some(
         plan_flash_as(
             app,
@@ -456,6 +464,7 @@ pub fn add_par_procedure(
             object_flags,
             memo,
             Download::Par,
+            &complete_tails,
         )
         .map(|p| p.steps)
         .map_err(|e| e.to_string()),
@@ -486,6 +495,7 @@ fn plan_flash_as(
     object_flags: &BTreeMap<u16, bussard_model::Flags>,
     memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
     download: Download,
+    complete_tails: &BTreeMap<String, (u8, usize)>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
@@ -588,8 +598,9 @@ fn plan_flash_as(
     // The octets a `<choose>` branch leaves unwritten stay as the device holds
     // them, as in ETS's download (issue #411, [`KeptOctets`]).
     let kept = kept_from(app, &ops, &branch_gaps);
-    // The held tails of the writes cut short of their image (issue #1065).
-    let mut held_tails: Vec<super::HeldTail> = Vec::new();
+    // The device-managed octets, for a write that leaves a tail (issue
+    // #1065, [`super::HeldTail::managed`]); computed on the first one.
+    let mut managed_octets: Option<bussard_product::PlacedOctets> = None;
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -1154,6 +1165,7 @@ fn plan_flash_as(
                     offset,
                     image,
                     target: Some(*idx),
+                    held_tail: None,
                 });
             }
 
@@ -1196,18 +1208,36 @@ fn plan_flash_as(
                     Some(k) => u32::try_from(k.allocated).ok(),
                     None => *size,
                 };
-                let (bytes, held_write) = bound_write_rel_mem(
+                // The fill a complete download leaves in the segment: this
+                // write's own allocation's, else (the parameter-only
+                // procedure, whose allocation keeps the memory) the complete
+                // download's, where it leaves a tail to it (issue #1065).
+                let complete = prefill.or_else(|| {
+                    complete_tails
+                        .get(&segment_id)
+                        .and_then(|&(fill, end)| Some((fill, u32::try_from(end).ok()?)))
+                });
+                let (bytes, held) = bound_write_rel_mem(
                     &segment_id,
                     bytes,
                     offset.unwrap_or(0),
                     bound,
                     placed.get(&segment_id),
-                    prefill,
+                    complete,
                 )
                 .map_err(|reason| PlanError::UnresolvableImage {
                     step: step_no,
                     reason,
                 })?;
+                if held.is_some() && kept_here.is_some() {
+                    return Err(PlanError::UnresolvableImage {
+                        step: step_no,
+                        reason: format!(
+                            "segment {segment_id}: a parameter past the write's Size in a segment \
+                             a <choose> branch writes in part (issue #411) is not planned"
+                        ),
+                    });
+                }
                 let (part_start, len) = match kept_here {
                     Some(_) => {
                         let start = usize::try_from(offset.unwrap_or(0))
@@ -1219,7 +1249,7 @@ fn plan_flash_as(
                             .min(bytes.len());
                         (start, end - start)
                     }
-                    None => (0, held_write.unwrap_or(bytes.len())),
+                    None => (0, held.map_or(bytes.len(), |(size, _)| size)),
                 };
                 let offset = offset.unwrap_or(0);
                 // The segment base is device-supplied at execute time (>= 0), so a
@@ -1240,16 +1270,24 @@ fn plan_flash_as(
                         ),
                     });
                 }
-                if let (Some(size), Some((fill, _))) = (held_write, prefill) {
-                    held_tails.push(super::HeldTail {
+                let held_tail = held.map(|(start, fill)| {
+                    let end = bytes.len();
+                    let managed = managed_octets
+                        .get_or_insert_with(|| {
+                            crate::device_managed_octets(app, overrides, base_offsets)
+                        })
+                        .get(&segment_id)
+                        .map(|m| m.range(start..end).copied().collect())
+                        .unwrap_or_default();
+                    super::HeldTail {
                         segment: segment_id.clone(),
-                        offset: part_start,
-                        len,
-                        start: size,
-                        end: bytes.len(),
+                        start,
+                        end,
                         fill,
-                    });
-                }
+                        filled: prefill.is_some(),
+                        managed,
+                    }
+                });
                 images.insert(segment_id.clone(), bytes);
                 let image = ImageRef {
                     segment_id,
@@ -1271,6 +1309,7 @@ fn plan_flash_as(
                     offset,
                     image,
                     target: *obj_idx,
+                    held_tail,
                 });
             }
 
@@ -1684,6 +1723,7 @@ fn plan_flash_as(
     // has no type for (issue #1014).
     let steps = super::describe::describe_untyped_properties(steps);
 
+    check_held_tails(&steps)?;
     let mut plan = FlashPlan {
         identity: AppIdentity {
             id: app.id.clone(),
@@ -1714,7 +1754,6 @@ fn plan_flash_as(
         par_fallback: None,
         parameters_only: false,
         kept,
-        held_tails,
         unoccupied,
     };
     // Issue #1071: a complete download that only writes properties is the
@@ -2869,36 +2908,42 @@ fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> boo
 /// read-back all use the cut image, so they agree on the length. A `Size`
 /// at or above the image length, or none, keeps the image as it is.
 ///
+/// A write cut short of its image whose tail a complete download's
+/// allocation fills: the octets the step writes (the op's `Size`) and that
+/// fill ([`bound_write_rel_mem`]).
+pub(super) type HeldCut = (usize, u8);
+
 /// A parameter octet at or past `Size` refuses: cutting it would drop a
-/// configured value without a word. Unless the allocation holds it already
-/// (issue #1065): an `LdCtrlRelSegment` with `Mode` bit 0 fills the
+/// configured value without a word. Unless a complete download's allocation
+/// holds it (issue #1065): an `LdCtrlRelSegment` with `Mode` bit 0 fills the
 /// allocated octets with `Fill` (Management Procedures 03_05_02 §3.31.3.4),
-/// so when every octet from `Size` to the image's end lies inside the
-/// allocation (`prefill`: the fill byte and the allocated size) and holds
-/// the fill byte, the device holds them without a write. The Gira
-/// push-button rockers `M-0008_A-1161-23-518D-O000A` and
+/// so when every octet from `Size` to the image's end lies inside that
+/// allocation (`fill`: the fill byte and the allocated size) and holds the
+/// fill byte, a complete download leaves the device holding them without a
+/// write. The Gira push-button rockers `M-0008_A-1161-23-518D-O000A` and
 /// `A-1162-21-2E13-O000A` place the 32-bit `_Allg_Download` (`C3 00 00 00`)
 /// in the last four octets of a segment allocated with `Mode="1" Fill="0"`,
 /// and write one octet less; ETS wrote `C3` at octet 1140 (3992) and nothing
-/// past 1143 (3995).
+/// past 1143 (3995), and on `syn-writerelmem-tail` octets 0 to 12 of 16.
 ///
-/// Such an image is kept whole, and the returned write length is `Size`:
-/// the step streams `[0, Size)`, while the MCB check, the parameter decode,
-/// the dumps and the parameter-only baseline see the octets the device
-/// holds. The executor reads the held tail back and compares it with the
-/// fill, so a device that does not fill fails the flash. A cut with a
-/// non-zero `Offset` is refused (`offset`): the image indexes the segment,
-/// the write starts inside it, and no capture shows that shape.
+/// `fill` is the write's own allocation's, or, for the parameter-only
+/// procedure whose allocation keeps the memory, the complete download's: the
+/// device then holds what that download left there, and the parameter-only
+/// plan compares it ([`super::HeldTail`]).
 ///
-/// Returns the image and, for a kept held tail, the octets the step writes.
+/// Such an image is kept whole, and the returned `(size, fill)` says the
+/// step streams `[0, Size)`, while the MCB check, the parameter decode, the
+/// dumps and the parameter-only baseline see the octets the device holds. A
+/// cut with a non-zero `Offset` is refused (`offset`): the image indexes the
+/// segment, the write starts inside it, and no capture shows that shape.
 pub(super) fn bound_write_rel_mem(
     segment_id: &str,
     mut bytes: Vec<u8>,
     offset: u32,
     size: Option<u32>,
     placed: Option<&std::collections::BTreeSet<usize>>,
-    prefill: Option<(u8, u32)>,
-) -> std::result::Result<(Vec<u8>, Option<usize>), String> {
+    fill: Option<(u8, u32)>,
+) -> std::result::Result<(Vec<u8>, Option<HeldCut>), String> {
     let Some(size) = size.and_then(|s| usize::try_from(s).ok()) else {
         return Ok((bytes, None));
     };
@@ -2916,7 +2961,7 @@ pub(super) fn bound_write_rel_mem(
             bytes.len()
         )
     };
-    let Some((fill, allocated)) = prefill else {
+    let Some((fill, allocated)) = fill else {
         return Err(refuse(
             "the allocation does not fill the segment".to_string(),
         ));
@@ -2937,7 +2982,38 @@ pub(super) fn bound_write_rel_mem(
             "the write starts at offset {offset}, and a cut past it is not planned"
         )));
     }
-    Ok((bytes, Some(size)))
+    Ok((bytes, Some((size, fill))))
+}
+
+/// Refuses a plan in which a step streams octets inside a tail another
+/// write leaves to its allocation (issue #1065, [`super::HeldTail`]): the
+/// tail is never written.
+fn check_held_tails(steps: &[FlashStep]) -> std::result::Result<(), PlanError> {
+    for (i, step) in steps.iter().enumerate() {
+        let Some(tail) = step.held_tail() else {
+            continue;
+        };
+        for (j, other) in steps.iter().enumerate() {
+            let FlashStep::WriteRelMem { image, .. } = other else {
+                continue;
+            };
+            let (start, end) = (image.offset, image.offset.saturating_add(image.len));
+            if image.segment_id == tail.segment && start < tail.end && tail.start < end {
+                return Err(PlanError::UnresolvableImage {
+                    step: j + 1,
+                    reason: format!(
+                        "segment {} octets {start}..{end} overlap octets {}..{} that step {} \
+                         leaves to the allocation's fill",
+                        tail.segment,
+                        tail.start,
+                        tail.end,
+                        i + 1
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolves the bytes a `WriteRelMem` streams from its `AppliesTo` hint. `full`
@@ -3117,6 +3193,7 @@ mod tests {
                         offset: 0,
                     },
                     target: Some(0),
+                    held_tail: None,
                 },
                 FlashStep::AllocateSegment {
                     size: 1,
@@ -3132,6 +3209,7 @@ mod tests {
                         offset: 0,
                     },
                     target: Some(0),
+                    held_tail: None,
                 },
                 FlashStep::LoadCompleted { target: Some(4) },
                 FlashStep::Restart,
@@ -3381,7 +3459,7 @@ mod tests {
         // Mode 1, Fill 0, all five octets allocated: octet 4 is the fill.
         assert_eq!(
             bound(image.clone(), 0, Some((0, 5)))?,
-            (image.clone(), Some(4))
+            (image.clone(), Some((4, 0)))
         );
         // Another fill byte: the device would hold 0xFF there, not 0x00.
         let err = bound(image.clone(), 0, Some((0xFF, 5)))
@@ -3424,6 +3502,36 @@ mod tests {
             (vec![0x11, 0xC3, 0x00, 0x00], None)
         );
         Ok(())
+    }
+
+    /// No step may stream octets inside a tail another write leaves to its
+    /// allocation (issue #1065): the tail is never written.
+    #[test]
+    fn test_check_held_tails_refuses_a_write_into_a_tail() {
+        let write = |offset: usize, len: usize, held: bool| FlashStep::WriteRelMem {
+            offset: 0,
+            image: ImageRef {
+                segment_id: "RS".to_string(),
+                kind: ImageKind::Parameters,
+                len,
+                offset,
+            },
+            target: Some(4),
+            held_tail: held.then(|| super::super::HeldTail {
+                segment: "RS".to_string(),
+                start: offset + len,
+                end: 16,
+                fill: 0,
+                filled: true,
+                managed: Default::default(),
+            }),
+        };
+        assert!(check_held_tails(&[write(0, 15, true)]).is_ok());
+        let err = check_held_tails(&[write(0, 15, true), write(14, 2, false)])
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("overlap octets 15..16"), "{err}");
     }
 
     /// Issue #1026: a write into a segment with neither `<Data>` nor a memory
@@ -6124,6 +6232,7 @@ mod tests {
                 &BTreeMap::new(),
                 &memo,
                 download,
+                &BTreeMap::new(),
             )?;
             writes.push(writes_to(&plan, 208));
         }

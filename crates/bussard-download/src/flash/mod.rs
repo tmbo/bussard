@@ -98,7 +98,7 @@
 
 use bussard_mgmt::load::LoadState;
 pub use bussard_product::SegmentFill;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod declare;
 mod describe;
@@ -342,6 +342,10 @@ pub enum FlashStep {
         /// is the divergence-#2 fix. `ObjIdx=0` / an absent index falls back to the
         /// discovered app object (the conformant thelsing shape).
         target: Option<u32>,
+        /// The octets of the segment image past this write that the step
+        /// leaves to the allocation (issue #1065, [`HeldTail`]); `None` for a
+        /// write that covers its part of the image.
+        held_tail: Option<HeldTail>,
     },
     /// Write an absolute-memory image at a fixed address (`LdCtrlWriteMem`).
     WriteMem {
@@ -1337,9 +1341,6 @@ pub struct FlashPlan {
     /// leave as the device holds them (issue #411, [`KeptOctets`]). Empty
     /// for every plan whose writes cover what they allocate.
     kept: Vec<KeptOctets>,
-    /// The octets past a `WriteRelMem`'s `Size` that the step does not write
-    /// because its filling allocation holds them (issue #1065, [`HeldTail`]).
-    held_tails: Vec<HeldTail>,
     /// The octets no declared parameter occupies in each parameter image of
     /// a segment without `<Data>` (issue #1084), whatever the allocation's
     /// fill: [`FlashPlan::refresh_unoccupied`] keeps them when the
@@ -1360,6 +1361,64 @@ pub(super) struct Unoccupied {
     pub(super) len: usize,
     /// The `[start, end)` runs inside the image.
     pub(super) ranges: Vec<(usize, usize)>,
+}
+
+/// The octets of a segment image past a `WriteRelMem`'s `Size` that the step
+/// does not write (issue #1065: the Gira push-button rockers place a 32-bit
+/// `_Allg_Download` whose last octet lies past the write). A complete
+/// download's allocation fills them (`LdCtrlRelSegment` `Mode` bit 0) with
+/// the value the image holds there; the plan refuses a tail that holds
+/// anything else.
+///
+/// - **Filled** ([`Self::filled`]): the write's own allocation fills the
+///   tail. The executor refuses the write when that allocation fills
+///   nothing, and reads the tail back right after the write, before any
+///   restart, failing the flash when the device does not hold the fill.
+/// - **Device-held** (the parameter-only download, an allocation that keeps
+///   the memory): nothing fills and nothing writes the tail. The parameter
+///   read-back reads it from the device; the parameter-only plan compares it
+///   with the model, except the octets of a device-managed parameter
+///   ([`Self::managed`]), and refuses a difference, since only a complete
+///   download fills it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldTail {
+    /// The code-segment id of the segment.
+    pub segment: String,
+    /// The held octets, `[start, end)` as offsets into the segment image:
+    /// `start` is where the write ends.
+    pub start: usize,
+    /// See [`Self::start`].
+    pub end: usize,
+    /// The fill a complete download's allocation leaves in every held octet.
+    pub fill: u8,
+    /// Whether this download's allocation fills the tail.
+    pub filled: bool,
+    /// The held octets of a device-managed parameter (`Access="None"`, the
+    /// ones `bussard restore --parameters` leaves alone): never compared.
+    pub managed: BTreeSet<usize>,
+}
+
+impl FlashStep {
+    /// The tail a `WriteRelMem` leaves to its allocation ([`HeldTail`]).
+    pub fn held_tail(&self) -> Option<&HeldTail> {
+        match self {
+            FlashStep::WriteRelMem { held_tail, .. } => held_tail.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The step with its held tail kept by the device: what a download whose
+    /// allocation keeps the memory sends (the parameter-only cut).
+    pub(crate) fn with_device_held_tail(mut self) -> FlashStep {
+        if let FlashStep::WriteRelMem {
+            held_tail: Some(tail),
+            ..
+        } = &mut self
+        {
+            tail.filled = false;
+        }
+        self
+    }
 }
 
 /// A run of octets of a segment a download does not write, because the load
@@ -1397,34 +1456,6 @@ pub(super) struct Unoccupied {
 /// device holds it (Resources 03_05_01 §4.2.27.1.2), kept octets included,
 /// so a check of such a segment reads the MCB, as ETS reads it, without
 /// comparing it.
-/// The octets past a `WriteRelMem`'s `Size` that its segment image holds
-/// and the step does not write, because the allocation fills them with the
-/// value the image has there (issue #1065: the Gira push-button rockers
-/// place a 32-bit `_Allg_Download` whose last octet lies past the write).
-///
-/// On a download whose allocation fills (`LdCtrlRelSegment` `Mode` bit 0),
-/// the executor reads the range back right after the write, before any
-/// restart, and fails the flash when the device does not hold the fill. On
-/// a download whose allocation keeps the memory (the parameter-only
-/// procedure, `Mode` 0), nothing fills and nothing writes the range: the
-/// device keeps what it holds there, the baseline and the verification
-/// treat it as the fill, and the plan says so.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldTail {
-    /// The code-segment id of the segment.
-    pub segment: String,
-    /// The write step's `ImageRef::offset` (its part of the image).
-    pub offset: usize,
-    /// The write step's `ImageRef::len`: the op's `Size`.
-    pub len: usize,
-    /// The held octets, `[start, end)` as offsets into the segment image.
-    pub start: usize,
-    /// See [`Self::start`].
-    pub end: usize,
-    /// The allocation's fill byte, the value of every held octet.
-    pub fill: u8,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeptOctets {
     /// The load-state machine (object index on System B, LSM index on
@@ -1851,18 +1882,19 @@ impl FlashPlan {
             },
         );
         // The held tail of a write (issue #1065): named, so a download that
-        // leaves octets to the allocation's fill says so.
-        match step {
-            FlashStep::WriteRelMem { image, .. } => match self.held_tail_of(image) {
-                Some(tail) => format!(
-                    "{label}; octets {}..{} are the allocation's fill {:#04X}, not written: read \
-                     back after a filling allocation, kept as the device holds them after one \
-                     that keeps the memory",
-                    tail.start, tail.end, tail.fill
-                ),
-                None => label,
-            },
-            _ => label,
+        // leaves octets to the allocation says so.
+        match step.held_tail() {
+            Some(tail) if tail.filled => format!(
+                "{label}; octets {}..{} are not written: the allocation fills them with \
+                 {:#04X}, read back after the write",
+                tail.start, tail.end, tail.fill
+            ),
+            Some(tail) => format!(
+                "{label}; octets {}..{} are not written: the device keeps them, compared with \
+                 the model ({:#04X}), and only a complete download fills them",
+                tail.start, tail.end, tail.fill
+            ),
+            None => label,
         }
     }
 
@@ -1946,18 +1978,20 @@ impl FlashPlan {
         &self.kept
     }
 
-    /// The held tails of the plan's writes (issue #1065, [`HeldTail`]).
-    pub fn held_tails(&self) -> &[HeldTail] {
-        &self.held_tails
+    /// The held tails of the plan's writes by step index (issue #1065,
+    /// [`HeldTail`]).
+    pub fn held_tails(&self) -> impl Iterator<Item = (usize, &HeldTail)> + '_ {
+        self.steps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, step)| Some((i, step.held_tail()?)))
     }
 
-    /// The held tail of the write step that streams `image`, if it has one:
-    /// matched by segment, offset and length, so two writes of one segment
-    /// with different sizes each find their own.
-    pub fn held_tail_of(&self, image: &ImageRef) -> Option<&HeldTail> {
-        self.held_tails.iter().find(|t| {
-            t.segment == image.segment_id && t.offset == image.offset && t.len == image.len
-        })
+    /// The held tail of a write into `segment`, if the plan has one.
+    pub fn held_tail_in(&self, segment: &str) -> Option<&HeldTail> {
+        self.held_tails()
+            .map(|(_, t)| t)
+            .find(|t| t.segment == segment)
     }
 
     /// The per-octet write mask of the `len` octets a System B write of

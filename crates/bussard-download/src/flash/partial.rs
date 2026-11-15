@@ -179,6 +179,24 @@ pub enum PartialPlanError {
         /// The step in words.
         what: String,
     },
+    /// The model puts a value in an octet past a write's `Size` that only a
+    /// complete download's filling allocation sets (issue #1065,
+    /// [`super::HeldTail`]), and the device holds another.
+    #[error(
+        "octet {octet} of parameter segment {segment} lies past what the parameter-only download \
+         writes: the device holds {device:#04X}, the model {model:#04X}, and only a complete \
+         download fills it; use a full `bussard flash`"
+    )]
+    HeldTailDiffers {
+        /// The code-segment id.
+        segment: String,
+        /// The octet, as an offset into the segment image.
+        octet: usize,
+        /// What the device holds.
+        device: u8,
+        /// What the model holds.
+        model: u8,
+    },
 }
 
 /// Which load procedure a [`FlashPlan`] runs ([`FlashPlan::procedure_kind`]).
@@ -263,6 +281,12 @@ impl FlashPlan {
         } else {
             self.system_b_parameter_steps(regions)?
         };
+        // A tail a write leaves to its allocation (issue #1065) is kept by
+        // the device here: the parameter-only download fills nothing.
+        let steps: Vec<FlashStep> = steps
+            .into_iter()
+            .map(FlashStep::with_device_held_tail)
+            .collect();
         // The cut drops the full plan's description reads; the pass puts back
         // the ones its own writes need on its connection (issue #1014; no
         // capture of a parameter-only download shows them, the rule is the
@@ -330,6 +354,32 @@ impl FlashPlan {
                 unwritten.insert(segment.clone(), skipped);
             }
         }
+        // A tail no step writes (issue #1065, [`super::HeldTail`]): the
+        // device keeps it. A placed octet of a device-managed parameter takes
+        // the device's value; any other must already hold the model's, since
+        // only a complete download fills it.
+        for tail in steps.iter().filter_map(FlashStep::held_tail) {
+            let (Some(image), Some(current)) =
+                (images.get_mut(&tail.segment), baseline.get(&tail.segment))
+            else {
+                continue;
+            };
+            for octet in tail.start..tail.end {
+                let (Some(byte), Some(&held)) = (image.get_mut(octet), current.get(octet)) else {
+                    continue;
+                };
+                if tail.managed.contains(&octet) {
+                    *byte = held;
+                } else if *byte != held {
+                    return Err(PartialPlanError::HeldTailDiffers {
+                        segment: tail.segment.clone(),
+                        octet,
+                        device: held,
+                        model: *byte,
+                    });
+                }
+            }
+        }
         Ok(FlashPlan {
             identity: self.identity.clone(),
             device_mask: self.device_mask,
@@ -353,7 +403,6 @@ impl FlashPlan {
             par_fallback: fallback,
             parameters_only: true,
             kept,
-            held_tails: self.held_tails.clone(),
             unoccupied: self.unoccupied.clone(),
         })
     }
@@ -435,12 +484,22 @@ impl FlashPlan {
             let placed = self.placed.get(segment);
             let skipped = skip.get(segment);
             let unoccupied = self.unoccupied_octets(segment);
+            // A tail no step writes (issue #1065) keeps what the device holds.
+            let tail: Vec<(usize, usize)> = self
+                .steps
+                .iter()
+                .filter_map(FlashStep::held_tail)
+                .filter(|t| &t.segment == segment)
+                .map(|t| (t.start, t.end))
+                .collect();
+            let in_tail = |i: usize| tail.iter().any(|&(s, e)| (s..e).contains(&i));
             let mut left = Vec::new();
             for (i, byte) in image.iter_mut().enumerate() {
                 let held = current.get(i).copied();
                 let restored = backup.and_then(|b| b.get(i)).copied();
                 let writes = placed.is_some_and(|p| p.contains(&i))
-                    && !skipped.is_some_and(|s| s.contains(&i));
+                    && !skipped.is_some_and(|s| s.contains(&i))
+                    && !in_tail(i);
                 match (writes, restored, held) {
                     (true, Some(b), _) => *byte = b,
                     (_, _, Some(h)) => {

@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use bussard_download::{
-    FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Session, flash,
+    FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ParamRegions, Session, flash,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
@@ -179,45 +179,76 @@ async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult
     Ok(())
 }
 
-/// The plan records the held tail per write step (issue #1065): segment,
-/// write length, range and fill, independent of any kept octets.
+/// The plan records the held tail on its write step (issue #1065): range,
+/// fill, filled by the step's own allocation, and the octets of the
+/// device-managed `marker` (`Access="None"`, octets 12 to 15).
 #[test]
 fn test_plan_flash_write_rel_mem_tail_is_plan_state() -> TestResult {
     let plan = plan()?;
-    let tails = plan.held_tails();
+    let tails: Vec<(usize, &bussard_download::HeldTail)> = plan.held_tails().collect();
     assert_eq!(tails.len(), 1, "{tails:?}");
-    let tail = &tails[0];
+    let (index, tail) = tails[0];
+    assert!(matches!(
+        &plan.steps[index],
+        FlashStep::WriteRelMem { image, .. } if image.len == 15 && image.offset == 0
+    ));
     assert_eq!(
-        (tail.offset, tail.len, tail.start, tail.end, tail.fill),
-        (0, 15, 15, 16, 0)
+        (tail.start, tail.end, tail.fill, tail.filled),
+        (15, 16, 0, true)
     );
+    assert_eq!(tail.managed.iter().copied().collect::<Vec<_>>(), vec![15]);
     assert!(plan.kept().is_empty());
-    let image = plan
-        .steps
-        .iter()
-        .find_map(|s| match s {
-            FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
-                Some(image.clone())
-            }
-            _ => None,
-        })
-        .ok_or("a parameter write")?;
-    assert_eq!(plan.held_tail_of(&image), Some(tail));
-    // Another write of the same segment with another length has none.
-    let other = bussard_download::ImageRef {
-        len: 16,
-        ..image.clone()
-    };
-    assert_eq!(plan.held_tail_of(&other), None);
     Ok(())
 }
 
-/// The parameter-only download keeps the memory (`Mode` 0): nothing fills
-/// and nothing writes the held tail, so whatever the device holds there is
-/// kept, never a pending change, never a failure (issue #1065).
+/// A write whose tail the plan leaves to the allocation is refused before
+/// a byte goes out when the allocation fills nothing (issue #1065).
 #[tokio::test]
-async fn test_parameters_only_write_rel_mem_tail_is_device_held() -> TestResult {
-    let full = plan()?;
+async fn test_flash_write_rel_mem_tail_without_a_filling_allocation_fails() -> TestResult {
+    let mut plan = plan()?;
+    for step in &mut plan.steps {
+        if let FlashStep::AllocateSegment {
+            target: Some(4),
+            fill,
+            ..
+        } = step
+        {
+            *fill = bussard_download::flash::SegmentFill::NONE;
+        }
+    }
+    let (outcome, dev) = run(device()?, &plan).await?;
+    match outcome {
+        Err(WriteError::HeldTailNotFilled { start, end, .. }) => {
+            assert_eq!((start, end), (15, 16));
+        }
+        other => return Err(format!("expected HeldTailNotFilled, got {other:?}").into()),
+    }
+    assert_eq!(
+        last_written_octet(&dev),
+        None,
+        "nothing written to object 4"
+    );
+    Ok(())
+}
+
+/// What [`reflash_parameters_only`] hands back: the cut, the regions read,
+/// the parameter-only download's outcome (when `run` and the cut planned)
+/// and the device after it.
+type Reflashed = (
+    Result<FlashPlan, bussard_download::PartialPlanError>,
+    ParamRegions,
+    Option<FlashOutcome>,
+    MockDevice,
+);
+
+/// Full flash, then the device's application rewrites octet 15 with
+/// `octet_15`; reads the parameter regions back, cuts the parameter-only
+/// download and, with `run`, sends it.
+async fn reflash_parameters_only(
+    full: &FlashPlan,
+    octet_15: u8,
+    run: bool,
+) -> TestResult<Reflashed> {
     let gw = MockGateway::builder().device(device()?).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let l4 = Layer4Connection::connect(
@@ -228,25 +259,143 @@ async fn test_parameters_only_write_rel_mem_tail_is_device_held() -> TestResult 
     )
     .await?;
     let mut session = Session::from_connection(l4);
-    let outcome = flash(&mut session, &full, FlashOptions::default(), |_| {}).await?;
+    let outcome = flash(&mut session, full, FlashOptions::default(), |_| {}).await?;
     assert!(outcome.ok(), "the full flash verifies: {outcome:?}");
-    // Something rewrote the held octet since (the application at start).
-    gw.with_device(ia("1.1.1")?, |d| d.memory.insert(BASE + 15, 0x77))?;
-    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
-    let partial = full.parameters_only(&regions)?;
-    // No pending change for the octet it cannot write.
-    assert_eq!(partial.changed_octets(), 0);
-    let outcome = flash(&mut session, &partial, FlashOptions::default(), |_| {}).await?;
+    gw.with_device(ia("1.1.1")?, |d| d.memory.insert(BASE + 15, octet_15))?;
+    let regions = bussard_download::read_parameter_regions(session.l4(), full, &[]).await;
+    let partial = full.parameters_only(&regions);
+    let outcome = match (&partial, run) {
+        (Ok(partial), true) => {
+            Some(flash(&mut session, partial, FlashOptions::default(), |_| {}).await?)
+        }
+        _ => None,
+    };
     let _ = session.into_disconnect().await;
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    Ok((partial, regions, outcome, dev))
+}
+
+/// The parameter-only download keeps the memory (`Mode` 0): nothing fills
+/// and nothing writes the held tail. The read-back reads the tail from the
+/// device; octet 15 belongs to the device-managed `marker`, so what the
+/// device holds there is kept: no pending change, no failure (issue #1065).
+#[tokio::test]
+async fn test_parameters_only_write_rel_mem_tail_is_device_held() -> TestResult {
+    let full = plan()?;
+    let (partial, regions, outcome, dev) = reflash_parameters_only(&full, 0x77, true).await?;
+    // The tail is read from the device, not made up.
+    let region = regions.values().next().ok_or("a parameter region")?;
+    assert_eq!(region.bytes.len(), 16);
+    assert_eq!(region.bytes[15], 0x77);
+    let partial = partial?;
+    assert_eq!(partial.changed_octets(), 0);
+    assert!(partial.held_tails().all(|(_, t)| !t.filled));
+    let outcome = outcome.ok_or("the parameter-only download ran")?;
     assert!(
         outcome.ok(),
         "the parameter-only download verifies: {outcome:?}"
     );
-    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
     assert_eq!(
         dev.read_mem(BASE + 15, 1),
         vec![0x77],
         "kept as the device holds it"
     );
+    Ok(())
+}
+
+/// A tail octet that is not device-managed is compared: where the device
+/// holds another value than the model, the parameter-only download is
+/// refused, since only a complete download fills it (issue #1065).
+#[tokio::test]
+async fn test_parameters_only_write_rel_mem_tail_differs_is_refused() -> TestResult {
+    let mut full = plan()?;
+    for step in &mut full.steps {
+        if let FlashStep::WriteRelMem {
+            held_tail: Some(tail),
+            ..
+        } = step
+        {
+            tail.managed.clear();
+        }
+    }
+    let (partial, ..) = reflash_parameters_only(&full, 0x77, false).await?;
+    match partial {
+        Err(bussard_download::PartialPlanError::HeldTailDiffers {
+            octet,
+            device,
+            model,
+            ..
+        }) => assert_eq!((octet, device, model), (15, 0x77, 0)),
+        other => return Err(format!("expected HeldTailDiffers, got {other:?}").into()),
+    }
+    // The same device holding the fill: no change, no refusal.
+    let (partial, ..) = reflash_parameters_only(&full, 0x00, false).await?;
+    assert_eq!(partial?.changed_octets(), 0);
+    Ok(())
+}
+
+/// The synthetic product's application program (bussard's own work, MIT).
+const XML: &str = include_str!(
+    "../../../../tests-support/synthetic-products/syn-writerelmem-tail/xml/M-00FA/M-00FA_A-272A-10-0000.xml"
+);
+
+/// The mask's parameter-only procedure (issue #1052) keeps the memory: with
+/// the complete download's allocation `AppliesTo="full"` (`Mode` 1) and a
+/// `par` one in `Mode` 0, as the Gira rockers state them, the `par`
+/// procedure's write of the segment has no filling allocation. The tail is
+/// device-held there, and `parameters_only` plans by that procedure (issue
+/// #1065: it failed with `ParProcedure` before).
+#[test]
+fn test_parameters_only_by_par_procedure_keeps_the_tail() -> TestResult {
+    let from = r#"<LdCtrlRelSegment LsmIdx="4" Size="16" Mode="1" Fill="0" />"#;
+    assert!(XML.contains(from));
+    let xml = XML.replace(
+        from,
+        r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="16" Mode="1" Fill="0" /><LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="16" Mode="0" Fill="0" />"#,
+    );
+    let app = bussard_product::application::parse_application_program(
+        "M-00FA_A-272A-10-0000",
+        xml.as_bytes(),
+    )?;
+    let template =
+        bussard_product::master::MasterTemplate::builtin_for_mask("07B0").ok_or("07B0 template")?;
+    let par = bussard_product::master::MasterTemplate::builtin_par_for_mask("07B0")
+        .ok_or("07B0 par procedure")?;
+    let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+    let tables =
+        bussard_download::build_table_images(None, "1.1.1".parse()?, &app, &BTreeMap::new(), &memo);
+    let mut full = crate::support::plan_flash_default(
+        &app,
+        "1.1.1",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template.ops),
+        &tables,
+    )?;
+    bussard_download::add_par_procedure(
+        &mut full,
+        &app,
+        "1.1.1",
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&par.ops),
+        &tables,
+        &BTreeMap::new(),
+        &memo,
+    );
+    let regions = bussard_download::planned_parameter_regions(&full);
+    let region = regions.values().next().ok_or("a parameter region")?;
+    assert_eq!(region.bytes.len(), 16, "the planned region covers the tail");
+    let partial = full.parameters_only(&regions)?;
+    assert_eq!(
+        partial.procedure_kind(),
+        bussard_download::ProcedureKind::ParametersByPar
+    );
+    assert_eq!(partial.changed_octets(), 0);
+    let tails: Vec<_> = partial.held_tails().map(|(_, t)| t.clone()).collect();
+    assert_eq!(tails.len(), 1, "{tails:?}");
+    assert!(!tails[0].filled);
+    assert_eq!((tails[0].start, tails[0].end, tails[0].fill), (15, 16, 0));
     Ok(())
 }

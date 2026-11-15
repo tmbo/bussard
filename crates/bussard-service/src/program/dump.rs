@@ -122,6 +122,7 @@ fn image_record(
     object: Option<u32>,
     offset: Option<u32>,
     part: Option<(usize, usize)>,
+    held: Option<(usize, usize)>,
 ) -> Result<(Value, Option<Vec<u8>>), ServiceError> {
     let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
     // A System 7 allocation that holds a part of its segment's image (issue
@@ -140,6 +141,18 @@ fn image_record(
         Some(mask) => Some(mask[start.min(mask.len())..end.min(mask.len())].to_vec()),
         None if address.is_none() => plan.kept_mask(image, bytes.len()),
         None => None,
+    };
+    // The octets past the write that its allocation holds (issue #1065):
+    // `0x00` like kept octets, relative to the dumped part.
+    let mask = match held {
+        Some((from, to)) => {
+            let mut mask = mask.unwrap_or_else(|| vec![0xFF; bytes.len()]);
+            for b in mask.iter_mut().take(to).skip(from) {
+                *b = 0;
+            }
+            Some(mask)
+        }
+        None => mask,
     };
     let mask_file = match &mask {
         Some(mask) => Some(write_file(dir, used, stem, step, ".mask.bin", mask)?),
@@ -381,6 +394,7 @@ pub fn write_dump(
                 offset,
                 image,
                 target,
+                held_tail,
             } => {
                 let obj = target.map_or_else(|| "app".to_string(), |t| t.to_string());
                 let stem = format!("obj{obj}_{}", file_safe(&image.segment_id));
@@ -388,12 +402,16 @@ pub fn write_dump(
                 // part; the rest of the allocation is `kept` (below).
                 let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
                 // A held tail (issue #1065) is the device's content too: the
-                // dump carries it, so the oracle compares those octets; the
-                // write itself stops at the op's `Size` (`held_tails`).
-                let len = plan
-                    .held_tail_of(image)
+                // dump carries it, masked like kept octets (no request writes
+                // it), so the oracle compares it without counting it as
+                // written.
+                let len = held_tail
+                    .as_ref()
                     .map_or(image.len, |tail| tail.end - image.offset);
                 let part = (image.offset != 0 || len != whole).then_some((image.offset, len));
+                let held = held_tail
+                    .as_ref()
+                    .map(|t| (t.start - image.offset, t.end - image.offset));
                 let (rec, mask) = image_record(
                     dir,
                     &mut used,
@@ -405,6 +423,7 @@ pub fn write_dump(
                     *target,
                     Some(*offset),
                     part,
+                    held,
                 )?;
                 let rec_all_kept = mask.is_some_and(|m| m.iter().all(|&b| b == 0));
                 if image.kind == bussard_download::ImageKind::Table
@@ -453,6 +472,7 @@ pub fn write_dump(
                     None,
                     None,
                     None,
+                    None,
                 )?
                 .0;
             }
@@ -492,6 +512,7 @@ pub fn write_dump(
                         None,
                         None,
                         part,
+                        None,
                     )?;
                     record["image"] = rec;
                     // A segment whose mask owns no octet streams nothing: the
@@ -832,12 +853,13 @@ pub fn write_dump(
         })).collect::<Vec<_>>(),
         // The octets past a write's `Size` its filling allocation holds
         // (issue #1065): not written, read back after a filling allocation.
-        "held_tails": plan.held_tails().iter().map(|t| json!({
+        "held_tails": plan.held_tails().map(|(i, t)| json!({
+            "step": i + 1,
             "segment_id": t.segment,
             "range": [t.start, t.end],
             "fill": t.fill,
-            "write_len": t.len,
-            "read_back": "after the write, when the allocation fills; kept by the device otherwise",
+            "filled": t.filled,
+            "managed": t.managed,
         })).collect::<Vec<_>>(),
     });
     let path = dir.join("plan.json");

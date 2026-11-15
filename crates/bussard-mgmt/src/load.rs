@@ -748,6 +748,25 @@ pub enum WriteError {
         error_code: u8,
     },
 
+    /// A write whose plan leaves octets past it to the allocation's fill
+    /// (issue #1065) followed an allocation that fills nothing; nothing was
+    /// written.
+    #[error(
+        "{address}: the plan leaves octets {start}..{end} of segment {segment} to the \
+         allocation's fill, but the allocation before the write fills nothing; nothing was \
+         written"
+    )]
+    HeldTailNotFilled {
+        /// The device.
+        address: IndividualAddress,
+        /// The code segment.
+        segment: String,
+        /// The first held octet, as an offset into the segment image.
+        start: usize,
+        /// The end of the held octets (exclusive).
+        end: usize,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),

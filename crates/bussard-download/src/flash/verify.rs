@@ -36,6 +36,7 @@ pub(super) fn sole_object_image<'a>(
             offset,
             image,
             target,
+            ..
         } = step
         {
             let resolved = resolve_object_target_opt(
@@ -570,6 +571,7 @@ mod tests {
             offset: 0,
             image: image(segment_id),
             target: Some(target),
+            held_tail: None,
         }
     }
 
@@ -674,6 +676,7 @@ mod tests {
                 offset: 0,
                 image,
                 target: Some(3),
+                held_tail: None,
             },
             FlashStep::LoadCompleted { target: Some(3) },
         ];

@@ -976,7 +976,6 @@ pub(super) fn plan_flash_properties(
         par_fallback: None,
         parameters_only: false,
         kept: Vec::new(),
-        held_tails: Vec::new(),
         unoccupied: Vec::new(),
     })
 }
