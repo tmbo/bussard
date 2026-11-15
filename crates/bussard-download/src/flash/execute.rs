@@ -596,6 +596,7 @@ impl StepExecutor for SystemB<'_> {
                 offset,
                 image,
                 target,
+                held_tail,
             } => {
                 // Prefer this object's own allocated base (the multi-object
                 // template allocates every object before writing any, so the
@@ -698,6 +699,21 @@ impl StepExecutor for SystemB<'_> {
                     // The device placed the segment elsewhere: what it
                     // holds there is unknown, so the whole image goes.
                     (Some((_, expected)), _) => {
+                        // The tail past the write (issue #1065) is not
+                        // written; at the new base nothing says what the
+                        // device holds there, so a placed octet of it that
+                        // is not device-managed could not be trusted.
+                        if let Some(tail) = held_tail.as_ref().filter(|t| {
+                            t.needs_model_value(image, plan.placed.get(&image.segment_id))
+                        }) {
+                            let range = tail.range(image);
+                            return Err(WriteError::HeldTailMoved {
+                                address: session.l4().target(),
+                                segment: image.segment_id.clone(),
+                                start: range.start,
+                                end: range.end,
+                            });
+                        }
                         self.warnings.push(format!(
                             "segment {} moved from {} to {addr:#X} on the allocation; \
                              the whole parameter image was written",
@@ -801,6 +817,39 @@ impl StepExecutor for SystemB<'_> {
                         segment,
                         own.as_ref(),
                     ));
+                }
+                // The held tail (issue #1065, [`super::HeldTail`]): the
+                // octets past the op's `Size` that a filling allocation holds.
+                // Nothing writes them, so they join the closing read-back
+                // after the load completes, where the other samples are read
+                // (no read mid-load, which ETS never sends), the octets of a
+                // device-managed parameter masked out (the application may
+                // rewrite those at start); a tail of such octets only is not
+                // read. A device that did not fill fails that read-back. A
+                // tail no allocation fills is a range the device keeps
+                // ([`super::KeptOctets::held_tail`]).
+                if let Some(tail) = held_tail.as_ref()
+                    && let Some(fill) = fill
+                {
+                    let range = tail.range(image);
+                    let mask: Vec<u8> = range
+                        .clone()
+                        .map(|o| {
+                            if tail.managed.contains(&o) {
+                                0x00
+                            } else {
+                                0xFF
+                            }
+                        })
+                        .collect();
+                    if mask.contains(&0xFF) {
+                        self.written_samples.push(WrittenSample {
+                            address: addr + (range.start - image.offset) as u32,
+                            bytes: vec![fill; mask.len()],
+                            segment: obj.map(|obj| (obj, image.segment_id.clone())),
+                            mask: Some(mask),
+                        });
+                    }
                 }
             }
             FlashStep::WriteMem { address, image } => {

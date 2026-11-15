@@ -108,3 +108,4 @@
 1.1.1|captures/synthetic/syn-user-memory/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory/xml|M-00FA_A-2716-10-0000|syn-user-memory defaults|100.0|loadctl=identical seq=identical
 1.1.1|captures/synthetic/syn-user-memory-extmem/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory-extmem/xml|M-00FA_A-2796-10-0000|syn-user-memory-extmem defaults|100.0|loadctl=identical seq=identical
 1.1.1|captures/synthetic/syn-writerelmem-size/defaults/ets.pcapng|tests-support/synthetic-products/syn-writerelmem-size/xml|M-00FA_A-2717-10-0000|syn-writerelmem-size defaults|100.0|loadctl=identical seq=identical
+1.1.1|captures/synthetic/syn-writerelmem-tail/defaults/ets.pcapng|tests-support/synthetic-products/syn-writerelmem-tail/xml|M-00FA_A-272A-10-0000|syn-writerelmem-tail defaults|100.0|loadctl=identical seq=identical

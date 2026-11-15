@@ -231,6 +231,7 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             offset,
             image,
             target,
+            ..
         } => {
             format!(
                 "write {} image ({} bytes) at segment+{offset}{}",

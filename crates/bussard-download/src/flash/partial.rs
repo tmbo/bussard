@@ -179,6 +179,24 @@ pub enum PartialPlanError {
         /// The step in words.
         what: String,
     },
+    /// The model puts a value in an octet past a write's `Size` that only a
+    /// complete download's filling allocation sets (issue #1065,
+    /// [`super::HeldTail`]), and the device holds another.
+    #[error(
+        "octet {octet} of parameter segment {segment} lies past what the parameter-only download \
+         writes: the device holds {device:#04X}, the model {model:#04X}, and only a complete \
+         download fills it; use a full `bussard flash`"
+    )]
+    HeldTailDiffers {
+        /// The code-segment id.
+        segment: String,
+        /// The octet, as an offset into the segment image.
+        octet: usize,
+        /// What the device holds.
+        device: u8,
+        /// What the model holds.
+        model: u8,
+    },
 }
 
 /// Which load procedure a [`FlashPlan`] runs ([`FlashPlan::procedure_kind`]).
@@ -204,9 +222,26 @@ impl FlashPlan {
     /// [`crate::read_parameter_regions`] against this same plan).
     ///
     /// See the module docs for the op sequence per system. Fails when the
-    /// procedure writes no parameter image, or when a parameter segment was not
-    /// read back.
+    /// procedure writes no parameter image, when a parameter segment was not
+    /// read back, or when the device holds another value than the model in a
+    /// tail octet only a complete download fills
+    /// ([`PartialPlanError::HeldTailDiffers`]).
     pub fn parameters_only(&self, regions: &ParamRegions) -> Result<FlashPlan, PartialPlanError> {
+        let (plan, conflict) = self.parameters_only_with_tails(regions)?;
+        match conflict {
+            Some(err) => Err(err),
+            None => Ok(plan),
+        }
+    }
+
+    /// [`FlashPlan::parameters_only`], with the held-tail finding apart
+    /// instead of failing on it (issue #1065): what a parameter plan that
+    /// only describes the device, or a restore that never writes the tail,
+    /// needs. The cut leaves every tail octet as the device holds it.
+    pub fn parameters_only_with_tails(
+        &self,
+        regions: &ParamRegions,
+    ) -> Result<(FlashPlan, Option<PartialPlanError>), PartialPlanError> {
         // A program with parameter memory keeps the cut of the complete
         // download where the mask's `par` procedure has a step no capture
         // shows for it (issue #1085): a refilling allocation or a master
@@ -291,9 +326,10 @@ impl FlashPlan {
         let kept: Vec<super::KeptOctets> = self
             .kept
             .iter()
-            .filter(|k| !k.unoccupied)
+            .filter(|k| !k.unoccupied && k.held_tail.is_none())
             .cloned()
             .chain(super::plan::unoccupied_kept(&steps, &self.unoccupied))
+            .chain(super::plan::held_tails_kept(&steps))
             .collect();
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
@@ -343,7 +379,7 @@ impl FlashPlan {
                 unwritten.insert(segment.clone(), skipped);
             }
         }
-        Ok(FlashPlan {
+        let mut plan = FlashPlan {
             identity: self.identity.clone(),
             device_mask: self.device_mask,
             steps,
@@ -367,7 +403,46 @@ impl FlashPlan {
             parameters_only: true,
             kept,
             unoccupied: self.unoccupied.clone(),
-        })
+        };
+        // A tail no step writes and no allocation fills (issue #1065,
+        // [`super::KeptOctets::held_tail`]): the device keeps it, and every
+        // octet of it takes the device's value. A placed octet that is not
+        // device-managed must already hold the model's, since only a
+        // complete download fills it: the first one that does not is the
+        // finding.
+        let mut conflict = None;
+        for kept in self_tails(&plan) {
+            let (Some(image), Some(current), Some(model)) = (
+                plan.images.get_mut(&kept.segment),
+                plan.baseline.get(&kept.segment),
+                self.images.get(&kept.segment),
+            ) else {
+                continue;
+            };
+            let placed = self.placed.get(&kept.segment);
+            let managed = kept.held_tail.clone().unwrap_or_default();
+            for &(start, end) in &kept.ranges {
+                for octet in start..end {
+                    let (Some(byte), Some(&held)) = (image.get_mut(octet), current.get(octet))
+                    else {
+                        continue;
+                    };
+                    *byte = held;
+                    let wanted = model.get(octet).copied().unwrap_or(held);
+                    let needs =
+                        placed.is_some_and(|p| p.contains(&octet)) && !managed.contains(&octet);
+                    if needs && wanted != held && conflict.is_none() {
+                        conflict = Some(PartialPlanError::HeldTailDiffers {
+                            segment: kept.segment.clone(),
+                            octet,
+                            device: held,
+                            model: wanted,
+                        });
+                    }
+                }
+            }
+        }
+        Ok((plan, conflict))
     }
 
     /// Whether an octet of `segment` is one no declared parameter occupies in
@@ -447,12 +522,21 @@ impl FlashPlan {
             let placed = self.placed.get(segment);
             let skipped = skip.get(segment);
             let unoccupied = self.unoccupied_octets(segment);
+            // A tail no step writes (issue #1065) keeps what the device holds.
+            let tail: Vec<(usize, usize)> = self
+                .kept
+                .iter()
+                .filter(|k| k.held_tail.is_some() && &k.segment == segment)
+                .flat_map(|k| k.ranges.iter().copied())
+                .collect();
+            let in_tail = |i: usize| tail.iter().any(|&(s, e)| (s..e).contains(&i));
             let mut left = Vec::new();
             for (i, byte) in image.iter_mut().enumerate() {
                 let held = current.get(i).copied();
                 let restored = backup.and_then(|b| b.get(i)).copied();
                 let writes = placed.is_some_and(|p| p.contains(&i))
-                    && !skipped.is_some_and(|s| s.contains(&i));
+                    && !skipped.is_some_and(|s| s.contains(&i))
+                    && !in_tail(i);
                 match (writes, restored, held) {
                     (true, Some(b), _) => *byte = b,
                     (_, _, Some(h)) => {
@@ -1312,6 +1396,15 @@ fn left_out_property(step: &FlashStep) -> Option<(super::PropObject, u32)> {
         } => Some((*object, *prop_id)),
         _ => None,
     }
+}
+
+/// The kept tails of `plan` ([`super::KeptOctets::held_tail`]), cloned.
+fn self_tails(plan: &FlashPlan) -> Vec<super::KeptOctets> {
+    plan.kept
+        .iter()
+        .filter(|k| k.held_tail.is_some())
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

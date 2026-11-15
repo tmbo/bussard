@@ -1114,6 +1114,7 @@ impl SegmentSplit<'_> {
             ranges: self.parts.gaps.clone(),
             address: Some(self.base),
             unoccupied: false,
+            held_tail: None,
         })
     }
 }
