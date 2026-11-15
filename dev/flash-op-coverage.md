@@ -143,7 +143,8 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
   on init, 12 write, 11 read, 10 communication, 9 to 8 priority, 7 to 0 value
   field type. The priority is the product's, Low when it declares none
   (#541); the value field type covers every `ObjectSize`, and a System B plan
-  refuses a size without a code (#545). An unlinked object gets communication
+  refuses a size without a code where a descriptor takes it: the ref's
+  `ObjectSize`, else the object's (#545, #1065). An unlinked object gets communication
   cleared, which is why `apply` has to rewrite this table when a link set
   changes (#540). Every object the Dynamic walk reaches gets its descriptor;
   one with no flags at all keeps its priority and value field type (`03 00`

@@ -9,8 +9,8 @@
     "image_ok": 2164,
     "image_refused": 0,
     "image_panicked": 0,
-    "plan_executable": 1856,
-    "plan_refused": 47,
+    "plan_executable": 1857,
+    "plan_refused": 46,
     "plan_not_supported_family": 261,
     "plan_panicked": 0
   },
@@ -25,10 +25,6 @@
     },
     {
       "reason": "PropertyOnlyShape",
-      "count": 1
-    },
-    {
-      "reason": "UnknownObjectSize",
       "count": 1
     },
     {
@@ -76,8 +72,8 @@
     },
     "System B": {
       "apps": 1178,
-      "executable": 1175,
-      "refused": 3,
+      "executable": 1176,
+      "refused": 2,
       "not_supported_family": 0,
       "panicked": 0
     },
@@ -8263,8 +8259,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnknownObjectSize"
+            "plan": "executable",
+            "steps": 9
           }
         },
         {
