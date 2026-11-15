@@ -2957,6 +2957,17 @@ class TestDriverCatalogPick(unittest.TestCase):
     def test_pick_catalog_row_single_row_ignores_names(self):
         self.assertEqual(self.pick(self.N512[:1], self.APP_9083)["y"], 1507)
 
+    def test_pick_catalog_row_lone_online_row_with_unread_version(self):
+        # L&J A9FX-SEC (VM session 7): the imported product shows as one
+        # online row whose version cell OCR left empty.
+        d = self.d
+        row = {"y": 1500, "name": "L&J secure Schaltaktor 9fach", "order": "A9FX-SEC", "application": "",
+               "version": "", "online": True}
+        self.assertIs(d.pick_catalog_row([row], d._canon("A9FX-SEC"), d._digits("3.0")), row)
+        # Another version read on it, or a second row: no pick.
+        self.assertIsNone(d.pick_catalog_row([dict(row, version="2.1")], d._canon("A9FX-SEC"), d._digits("3.0")))
+        self.assertIsNone(d.pick_catalog_row([row, dict(row, y=1540)], d._canon("A9FX-SEC"), d._digits("3.0")))
+
 
 class TestApplicationNames(unittest.TestCase):
     """sweep.application_names: the program's Name and its translations."""

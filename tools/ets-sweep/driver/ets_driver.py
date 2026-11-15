@@ -2469,6 +2469,12 @@ def pick_catalog_row(hits: list[dict], order: str, want_version: str, name: str 
                 and _digits(r["version"]) == want_version]
         if len(same) == 1:
             return same[0]
+        # The same merged row with a version cell OCR did not read, as the
+        # only row of the order number (L&J A9FX-SEC and J4FX-SEC 3.0, VM
+        # session 7): the product file was just imported, so it is ours.
+        unread = [r for r in hits if _canon(r["order"]) == order]
+        if not same and len(unread) == 1 and not _digits(unread[0]["version"]):
+            return unread[0]
     hits = local
     # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
     exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
