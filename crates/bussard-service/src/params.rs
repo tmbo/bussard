@@ -609,9 +609,16 @@ pub async fn read_state<Ch: L4Channel>(
     let needs_flash = (!change.is_empty())
         .then(|| bussard_download::describe_group_object_change(&change))
         .or_else(|| bussard_download::allocation_change(app, &decoded.values, &overrides, &memo));
-    let (octets, unwritten) = plan
-        .parameters_only(&regions)
-        .map(|partial| {
+    // A tail octet only a complete download fills (issue #1065) is a finding
+    // of its own: the detail still lists the other ranges.
+    let cut = plan.parameters_only_with_tails(&regions);
+    let tail_note = cut
+        .as_ref()
+        .ok()
+        .and_then(|(_, conflict)| conflict.as_ref())
+        .map(ToString::to_string);
+    let (octets, unwritten) = cut
+        .map(|(partial, _)| {
             let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
                 bussard_download::attribute_octets(
                     app,
@@ -644,7 +651,7 @@ pub async fn read_state<Ch: L4Channel>(
             device_managed: decoded.device_managed.clone(),
             internal,
             kept: with_file_keys(&decoded.kept, device),
-            note: None,
+            note: tail_note,
         },
         detail: Some(ParamDetail {
             plan,

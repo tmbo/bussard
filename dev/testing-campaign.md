@@ -526,6 +526,26 @@ obj 4 region and an MCB length of 512. Until then
 `plan::tests::test_plan_flash_write_rel_mem_honours_size` pins the cut and the
 MCB length.
 
+**A parameter past `LdCtrlWriteRelMem Size`, held by the fill** (issue
+#1065). The Gira rockers `M-0008_A-1161-23-518D-O000A` and
+`A-1162-21-2E13-O000A` place a 32-bit download flag whose last octet lies
+past the write; a complete download's `Mode="1" Fill="0"` allocation fills
+it. The complete download is captured (`syn-writerelmem-tail/defaults`, the
+two sweep rows). Not captured: what ETS sends onto a device that already
+runs the application (the `par` allocation keeps the memory) and in a
+parameter-only download, where the tail is the device's. bussard keeps the
+complete procedure's filling allocation for an object whose tail holds a
+parameter that is not device-managed, leaves a tail of device-managed
+octets to the device, and compares a placed tail octet with the model in a
+parameter-only download; the plan marks both "not confirmed by a capture".
+This is the capture plan: `uv run tools/ets-sweep/synthetic/capture.py
+syn-writerelmem-tail --variant reload` (a second ETS download onto the
+loaded sim) and `--variant partial` (a parameter change downloaded as
+parameters only), then compare the allocation records and the octets past
+the write with the planned ones. Until then
+`write_rel_mem_tail::test_flash_same_application_*` and
+`test_parameters_only_*` pin the rules.
+
 ## Rehearsing on the simulator
 
 Every script has a loopback dry-run mode, so the runbook can be rehearsed

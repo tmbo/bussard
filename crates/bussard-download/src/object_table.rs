@@ -56,6 +56,7 @@ pub fn object_table_image(plan: &FlashPlan) -> Option<&[u8]> {
             offset: 0,
             image,
             target: Some(OBJECT_TABLE_INDEX),
+            ..
         } if image.kind == ImageKind::Table => plan.image_bytes(&image.segment_id),
         _ => None,
     })

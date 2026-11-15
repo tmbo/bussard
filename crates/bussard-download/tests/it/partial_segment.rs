@@ -87,6 +87,7 @@ fn app_writes(plan: &FlashPlan) -> Vec<(u32, usize, usize)> {
                 offset,
                 image,
                 target: Some(4),
+                ..
             } => Some((*offset, image.offset, image.len)),
             _ => None,
         })

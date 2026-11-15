@@ -64,7 +64,7 @@ pub use device_plan::{
     object_changes, sort_changes, state_hash, state_hash_with,
 };
 pub use flash::{
-    Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
+    Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, HeldTail, ImageKind, ImageRef,
     LoadControlForm, PartialPlanError, PlanError, ProcedureKind, Progress, PropObject,
     PropertyWrite, RebootReadiness, RestartForm, RestartKind, Session, Sys7TableBases,
     add_par_procedure, allocation_change, describe_property, discover_application_object,

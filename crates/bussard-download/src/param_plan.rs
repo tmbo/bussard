@@ -529,6 +529,7 @@ fn parameter_writes<K: Ord + Copy>(
                 offset,
                 image,
                 target,
+                held_tail,
             } if image.kind == ImageKind::Parameters => {
                 let obj = object(target);
                 let readable = match allocated.get(&obj) {
@@ -538,7 +539,7 @@ fn parameter_writes<K: Ord + Copy>(
                 out.push((
                     obj,
                     image,
-                    readable.then(|| whole_region(plan, *offset, image)),
+                    readable.then(|| whole_region(plan, *offset, image, held_tail.as_ref())),
                 ));
             }
             _ => {}
@@ -551,8 +552,16 @@ fn parameter_writes<K: Ord + Copy>(
 /// is read back as: the write's own `(offset, len)`, or for a segment the
 /// download writes in part (issue #411) the whole image from the segment
 /// base, kept octets included, so every write of it and the parameters it
-/// keeps decode from one region.
-fn whole_region(plan: &FlashPlan, offset: u32, image: &ImageRef) -> (u32, usize) {
+/// keeps decode from one region. A write that leaves a tail to its
+/// allocation (issue #1065, [`crate::flash::HeldTail`]) is read through the
+/// tail: the device holds those octets, and the values placed there decode
+/// from what it holds.
+fn whole_region(
+    plan: &FlashPlan,
+    offset: u32,
+    image: &ImageRef,
+    held: Option<&crate::flash::HeldTail>,
+) -> (u32, usize) {
     if plan.kept().iter().any(|k| k.segment == image.segment_id) {
         let start = offset.saturating_sub(u32::try_from(image.offset).unwrap_or(u32::MAX));
         let len = plan
@@ -560,7 +569,8 @@ fn whole_region(plan: &FlashPlan, offset: u32, image: &ImageRef) -> (u32, usize)
             .map_or(image.len, <[u8]>::len);
         (start, len)
     } else {
-        (offset, image.len)
+        let len = held.map_or(image.len, |t| t.end.saturating_sub(image.offset));
+        (offset, len.max(image.len))
     }
 }
 

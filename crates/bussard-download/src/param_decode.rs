@@ -631,15 +631,17 @@ pub fn attribute_octets(
 /// the configuration `overrides` gives (issue #290): an `Access="None"`
 /// parameter the configuration reaches, owned by the application at runtime
 /// (a download flag). `bussard restore --parameters` leaves them as the
-/// device holds them.
+/// device holds them. The Dynamic section is evaluated through `memo`, so a
+/// caller that planned with it shares the evaluation.
 pub fn device_managed_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
+    memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> bussard_product::PlacedOctets {
     let keys = KeyForms::new(overrides);
     let mut out = bussard_product::PlacedOctets::new();
-    for p in placements_of(app, overrides, base_offsets, &keys, &DynamicMemo::new(app)) {
+    for p in placements_of(app, overrides, base_offsets, &keys, memo) {
         if !(p.reached && p.device_managed(app)) {
             continue;
         }
