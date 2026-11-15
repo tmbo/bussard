@@ -363,61 +363,146 @@ pub(crate) fn object_size_code(object_size: &str) -> Option<u8> {
 /// the object's): the flat builder and the check through
 /// [`bussard_product::ResolvedComObject::object_size`], the dynamic and
 /// module builders by constructing a `ResolvedComObject` for the pair they
-/// resolve. That is by construction in each builder, not enforced by a type;
-/// `test_unknown_object_sizes_agrees_with_the_descriptor_builders` checks
-/// the flat builder only. (System 7 keeps the product's TYPE octet instead.)
+/// resolve; the download-plugin table describes an unshown static object
+/// from the `<ComObject>`, which the check covers with the object's own
+/// size. That is by construction in each builder, not enforced by a type
+/// (#1150 records the root fix). (System 7 keeps the product's TYPE octet
+/// instead.)
 pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
     object_size.and_then(object_size_code).unwrap_or(0)
 }
 
-/// The com-objects of `app` whose effective `ObjectSize` has no value field
-/// type code (see [`object_size_code`]): one [`UnknownObjectSize`] per
-/// object, sorted by object id, naming the first ref (by id) that carries
-/// the size. A System B flash plan refuses the application when this is not
-/// empty.
+/// The com-objects of `app` whose `ObjectSize` a descriptor builder would
+/// take although it has no value field type code (see [`object_size_code`]),
+/// one [`UnknownObjectSize`] per object, sorted by object number. A System B
+/// flash plan refuses the application when this is not empty.
 ///
-/// The effective size is the one every descriptor builder writes,
-/// [`bussard_product::ResolvedComObject::object_size`]: the ref's
-/// `ObjectSize`, else its com-object's (a `ComObjectRef` attribute overrides
-/// the `ComObject` one). So a com-object whose own size has no code is not
-/// refused when each of its refs states a size that has one: no descriptor
-/// takes the object's own size (issue #1065: the Jung
-/// `M-0004_A-1111-11-A356-O000A` object 7 declares `LegacyVarData` and its
-/// only ref `14 Bytes`). The descriptor builders reach com-objects only
-/// through a ref whose base resolves, as
-/// [`bussard_product::ApplicationProgram::resolved_com_objects`] does, so a
-/// com-object no ref names, or a ref without its base, gets no descriptor.
+/// Two builders read a size:
+///
+/// - Every builder that describes a com-object through a ref (flat,
+///   dynamic, module) takes the effective size,
+///   [`bussard_product::ResolvedComObject::object_size`]: the ref's
+///   `ObjectSize`, else its com-object's. Each ref whose effective size has
+///   no code is listed. A com-object whose own size has no code is not
+///   refused for it when each of its refs states a size that has one (issue
+///   #1065: the Jung `M-0004_A-1111-11-A356-O000A` object 7 declares
+///   `LegacyVarData` and its only ref `14 Bytes`).
+/// - The ETS download-plugin table (`ets_download_plugin_descriptors`)
+///   describes every unshown static com-object that declares the
+///   communication flag straight from the `<ComObject>`, with no ref. Such an
+///   object whose own size has no code and that no ref names is listed with
+///   that size, as it was before #1065. (One whose refs all take a size
+///   without a code is listed through them.)
+///
+/// A ref whose base does not resolve gets no descriptor and is not listed.
 pub(crate) fn unknown_object_sizes(
     app: &bussard_product::ApplicationProgram,
 ) -> Vec<UnknownObjectSize> {
     let mut by_object: BTreeMap<String, UnknownObjectSize> = BTreeMap::new();
+    let mut with_ref: BTreeSet<&str> = BTreeSet::new();
     for c in app.resolved_com_objects() {
-        let Some(size) = c.object_size().filter(|s| object_size_code(s).is_none()) else {
+        with_ref.insert(c.base.id.as_str());
+        match c.object_size() {
+            Some(size) if object_size_code(size).is_none() => {
+                by_object
+                    .entry(c.base.id.clone())
+                    .or_insert_with(|| UnknownObjectSize::new(c.base))
+                    .refs
+                    .push((c.cref.id.clone(), size.to_string()));
+            }
+            _ => {}
+        }
+    }
+    for base in app.static_com_objects() {
+        let Some(size) = base.object_size.as_deref() else {
             continue;
         };
-        // `resolved_com_objects` comes sorted by number, then ref id: the
-        // first ref met is the object's first by id.
+        if base.number == 0
+            || base.flags.communication == Some(false)
+            || object_size_code(size).is_some()
+            || with_ref.contains(base.id.as_str())
+        {
+            continue;
+        }
         by_object
-            .entry(c.base.id.clone())
-            .or_insert_with(|| UnknownObjectSize {
-                object: c.base.id.clone(),
-                com_object_ref: c.cref.id.clone(),
-                size: size.to_string(),
-            });
+            .entry(base.id.clone())
+            .or_insert_with(|| UnknownObjectSize::new(base))
+            .own = Some(size.to_string());
     }
-    by_object.into_values().collect()
+    let mut out: Vec<UnknownObjectSize> = by_object.into_values().collect();
+    for u in &mut out {
+        u.refs.sort_by_key(|(id, _)| numeric_id_key(id));
+    }
+    out.sort_by_key(|u| (u.number, numeric_id_key(&u.object)));
+    out
 }
 
-/// A com-object whose effective size has no value field type code, see
-/// [`unknown_object_sizes`].
+/// A sort key that orders ids by their numbers: `R-6` before `R-10`.
+fn numeric_id_key(id: &str) -> Vec<Result<u64, String>> {
+    let mut key = Vec::new();
+    let mut rest = id;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits > 0 {
+            key.push(
+                rest[..digits]
+                    .parse::<u64>()
+                    .map_err(|_| rest[..digits].to_string()),
+            );
+            rest = &rest[digits..];
+        } else {
+            let text = rest
+                .find(|c: char| c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            key.push(Err(rest[..text].to_string()));
+            rest = &rest[text..];
+        }
+    }
+    key
+}
+
+/// A com-object a descriptor would describe with a size that has no value
+/// field type code, see [`unknown_object_sizes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnknownObjectSize {
     /// The com-object id.
     pub(crate) object: String,
-    /// The first ref (by id) whose effective size has no code.
-    pub(crate) com_object_ref: String,
-    /// That size.
-    pub(crate) size: String,
+    /// The com-object number.
+    pub(crate) number: u16,
+    /// Every ref whose effective size has no code, with that size, in
+    /// numeric ref order.
+    pub(crate) refs: Vec<(String, String)>,
+    /// The object's own size, when the download-plugin table would describe
+    /// the object from it and no ref names the object.
+    pub(crate) own: Option<String>,
+}
+
+impl UnknownObjectSize {
+    fn new(base: &bussard_product::ComObject) -> Self {
+        Self {
+            object: base.id.clone(),
+            number: base.number,
+            refs: Vec::new(),
+            own: None,
+        }
+    }
+}
+
+impl std::fmt::Display for UnknownObjectSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "object {} ({})", self.number, self.object)?;
+        let mut sep = ": ";
+        for (id, size) in &self.refs {
+            write!(f, "{sep}ref {id} {size:?}")?;
+            sep = ", ";
+        }
+        if let Some(size) = &self.own {
+            write!(f, "{sep}its own size {size:?} (no ref names it)")?;
+        }
+        Ok(())
+    }
 }
 
 /// Builds group-object descriptors from a device's resolved com-objects,
@@ -1010,7 +1095,7 @@ mod tests {
     }
 
     /// An application with object 7 (`LegacyVarData`, its only ref
-    /// `14 Bytes`, the Jung shape) and object 8 (no ref at all).
+    /// `14 Bytes`, the Jung shape).
     fn app_with_legacy_var_data() -> bussard_product::ApplicationProgram {
         let mut app = bussard_product::ApplicationProgram {
             id: "M-0004_A-1".to_string(),
@@ -1022,8 +1107,6 @@ mod tests {
             "M-0004_A-1_O-7_R-5".into(),
             com_object_ref("M-0004_A-1_O-7_R-5", "O-7", Some("14 Bytes")),
         );
-        app.com_objects
-            .insert("O-8".into(), com_object("O-8", 8, "LegacyVarData"));
         app
     }
 
@@ -1046,16 +1129,16 @@ mod tests {
     }
 
     /// A com-object size without a code counts only where a descriptor takes
-    /// it: through a ref that states no size of its own (issue #1065). Each
-    /// object is named once, with its first such ref.
+    /// it: through a ref that states no size of its own (issue #1065). Every
+    /// such ref is named, in numeric order (`R-6` before `R-10`).
     #[test]
     fn test_unknown_object_sizes_takes_the_ref_size_over_the_object_size() {
         let mut app = app_with_legacy_var_data();
         assert!(unknown_object_sizes(&app).is_empty());
 
         // Two refs without a size of their own take the object's: refused,
-        // the object named once.
-        for r in ["M-0004_A-1_O-7_R-7", "M-0004_A-1_O-7_R-6"] {
+        // both named.
+        for r in ["M-0004_A-1_O-7_R-10", "M-0004_A-1_O-7_R-6"] {
             app.com_object_refs
                 .insert(r.into(), com_object_ref(r, "O-7", None));
         }
@@ -1077,46 +1160,81 @@ mod tests {
             vec![
                 UnknownObjectSize {
                     object: "O-7".into(),
-                    com_object_ref: "M-0004_A-1_O-7_R-6".into(),
-                    size: "LegacyVarData".into(),
+                    number: 7,
+                    refs: vec![
+                        ("M-0004_A-1_O-7_R-6".into(), "LegacyVarData".into()),
+                        ("M-0004_A-1_O-7_R-10".into(), "LegacyVarData".into()),
+                    ],
+                    own: None,
                 },
                 UnknownObjectSize {
                     object: "O-9".into(),
-                    com_object_ref: "M-0004_A-1_O-9_R-1".into(),
-                    size: "249 Bytes".into(),
+                    number: 9,
+                    refs: vec![("M-0004_A-1_O-9_R-1".into(), "249 Bytes".into())],
+                    own: None,
                 },
             ]
         );
+        assert_eq!(
+            unknown[0].to_string(),
+            "object 7 (O-7): ref M-0004_A-1_O-7_R-6 \"LegacyVarData\", \
+             ref M-0004_A-1_O-7_R-10 \"LegacyVarData\""
+        );
     }
 
-    /// The pre-check and the flat descriptor builder read the same size:
-    /// when `unknown_object_sizes` passes an application, every descriptor
-    /// that builder produces has a size with a code (issue #1065). The
-    /// dynamic and module builders take the size through the same
-    /// `ResolvedComObject::object_size`.
+    /// The ETS download-plugin table describes an unshown static com-object
+    /// from the `<ComObject>` itself, with no ref. One whose own size has no
+    /// code and that no ref names is refused, as before
+    /// issue #1065; one declared with the communication flag disabled gets
+    /// no descriptor and is not.
     #[test]
-    fn test_unknown_object_sizes_agrees_with_the_descriptor_builders() {
+    fn test_unknown_object_sizes_covers_the_download_plugin_table() {
+        let mut app = app_with_legacy_var_data();
+        app.com_objects
+            .insert("O-8".into(), com_object("O-8", 8, "LegacyVarData"));
+        let mut disabled = com_object("O-11", 11, "LegacyVarData");
+        disabled.flags.communication = Some(false);
+        app.com_objects.insert("O-11".into(), disabled);
+
+        let mut descriptors = Vec::new();
+        ets_download_plugin_descriptors(&app, &mut descriptors);
+        let described: Vec<u16> = descriptors.iter().map(|d| d.asap).collect();
+        assert_eq!(
+            described,
+            vec![7, 8],
+            "the builder describes objects 7 and 8"
+        );
+
+        // Object 7 has a ref with a codable size; no ref names object 8.
+        assert_eq!(
+            unknown_object_sizes(&app),
+            vec![UnknownObjectSize {
+                object: "O-8".into(),
+                number: 8,
+                refs: Vec::new(),
+                own: Some("LegacyVarData".into()),
+            }]
+        );
+    }
+
+    /// The pre-check and a real table builder agree (issue #1065): the
+    /// group-object table `build_table_images` writes on a bare flash
+    /// describes object 7 with the ref's code 14 (`14 Bytes`), not its own
+    /// `LegacyVarData`, which the check passes.
+    #[test]
+    fn test_unknown_object_sizes_agrees_with_the_descriptor_builders()
+    -> Result<(), Box<dyn std::error::Error>> {
         let app = app_with_legacy_var_data();
         assert!(unknown_object_sizes(&app).is_empty());
-        for c in app.resolved_com_objects() {
-            let size = c.object_size();
-            assert!(
-                size.is_none_or(|s| object_size_code(s).is_some()),
-                "{}: {size:?}",
-                c.cref.id
-            );
-        }
-        // The builder over every object, linked or not: object 7 takes the
-        // ref's code 14, the table has no entry for the ref-less object 8.
-        let linked: std::collections::BTreeSet<u16> = [7, 8].into();
-        let descriptors = descriptors_for_linked_objects(&app.resolved_com_objects(), &linked);
-        assert_eq!(
-            descriptors
-                .iter()
-                .map(|d| (d.asap, d.size_code))
-                .collect::<Vec<_>>(),
-            vec![(7, 14)]
-        );
+        let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+        let tables =
+            crate::build_table_images(None, "1.1.1".parse()?, &app, &BTreeMap::new(), &memo);
+        let obj3 = tables.get(&3).ok_or("a group-object table")?;
+        // The count word, then one 2-octet descriptor per number from 1:
+        // object 7's type octet is the 14th octet after the count.
+        let type_octet = obj3.get(2 + 6 * 2 + 1).copied();
+        assert_eq!(type_octet, Some(14), "{obj3:02x?}");
+        Ok(())
     }
 
     #[test]

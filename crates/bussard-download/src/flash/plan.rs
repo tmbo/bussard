@@ -100,9 +100,9 @@ pub(super) fn check_object_sizes(app: &ApplicationProgram) -> Result<(), PlanErr
     Err(PlanError::UnknownObjectSize {
         sizes: unknown
             .iter()
-            .map(|u| format!("{} (ref {}): {:?}", u.object, u.com_object_ref, u.size))
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .join(", "),
+            .join("; "),
     })
 }
 

@@ -1020,8 +1020,10 @@ pub enum PlanError {
          (Resources Table 88): {sizes}"
     )]
     UnknownObjectSize {
-        /// The offending com-objects, once each, as `object (ref ref-id): size`,
-        /// comma-joined.
+        /// The offending com-objects by number, each with every ref whose
+        /// size has no code (numeric ref order) and, where the
+        /// download-plugin table would take it, the object's own size;
+        /// semicolon-joined.
         sizes: String,
     },
 
