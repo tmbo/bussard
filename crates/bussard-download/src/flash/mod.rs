@@ -1015,15 +1015,19 @@ pub enum PlanError {
         op: String,
     },
 
-    /// A com-object declares an `ObjectSize` without a value field type code
-    /// (KNX 3/5/1 Resources Table 88), so its group-object descriptor cannot
-    /// be written; the plan is refused rather than describe it as 1 bit.
+    /// A com-object's effective `ObjectSize` (its ref's, else its own) has
+    /// no value field type code (KNX 3/5/1 Resources Table 88), so its
+    /// group-object descriptor cannot be written; the plan is refused rather
+    /// than describe it as 1 bit.
     #[error(
-        "application program declares com-object size(s) with no KNX value field type code \
+        "application program has com-object(s) whose size has no KNX value field type code \
          (Resources Table 88): {sizes}"
     )]
     UnknownObjectSize {
-        /// The offending com-objects, `id: size`, comma-joined.
+        /// The offending com-objects by number, each with every ref whose
+        /// size has no code (numeric ref order) and, where the
+        /// download-plugin table would take it, the object's own size;
+        /// semicolon-joined.
         sizes: String,
     },
 

@@ -1106,5 +1106,30 @@ class ModuleInChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
+class ComObjectRefSize(unittest.TestCase):
+    """syn-object-size-ref (#1065): a ComObjectRef's own ObjectSize."""
+
+    def test_render_ref_size_over_legacy_var_data(self) -> None:
+        s = spec()
+        s["com_object"][1] = dict(s["com_object"][1], size="LegacyVarData", ref_size="14 Bytes")
+        xml = app_xml(s)
+        self.assertIn('ObjectSize="LegacyVarData"', xml)
+        self.assertIn('_O-1_R-2" RefId="M-00FA_A-2700-10-0000_O-1" ObjectSize="14 Bytes" />', xml)
+        # Without a ref size, a ref states none.
+        self.assertIn('<ComObjectRef Id="M-00FA_A-2700-10-0000_O-0_R-1" RefId="M-00FA_A-2700-10-0000_O-0" />', xml)
+
+    def test_legacy_var_data_without_ref_size_refused(self) -> None:
+        s = spec()
+        s["com_object"][1] = dict(s["com_object"][1], size="LegacyVarData")
+        with self.assertRaisesRegex(generate.SpecError, "with a `ref_size`"):
+            generate.Product("test", s)
+
+    def test_ref_size_without_a_code_refused(self) -> None:
+        s = spec()
+        s["com_object"][1] = dict(s["com_object"][1], ref_size="LegacyVarData")
+        with self.assertRaisesRegex(generate.SpecError, "ref_size is one of"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
