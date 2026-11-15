@@ -2861,7 +2861,7 @@ pub(super) fn lower_master_reset(
     let channel_number = octet("ChannelNumber", channel_number.unwrap_or(0))?;
     if matches!(
         erase_code,
-        super::ERASE_CODE_FACTORY_RESET | super::ERASE_CODE_RESET_IA
+        bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET | bussard_mgmt::apci::ERASE_CODE_RESET_IA
     ) {
         return Err(PlanError::UnsupportedOp {
             op: format!(
@@ -2888,7 +2888,14 @@ pub(super) fn lower_master_reset(
 /// the 0701 `M-0009_A-E0ED-10-0B6F` and `A-20B6-11-52E9`, `syn-property-nopar`).
 /// The plan names any other reset "not confirmed by a capture".
 pub(super) fn master_reset_captured(erase_code: u8, channel_number: u8) -> bool {
-    channel_number == 0 && matches!(erase_code, 1 | 4 | 5 | 6)
+    channel_number == 0
+        && matches!(
+            erase_code,
+            bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART
+                | bussard_mgmt::apci::ERASE_CODE_RESET_AP
+                | bussard_mgmt::apci::ERASE_CODE_RESET_PARAM
+                | bussard_mgmt::apci::ERASE_CODE_RESET_LINKS
+        )
 }
 
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).

@@ -1276,13 +1276,19 @@ fn bound_writes(steps: &[FlashStep]) -> Vec<(String, Option<u32>)> {
 /// restart) and 5 (the parameters, every one of which the procedure writes
 /// after it). KNX 3/5/2 §3.7.1.2.3, Table 4.
 fn erased_and_not_restored(erase_code: u8) -> Option<&'static str> {
+    use bussard_mgmt::apci::{
+        ERASE_CODE_CONFIRMED_RESTART, ERASE_CODE_FACTORY_RESET, ERASE_CODE_FACTORY_RESET_KEEP_IA,
+        ERASE_CODE_RESET_AP, ERASE_CODE_RESET_IA, ERASE_CODE_RESET_LINKS, ERASE_CODE_RESET_PARAM,
+    };
     match erase_code {
-        1 | 5 => None,
-        2 => Some("the application, its parameters, the links and the individual address"),
-        3 => Some("the individual address"),
-        4 => Some("the application program"),
-        6 => Some("the links (address and association tables)"),
-        7 => Some("the application, its parameters and the links"),
+        ERASE_CODE_CONFIRMED_RESTART | ERASE_CODE_RESET_PARAM => None,
+        ERASE_CODE_FACTORY_RESET => {
+            Some("the application, its parameters, the links and the individual address")
+        }
+        ERASE_CODE_RESET_IA => Some("the individual address"),
+        ERASE_CODE_RESET_AP => Some("the application program"),
+        ERASE_CODE_RESET_LINKS => Some("the links (address and association tables)"),
+        ERASE_CODE_FACTORY_RESET_KEEP_IA => Some("the application, its parameters and the links"),
         _ => Some("what KNX 3/5/2 does not define for that code"),
     }
 }

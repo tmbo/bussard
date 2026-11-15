@@ -5390,26 +5390,40 @@ fn test_plan_flash_sys7_property_write_before_a_reset_is_read_back()
         verify: Some(false),
         occurrence: None,
     };
-    let plan_with = |op: LoadOp| -> Result<_, Box<dyn std::error::Error>> {
-        let mut app = app_with_master_resets()?;
-        let ops = &mut app.load_procedures[0].ops;
-        let connect = ops
-            .iter()
-            .position(|op| matches!(op, LoadOp::Connect))
-            .ok_or("the procedure connects")?;
-        ops.insert(connect + 1, op);
-        set_sys7_lsm_env(LsmMode::MemoryMapped);
-        Ok(plan_flash_default(
-            &app,
-            "1.1.99",
-            MASK_0705,
-            &no_overrides(),
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-        ))
-    };
-    // The routing count (object 0 PID 51 here), before the resets.
+    let plan_with_image =
+        |op: LoadOp, image: Option<Vec<u8>>| -> Result<_, Box<dyn std::error::Error>> {
+            let mut app = app_with_master_resets()?;
+            if let Some(data) = image {
+                app.factory_properties
+                    .push(bussard_product::application::FactoryProperty {
+                        object: 0,
+                        prop_id: 51,
+                        start: 0,
+                        data,
+                        mask: Vec::new(),
+                    });
+            }
+            let ops = &mut app.load_procedures[0].ops;
+            let connect = ops
+                .iter()
+                .position(|op| matches!(op, LoadOp::Connect))
+                .ok_or("the procedure connects")?;
+            ops.insert(connect + 1, op);
+            set_sys7_lsm_env(LsmMode::MemoryMapped);
+            Ok(plan_flash_default(
+                &app,
+                "1.1.99",
+                MASK_0705,
+                &no_overrides(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            ))
+        };
+    let plan_with = |op: LoadOp| plan_with_image(op, None);
+    // The routing count (object 0 PID 51 here), before the resets. The
+    // program's LoadedImage describes no value for it, so what the reset
+    // does to it is not known: kept, and read back after the flash.
     let plan = plan_with(write(0, 51, vec![0x60]))??;
     let reset = plan
         .steps
@@ -5425,6 +5439,18 @@ fn test_plan_flash_sys7_property_write_before_a_reset_is_read_back()
         before[0].written_range().is_some(),
         "read back after the flash"
     );
+    // The LoadedImage restores another value after the parameter reset
+    // (erase code 5): the write would be undone, refused at plan time.
+    let err = plan_with_image(write(0, 51, vec![0x60]), Some(vec![0x06]))?
+        .err()
+        .ok_or("a write the reset undoes planned")?;
+    assert!(
+        err.to_string()
+            .contains("EraseCode 5 (step 4) resets the parameters and so undoes"),
+        "{err}"
+    );
+    // The LoadedImage holds the value written: the reset keeps it.
+    assert!(plan_with_image(write(0, 51, vec![0x60]), Some(vec![0x60]))?.is_ok());
     // A load-state control written as a property: refused.
     let unload = bussard_mgmt::LoadControl::Unload.encode_full().to_vec();
     let err = plan_with(write(1, 5, unload))?

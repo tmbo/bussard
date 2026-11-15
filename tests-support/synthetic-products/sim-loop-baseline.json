@@ -3,8 +3,8 @@
   "known_failures": {
     "M-00FA_A-2830-10-0000": {
       "step": "plan after apply",
-      "issue": 1146,
-      "note": "syn-s7-master-reset: the parameter-only download of a System 7 program with a Master Reset is refused (UncapturedStep: it could not restore what the reset erases, review of #1146); apply notes 'parameters not written ... a full bussard flash writes them' and the loop's plan after apply still sees the changed values"
+      "issue": 1164,
+      "note": "syn-s7-master-reset: the parameter-only download of a System 7 program with a Master Reset is refused (UncapturedStep: what ETS's partial download of such a program sends needs a capture); apply notes 'parameters not written ... a full bussard flash writes them' and the loop's plan after apply still sees the changed values"
     }
   }
 }

@@ -408,7 +408,6 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 | `syn-trailing-writeprop` | the #1054 VM session | `capture.py syn-trailing-writeprop`, then `--variant partial` |
 | `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
 | `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
-| `syn-s7-master-reset` | the #1065 VM session | `capture.py syn-s7-master-reset` |
 | `syn-bcu2-0021` | the first BCU 2 VM session (#525); bussard refuses BCU 2 | `capture.py syn-bcu2-0021` |
 
 A secure product (`[application.security]`) is captured the way

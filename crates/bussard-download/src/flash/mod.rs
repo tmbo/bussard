@@ -257,16 +257,6 @@ impl std::fmt::Display for PropObject {
 /// [`is_knx_virtual_application`].
 pub const KNX_VIRTUAL_MANUFACTURER: u16 = 0x00FA;
 
-/// The Master Reset erase code "FactoryReset" (KNX 3/5/2 §3.7.1.2.3 Table
-/// 4): everything, the individual address included. A procedure's reset with
-/// it is refused (issue #1065).
-pub(super) const ERASE_CODE_FACTORY_RESET: u8 = 0x02;
-
-/// The Master Reset erase code "ResetIA" (KNX 3/5/2 §3.7.1.2.3 Table 4): it
-/// resets the individual address and no loaded object. A procedure's reset
-/// with it is refused (issue #1065).
-pub(super) const ERASE_CODE_RESET_IA: u8 = 0x03;
-
 /// The high octet of every KNX Virtual application number: the `A-25xx`
 /// programs of [`KNX_VIRTUAL_MANUFACTURER`] (DA.tp `A-2500`, KliX `A-2504`),
 /// the KNX Virtual catalogue section `M-00FA_CS-25` ("KNX Virtual", number 25).

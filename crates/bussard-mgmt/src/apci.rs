@@ -700,6 +700,28 @@ pub fn encode_master_reset(erase_code: u8, channel_number: u8) -> (u16, Vec<u8>)
 /// (issue #117 captures).
 pub const ERASE_CODE_CONFIRMED_RESTART: u8 = 0x01;
 
+/// `A_Restart` master-reset erase code 2: **factory reset** (KNX 3/5/2
+/// §3.7.1.2.3, Table 4): everything, the individual address included. A
+/// product procedure's reset with it is refused (issue #1065).
+pub const ERASE_CODE_FACTORY_RESET: u8 = 0x02;
+
+/// `A_Restart` master-reset erase code 3: **reset the individual address**
+/// (KNX 3/5/2 §3.7.1.2.3, Table 4); no loaded object. A product procedure's
+/// reset with it is refused (issue #1065).
+pub const ERASE_CODE_RESET_IA: u8 = 0x03;
+
+/// `A_Restart` master-reset erase code 4: **reset the application program**
+/// (KNX 3/5/2 §3.7.1.2.3, Table 4).
+pub const ERASE_CODE_RESET_AP: u8 = 0x04;
+
+/// `A_Restart` master-reset erase code 5: **reset the application
+/// parameters** (KNX 3/5/2 §3.7.1.2.3, Table 4).
+pub const ERASE_CODE_RESET_PARAM: u8 = 0x05;
+
+/// `A_Restart` master-reset erase code 6: **reset the links**, the address
+/// and association tables (KNX 3/5/2 §3.7.1.2.3, Table 4).
+pub const ERASE_CODE_RESET_LINKS: u8 = 0x06;
+
 /// `A_Restart` master-reset erase code 7: **factory reset without individual
 /// address**. The device erases its application program, parameters, group
 /// addresses and links, keeps its individual address, answers with an

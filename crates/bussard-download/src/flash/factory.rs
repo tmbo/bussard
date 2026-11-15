@@ -56,7 +56,8 @@ pub(super) fn resets_parameters(erase_code: u8, channel: u8) -> bool {
     channel == 0
         && matches!(
             erase_code,
-            5 | bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA
+            bussard_mgmt::apci::ERASE_CODE_RESET_PARAM
+                | bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA
         )
 }
 
@@ -72,6 +73,9 @@ pub(super) struct DeviceImage {
     /// The elements (1-based) written since that reset, per object index and
     /// PID.
     written: BTreeMap<(u32, u32), BTreeSet<u32>>,
+    /// The writes sent since that reset (object index, PID, 1-based first
+    /// element, value), for [`Self::reverted_by`].
+    sent: Vec<(u32, u32, u16, Vec<u8>)>,
 }
 
 impl DeviceImage {
@@ -82,7 +86,47 @@ impl DeviceImage {
         if resets_parameters(erase_code, channel) {
             self.reset = true;
             self.written.clear();
+            self.sent.clear();
         }
+    }
+
+    /// The first property write sent before a master reset with
+    /// `erase_code` on `channel` that the reset is known to revert (issue
+    /// #1065), in words (`object 10 PID 55 element 1 = 0102…`): a reset of
+    /// every channel's parameters puts a property the program's
+    /// `LoadedImage` describes back to that value, so a write of another
+    /// value is undone. `None` when the reset resets no parameters, or the
+    /// `LoadedImage` holds each value written or describes none of those
+    /// properties: what a reset does to a property it does not describe is
+    /// not known (the flash's read-back compares it).
+    pub(super) fn reverted_by(
+        &self,
+        erase_code: u8,
+        channel: u8,
+        app: &ApplicationProgram,
+    ) -> Option<String> {
+        if !resets_parameters(erase_code, channel) {
+            return None;
+        }
+        self.sent
+            .iter()
+            .find(|(index, prop_id, start, value)| {
+                let element = u32::from(*start);
+                let described = app.factory_properties.iter().any(|f| {
+                    f.object == *index
+                        && f.prop_id == *prop_id
+                        && f.start.checked_add(1) == Some(element)
+                });
+                described
+                    && !app
+                        .factory_properties
+                        .iter()
+                        .any(|f| f.holds(*index, *prop_id, element, value))
+            })
+            .map(|(index, prop_id, start, value)| {
+                let hex: String = value.iter().map(|b| format!("{b:02X}")).collect();
+                format!("object {index} PID {prop_id} element {start} = {hex}")
+            })
     }
 
     /// Settles `step`, lowered from an `LdCtrlWriteProp`: a write whose
@@ -127,6 +171,8 @@ impl DeviceImage {
                 .any(|f| f.holds(*index, *prop_id, u32::from(*start_element), value));
         if !held {
             self.written.entry(key).or_default().extend(elements);
+            self.sent
+                .push((*index, *prop_id, *start_element, value.clone()));
             return;
         }
         *step = FlashStep::FactoryHeldProp {
