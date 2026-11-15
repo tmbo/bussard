@@ -19,6 +19,8 @@ pub(super) struct LabelCtx<'a> {
     /// The segments whose MCB a check reads without comparing: the device
     /// keeps octets of them no parameter occupies (issue #1084).
     pub uncompared: &'a [String],
+    /// A System 7 plan (what a capture confirms differs, issue #1065).
+    pub sys7: bool,
 }
 
 /// A `" (LsmIdx/ObjIdx N)"` suffix for a step label, naming the object index the
@@ -361,7 +363,7 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             channel_number,
         } => format!(
             "master reset (erase code {erase_code}, channel {channel_number}{}) — reconnect and resume",
-            if super::plan::master_reset_captured(*erase_code, *channel_number) {
+            if super::plan::master_reset_captured(*erase_code, *channel_number, ctx.sys7) {
                 ""
             } else {
                 ", not confirmed by a capture"

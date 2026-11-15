@@ -919,6 +919,8 @@ fn plan_flash_as(
                     *erase_code,
                     *channel_number,
                     &mut device_image,
+                    app,
+                    false,
                 )?);
             }
 
@@ -2847,12 +2849,21 @@ fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> boo
 /// wire: a larger value is corrupt product data and refused. Erase codes 2
 /// (factory reset) and 3 (reset the individual address) leave the device at
 /// another address (KNX 3/5/2 §3.7.1.2.3, Table 4), so the flash could not
-/// reconnect, verify or restore it: refused.
+/// reconnect, verify or restore it: refused. On System 7 (`sys7`) a code
+/// Table 4 does not define (00h, 08h to FFh) is refused too: what it erases
+/// is not known, so what to load again after it is not either.
+///
+/// A property write before a reset of the parameters that the program's
+/// `LoadedImage` restores to another value would be undone by the reset
+/// ([`super::factory::DeviceImage::reverted_by`]): refused, instead of
+/// failing the read-back after every download.
 pub(super) fn lower_master_reset(
     step_no: usize,
     erase_code: Option<u32>,
     channel_number: Option<u32>,
     device_image: &mut super::factory::DeviceImage,
+    app: &ApplicationProgram,
+    sys7: bool,
 ) -> Result<FlashStep, PlanError> {
     let octet = |what: &str, v: u32| {
         u8::try_from(v).map_err(|_| PlanError::UnsupportedOp {
@@ -2861,14 +2872,30 @@ pub(super) fn lower_master_reset(
     };
     let erase_code = octet("EraseCode", erase_code.unwrap_or(1))?;
     let channel_number = octet("ChannelNumber", channel_number.unwrap_or(0))?;
-    if matches!(
-        erase_code,
-        bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET | bussard_mgmt::apci::ERASE_CODE_RESET_IA
-    ) {
+    let code = bussard_mgmt::apci::EraseCode::from_code(erase_code);
+    if code.is_some_and(bussard_mgmt::apci::EraseCode::resets_individual_address) {
         return Err(PlanError::UnsupportedOp {
             op: format!(
                 "LdCtrlMasterReset with EraseCode {erase_code} (step {step_no}): it resets the \
                  individual address, so the flash could not reconnect to verify or restore the device"
+            ),
+        });
+    }
+    if sys7 && code.is_none() {
+        return Err(PlanError::UnsupportedOp {
+            op: format!(
+                "LdCtrlMasterReset with EraseCode {erase_code} (step {step_no}): KNX 3/5/2 \
+                 Table 4 does not define what it erases, so what to load again after it on \
+                 System 7 is not known"
+            ),
+        });
+    }
+    if let Some(write) = device_image.reverted_by(erase_code, channel_number, app) {
+        return Err(PlanError::UnsupportedOp {
+            op: format!(
+                "LdCtrlMasterReset with EraseCode {erase_code} (step {step_no}) resets the \
+                 parameters and so undoes the property write before it ({write}): the program's \
+                 LoadedImage restores another value there"
             ),
         });
     }
@@ -2880,24 +2907,21 @@ pub(super) fn lower_master_reset(
 }
 
 /// Whether ETS's handling of a Master Reset with `erase_code` on
-/// `channel_number` is in a capture. Every master reset in the sweep, house
-/// and synthetic captures (grep of `ops.txt` for `master-reset`, 2026-11-14)
-/// is channel 0 with one of four codes, on System B and System 7 alike:
-/// 1 (the closing confirmed restart of the Data Secure and many sweep
-/// programs, `syn-master-reset`), 4 (`syn-master-reset-code4`, KNX Virtual
+/// `channel_number` is in a capture, on System 7 (`sys7`) or System B
+/// ([`bussard_mgmt::apci::EraseCode::captured`]). Every master reset in the
+/// sweep, house and synthetic captures (grep of `ops.txt` for
+/// `master-reset`, 2026-11-14) is on channel 0. System B: 1 (the closing
+/// confirmed restart of the Data Secure and many sweep programs,
+/// `syn-master-reset`), 4 (`syn-master-reset-code4`, KNX Virtual
 /// `M-00FA_A-2500-10-51CB`), 6 then 5 (the Hager 07B0 programs
 /// `M-0009_A-E0D0..E0D3`, `A-E0EE`, `A-E0F1`, `A-E0F2`, `A-E801`, `A-E802`,
-/// the 0701 `M-0009_A-E0ED-10-0B6F` and `A-20B6-11-52E9`, `syn-property-nopar`).
-/// The plan names any other reset "not confirmed by a capture".
-pub(super) fn master_reset_captured(erase_code: u8, channel_number: u8) -> bool {
+/// `syn-property-nopar`). System 7: 6 then 5 (the 0701
+/// `M-0009_A-E0ED-10-0B6F` and `A-20B6-11-52E9`, `syn-s7-master-reset`). The
+/// plan names any other reset "not confirmed by a capture".
+pub(super) fn master_reset_captured(erase_code: u8, channel_number: u8, sys7: bool) -> bool {
     channel_number == 0
-        && matches!(
-            erase_code,
-            bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART
-                | bussard_mgmt::apci::ERASE_CODE_RESET_AP
-                | bussard_mgmt::apci::ERASE_CODE_RESET_PARAM
-                | bussard_mgmt::apci::ERASE_CODE_RESET_LINKS
-        )
+        && bussard_mgmt::apci::EraseCode::from_code(erase_code)
+            .is_some_and(|code| code.captured(sys7))
 }
 
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).
@@ -3799,8 +3823,9 @@ mod tests {
     #[test]
     fn test_lower_master_reset_refuses_an_address_reset() {
         let mut image = super::super::factory::DeviceImage::default();
+        let app = ApplicationProgram::default();
         for code in [2, 3] {
-            let err = lower_master_reset(7, Some(code), Some(0), &mut image)
+            let err = lower_master_reset(7, Some(code), Some(0), &mut image, &app, false)
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default();
@@ -3809,18 +3834,18 @@ mod tests {
                 "{code}: {err}"
             );
         }
-        let err = lower_master_reset(7, Some(300), None, &mut image)
+        let err = lower_master_reset(7, Some(300), None, &mut image, &app, false)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(err.contains("EraseCode 300"), "{err}");
-        let err = lower_master_reset(7, Some(5), Some(256), &mut image)
+        let err = lower_master_reset(7, Some(5), Some(256), &mut image, &app, false)
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();
         assert!(err.contains("ChannelNumber 256"), "{err}");
         assert_eq!(
-            lower_master_reset(7, None, None, &mut image).ok(),
+            lower_master_reset(7, None, None, &mut image, &app, false).ok(),
             Some(FlashStep::MasterReset {
                 erase_code: 1,
                 channel_number: 0

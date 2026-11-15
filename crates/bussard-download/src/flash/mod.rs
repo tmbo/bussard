@@ -1514,24 +1514,26 @@ impl FlashPlan {
     /// instead would change the product's procedure, which no capture
     /// supports.
     ///
-    /// The erase codes are those of KNX 3/5/2 §3.7.1.2.3 Table 4. Only the
-    /// confirmed restart (01h, "No Resource value shall be reset") and the
-    /// individual-address reset (03h) leave every object as it is. Codes
-    /// 04h to 06h reset the application program, its parameters or the
-    /// links, 02h and 07h are factory resets, and which objects 08h and the
-    /// reserved codes touch is implementation dependent, so all of those
-    /// count as erasing. Which objects a partial reset hits on a real device
-    /// is not captured (no vendor product uses `LdCtrlMasterReset`), so the
-    /// skip is dropped for the whole plan rather than per object; the cost
-    /// is a full download, the result of a fresh one. Evidence: the
-    /// synthetic product `syn-master-reset-code4` re-flashed onto knx-sim,
-    /// whose erase code 4 unloads the loaded application object (#600).
+    /// The erase codes are those of KNX 3/5/2 §3.7.1.2.3 Table 4
+    /// ([`bussard_mgmt::apci::EraseCode::erases_objects`]). The confirmed
+    /// restart (01h, "No Resource value shall be reset") and the
+    /// individual-address reset (03h) leave every object as it is; a
+    /// product procedure's 02h and 03h are refused at plan time anyway.
+    /// Codes 04h to 06h reset the application program, its parameters or
+    /// the links, 07h is a factory reset, and which objects 00h, 08h and the
+    /// reserved codes touch is implementation dependent, so those count as
+    /// erasing. Which objects a partial reset hits on a real device is not
+    /// captured, so the skip is dropped for the whole plan rather than per
+    /// object; the cost is a full download, the result of a fresh one.
+    /// Evidence: the synthetic product `syn-master-reset-code4` re-flashed
+    /// onto knx-sim, whose erase code 4 unloads the loaded application
+    /// object (#600).
     pub fn erases_resident_objects(&self) -> bool {
         self.steps.iter().any(|s| match s {
             FlashStep::FactoryReset { .. } => true,
-            // Codes 2 and 3 never reach a plan (issue #1065).
             FlashStep::MasterReset { erase_code, .. } => {
-                *erase_code != bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART
+                bussard_mgmt::apci::EraseCode::from_code(*erase_code)
+                    .is_none_or(bussard_mgmt::apci::EraseCode::erases_objects)
             }
             _ => false,
         })
@@ -1842,6 +1844,7 @@ impl FlashPlan {
                 sys7_read_compare: self.sys7_read_compare(),
                 parameters_only: self.is_parameters_only(),
                 baseline_address: Some(&self.baseline_address),
+                sys7: self.is_sys7(),
             },
         )
     }

@@ -730,6 +730,143 @@ pub const ERASE_CODE_RESET_LINKS: u8 = 0x06;
 /// `4f a1 00 00 08`).
 pub const ERASE_CODE_FACTORY_RESET_KEEP_IA: u8 = 0x07;
 
+/// A Master Reset erase code (KNX 3/5/2 §3.7.1.2.3, Table 4) with what it
+/// resets: the per-code facts the planner and the executor share (issue
+/// #1065). Codes 08h to FFh are reserved or implementation dependent; they
+/// have no variant ([`EraseCode::from_code`] gives `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EraseCode {
+    /// 01h: confirmed restart, "no Resource value shall be reset".
+    ConfirmedRestart,
+    /// 02h: factory reset, the individual address included.
+    FactoryReset,
+    /// 03h: the individual address only.
+    ResetIa,
+    /// 04h: the application program.
+    ResetAp,
+    /// 05h: the application parameters.
+    ResetParam,
+    /// 06h: the links (address and association tables).
+    ResetLinks,
+    /// 07h: factory reset without the individual address.
+    FactoryResetKeepIa,
+}
+
+impl EraseCode {
+    /// The variant of the octet `code`, `None` for 00h and 08h to FFh.
+    pub fn from_code(code: u8) -> Option<EraseCode> {
+        Some(match code {
+            ERASE_CODE_CONFIRMED_RESTART => EraseCode::ConfirmedRestart,
+            ERASE_CODE_FACTORY_RESET => EraseCode::FactoryReset,
+            ERASE_CODE_RESET_IA => EraseCode::ResetIa,
+            ERASE_CODE_RESET_AP => EraseCode::ResetAp,
+            ERASE_CODE_RESET_PARAM => EraseCode::ResetParam,
+            ERASE_CODE_RESET_LINKS => EraseCode::ResetLinks,
+            ERASE_CODE_FACTORY_RESET_KEEP_IA => EraseCode::FactoryResetKeepIa,
+            _ => return None,
+        })
+    }
+
+    /// The octet sent in the `A_Restart` request.
+    pub fn code(self) -> u8 {
+        match self {
+            EraseCode::ConfirmedRestart => ERASE_CODE_CONFIRMED_RESTART,
+            EraseCode::FactoryReset => ERASE_CODE_FACTORY_RESET,
+            EraseCode::ResetIa => ERASE_CODE_RESET_IA,
+            EraseCode::ResetAp => ERASE_CODE_RESET_AP,
+            EraseCode::ResetParam => ERASE_CODE_RESET_PARAM,
+            EraseCode::ResetLinks => ERASE_CODE_RESET_LINKS,
+            EraseCode::FactoryResetKeepIa => ERASE_CODE_FACTORY_RESET_KEEP_IA,
+        }
+    }
+
+    /// Whether it resets the application parameters to their defaults.
+    pub fn resets_parameters(self) -> bool {
+        matches!(
+            self,
+            EraseCode::FactoryReset | EraseCode::ResetParam | EraseCode::FactoryResetKeepIa
+        )
+    }
+
+    /// Whether it erases the links: the address and association tables.
+    pub fn erases_links(self) -> bool {
+        matches!(
+            self,
+            EraseCode::FactoryReset | EraseCode::ResetLinks | EraseCode::FactoryResetKeepIa
+        )
+    }
+
+    /// Whether it erases the application program.
+    pub fn erases_application(self) -> bool {
+        matches!(
+            self,
+            EraseCode::FactoryReset | EraseCode::ResetAp | EraseCode::FactoryResetKeepIa
+        )
+    }
+
+    /// Whether it resets the individual address.
+    pub fn resets_individual_address(self) -> bool {
+        matches!(self, EraseCode::FactoryReset | EraseCode::ResetIa)
+    }
+
+    /// Whether it erases any loaded object: the application, its
+    /// parameters or the links. The confirmed restart and the individual
+    /// address reset leave every object as it is.
+    pub fn erases_objects(self) -> bool {
+        self.erases_application() || self.resets_parameters() || self.erases_links()
+    }
+
+    /// What it erases of the loaded objects, in words; `None` when it
+    /// erases none.
+    pub fn erased(self) -> Option<&'static str> {
+        match self {
+            EraseCode::ConfirmedRestart => None,
+            EraseCode::FactoryReset => {
+                Some("the application, its parameters, the links and the individual address")
+            }
+            EraseCode::ResetIa => Some("the individual address"),
+            EraseCode::ResetAp => Some("the application program"),
+            EraseCode::ResetParam => Some("the application parameters"),
+            EraseCode::ResetLinks => Some("the links (address and association tables)"),
+            EraseCode::FactoryResetKeepIa => Some("the application, its parameters and the links"),
+        }
+    }
+
+    /// The System 7 load-state machines whose content it erases: LSM 1 and
+    /// 2 (address and association table) for the links, LSM 3 for the
+    /// application program and its parameters.
+    pub fn sys7_erased_lsms(self) -> &'static [u32] {
+        match (
+            self.erases_links(),
+            self.erases_application() || self.resets_parameters(),
+        ) {
+            (true, true) => &[1, 2, 3],
+            (true, false) => &[1, 2],
+            (false, true) => &[3],
+            (false, false) => &[],
+        }
+    }
+
+    /// Whether an ETS capture shows a product procedure's Master Reset with
+    /// this code on channel 0, on System 7 (`system7`) or System B (the
+    /// sweep, house and synthetic captures, issue #1065): System B 01h,
+    /// 04h, 05h and 06h; System 7 06h then 05h (`syn-s7-master-reset`, the
+    /// Hager `M-0009_A-E0ED-10-0B6F`).
+    pub fn captured(self, system7: bool) -> bool {
+        if system7 {
+            matches!(self, EraseCode::ResetParam | EraseCode::ResetLinks)
+        } else {
+            matches!(
+                self,
+                EraseCode::ConfirmedRestart
+                    | EraseCode::ResetAp
+                    | EraseCode::ResetParam
+                    | EraseCode::ResetLinks
+            )
+        }
+    }
+}
+
 /// A decoded `A_Restart_Response`: the device's verdict on a master-reset
 /// request and how long it needs before it is reachable again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

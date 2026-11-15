@@ -54,11 +54,8 @@ use bussard_product::application::ApplicationProgram;
 /// only).
 pub(super) fn resets_parameters(erase_code: u8, channel: u8) -> bool {
     channel == 0
-        && matches!(
-            erase_code,
-            bussard_mgmt::apci::ERASE_CODE_RESET_PARAM
-                | bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA
-        )
+        && bussard_mgmt::apci::EraseCode::from_code(erase_code)
+            .is_some_and(bussard_mgmt::apci::EraseCode::resets_parameters)
 }
 
 /// What the procedure has done to the device's properties so far, as the
@@ -93,12 +90,14 @@ impl DeviceImage {
     /// The first property write sent before a master reset with
     /// `erase_code` on `channel` that the reset is known to revert (issue
     /// #1065), in words (`object 10 PID 55 element 1 = 0102…`): a reset of
-    /// every channel's parameters puts a property the program's
-    /// `LoadedImage` describes back to that value, so a write of another
-    /// value is undone. `None` when the reset resets no parameters, or the
-    /// `LoadedImage` holds each value written or describes none of those
-    /// properties: what a reset does to a property it does not describe is
-    /// not known (the flash's read-back compares it).
+    /// every channel's parameters puts what the program's `LoadedImage`
+    /// defines back, so a written octet that overlaps an entry and differs
+    /// from it in a bit the entry defines (its mask) is undone. Octets are
+    /// compared one per element (module docs), so a write inside a longer
+    /// entry is found. Equal octets, octets an entry leaves undefined and
+    /// octets no entry covers do not count: what a reset does to those is
+    /// not known, and the flash's read-back compares them. `None` when the
+    /// reset resets no parameters or undoes no write.
     pub(super) fn reverted_by(
         &self,
         erase_code: u8,
@@ -111,17 +110,27 @@ impl DeviceImage {
         self.sent
             .iter()
             .find(|(index, prop_id, start, value)| {
-                let element = u32::from(*start);
-                let described = app.factory_properties.iter().any(|f| {
-                    f.object == *index
-                        && f.prop_id == *prop_id
-                        && f.start.checked_add(1) == Some(element)
-                });
-                described
-                    && !app
-                        .factory_properties
-                        .iter()
-                        .any(|f| f.holds(*index, *prop_id, element, value))
+                let first = usize::from(start.saturating_sub(1));
+                app.factory_properties
+                    .iter()
+                    .filter(|f| f.object == *index && f.prop_id == *prop_id)
+                    .any(|f| {
+                        let entry = usize::try_from(f.start).unwrap_or(usize::MAX);
+                        value.iter().enumerate().any(|(k, written)| {
+                            let Some(at) = (first + k).checked_sub(entry) else {
+                                return false;
+                            };
+                            let Some(held) = f.data.get(at) else {
+                                return false;
+                            };
+                            let defined = f.mask.get(at).copied().unwrap_or(if f.mask.is_empty() {
+                                0xFF
+                            } else {
+                                0
+                            });
+                            (held ^ written) & defined != 0
+                        })
+                    })
             })
             .map(|(index, prop_id, start, value)| {
                 let hex: String = value.iter().map(|b| format!("{b:02X}")).collect();
@@ -293,6 +302,45 @@ mod tests {
     use super::*;
     use bussard_product::FactoryProperty;
 
+    /// A parameter reset undoes a written octet that overlaps a
+    /// `LoadedImage` entry and differs in a bit it defines (issue #1065),
+    /// also inside a longer entry; equal, undefined and uncovered octets do
+    /// not count.
+    #[test]
+    fn test_reverted_by_compares_overlapping_defined_octets() {
+        let write = |element: u16, value: &[u8]| {
+            let mut image = DeviceImage::default();
+            image.sent.push((9, 60, element, value.to_vec()));
+            image
+        };
+        let entry = |mask: Vec<u8>| ApplicationProgram {
+            factory_properties: vec![FactoryProperty {
+                object: 9,
+                prop_id: 60,
+                start: 0,
+                data: vec![1, 2, 3, 4],
+                mask,
+            }],
+            ..Default::default()
+        };
+        let full = entry(Vec::new());
+        // Element 3 of a four-element entry: equal keeps, another value is
+        // undone.
+        assert_eq!(write(3, &[3]).reverted_by(5, 0, &full), None);
+        assert_eq!(
+            write(3, &[9]).reverted_by(5, 0, &full).as_deref(),
+            Some("object 9 PID 60 element 3 = 09")
+        );
+        // Past the entry: not described, kept.
+        assert_eq!(write(5, &[9]).reverted_by(5, 0, &full), None);
+        // A bit the entry leaves undefined does not count.
+        let low = entry(vec![0xFF, 0xFF, 0x0F, 0xFF]);
+        assert_eq!(write(3, &[0x93]).reverted_by(5, 0, &low), None);
+        assert!(write(3, &[0x94]).reverted_by(5, 0, &low).is_some());
+        // A reset of the links resets no parameter.
+        assert_eq!(write(3, &[9]).reverted_by(6, 0, &full), None);
+    }
+
     fn app(held: &[(u32, u32, u32, &[u8])]) -> ApplicationProgram {
         ApplicationProgram {
             factory_properties: held
@@ -338,8 +386,9 @@ mod tests {
     #[test]
     fn test_resets_parameters_names_the_factory_and_parameter_resets() {
         let resets: Vec<u8> = (0..=8).filter(|c| resets_parameters(*c, 0)).collect();
-        // 2 never reaches a plan (refused, issue #1065).
-        assert_eq!(resets, vec![5, 7]);
+        // 2 resets the parameters too, but never reaches a plan (refused,
+        // issue #1065).
+        assert_eq!(resets, vec![2, 5, 7]);
         assert!(!resets_parameters(5, 1));
     }
 

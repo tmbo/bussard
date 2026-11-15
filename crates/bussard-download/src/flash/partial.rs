@@ -247,11 +247,16 @@ impl FlashPlan {
                 // A Master Reset on System 7 (issue #1065): the parameter-only
                 // cut writes only the parameter segments back, so it would
                 // drop or not restore what the reset erases. Refused, never
-                // dropped.
-                FlashStep::MasterReset { erase_code, .. } if self.is_sys7() => format!(
-                    "a master reset with erase code {erase_code} (LdCtrlMasterReset) on System 7, \
-                     which the parameter-only download cannot restore"
-                ),
+                // dropped. The confirmed restart (1) erases nothing.
+                FlashStep::MasterReset { erase_code, .. }
+                    if self.is_sys7()
+                        && *erase_code != bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART =>
+                {
+                    format!(
+                        "a master reset with erase code {erase_code} (LdCtrlMasterReset) on System \
+                         7, which the parameter-only download cannot restore"
+                    )
+                }
                 FlashStep::DeclareProp {
                     object, prop_id, ..
                 } if self.is_sys7() => format!(
@@ -1276,20 +1281,11 @@ fn bound_writes(steps: &[FlashStep]) -> Vec<(String, Option<u32>)> {
 /// restart) and 5 (the parameters, every one of which the procedure writes
 /// after it). KNX 3/5/2 §3.7.1.2.3, Table 4.
 fn erased_and_not_restored(erase_code: u8) -> Option<&'static str> {
-    use bussard_mgmt::apci::{
-        ERASE_CODE_CONFIRMED_RESTART, ERASE_CODE_FACTORY_RESET, ERASE_CODE_FACTORY_RESET_KEEP_IA,
-        ERASE_CODE_RESET_AP, ERASE_CODE_RESET_IA, ERASE_CODE_RESET_LINKS, ERASE_CODE_RESET_PARAM,
-    };
-    match erase_code {
-        ERASE_CODE_CONFIRMED_RESTART | ERASE_CODE_RESET_PARAM => None,
-        ERASE_CODE_FACTORY_RESET => {
-            Some("the application, its parameters, the links and the individual address")
-        }
-        ERASE_CODE_RESET_IA => Some("the individual address"),
-        ERASE_CODE_RESET_AP => Some("the application program"),
-        ERASE_CODE_RESET_LINKS => Some("the links (address and association tables)"),
-        ERASE_CODE_FACTORY_RESET_KEEP_IA => Some("the application, its parameters and the links"),
-        _ => Some("what KNX 3/5/2 does not define for that code"),
+    match bussard_mgmt::apci::EraseCode::from_code(erase_code) {
+        // The parameters: every one is written again after the reset.
+        Some(bussard_mgmt::apci::EraseCode::ResetParam) => None,
+        Some(code) => code.erased(),
+        None => Some("what KNX 3/5/2 does not define for that code"),
     }
 }
 

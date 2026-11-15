@@ -135,6 +135,12 @@ struct DeviceState {
     /// The master resets seen: erase code and the memory writes stored
     /// before it (issue #1065).
     master_resets: Vec<(u8, usize)>,
+    /// The property values written, by (object, PID, start element), read
+    /// back by `A_PropertyValue_Read` (issue #1065).
+    properties: HashMap<(u8, u8, u16), Vec<u8>>,
+    /// The values a reset of the parameters (erase codes 2, 5, 7) restores:
+    /// the program's `LoadedImage`, by (object, PID, start element).
+    factory_properties: HashMap<(u8, u8, u16), Vec<u8>>,
     /// If set, the device goes silent after this many numbered exchanges on one
     /// connection, modelling a mid-download L4 drop the tool must resume across.
     /// Only the first `deaths_remaining` connections die; later ones serve fully,
@@ -322,6 +328,8 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         memory_writes_seen: 0,
         restarts_seen: 0,
         master_resets: Vec::new(),
+        properties: HashMap::new(),
+        factory_properties: HashMap::new(),
         die_after_exchanges: None,
         deaths_remaining: 0,
         exchanges_this_connection: 0,
@@ -521,15 +529,32 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     if req_apci == bussard_mgmt::apci::A_RESTART_MASTER_RESET {
         let mut s = lock(state);
         let writes = s.memory_writes_seen;
-        s.master_resets
-            .push((payload.first().copied().unwrap_or(0), writes));
-        // The reset erases what a download left: every load-state machine
-        // back to Unloaded, the memory, and PID_DEVICE_CONTROL (RAM) with
-        // its verify mode, as the restart does.
-        for v in s.lsm_states.values_mut() {
-            *v = LS_UNLOADED;
+        let code = payload.first().copied().unwrap_or(0);
+        s.master_resets.push((code, writes));
+        // The reset erases what its erase code names (KNX 3/5/2 Table 4):
+        // the links (LSM 1 and 2) for 6, the application (LSM 3) for 4 and
+        // the parameters for 5, everything for 2 and 7, nothing for 1. An
+        // erased machine is back to Unloaded and its memory gone; a reset of
+        // the parameters puts the LoadedImage values back. PID_DEVICE_CONTROL
+        // (RAM) loses its verify mode, as on a restart.
+        let erased: &[u8] = match code {
+            1 => &[],
+            4 | 5 => &[3],
+            6 => &[1, 2],
+            _ => &[1, 2, 3],
+        };
+        for lsm in erased {
+            if let Some(v) = s.lsm_states.get_mut(lsm) {
+                *v = LS_UNLOADED;
+            }
         }
-        s.memory.clear();
+        if !erased.is_empty() {
+            s.memory.clear();
+        }
+        if matches!(code, 2 | 5 | 7) {
+            let factory = s.factory_properties.clone();
+            s.properties.extend(factory);
+        }
         s.device_control = 0;
         if s.reboot_on_restart {
             s.rebooting = true;
@@ -795,6 +820,13 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 prop_response(obj, pid, 1, start, &entry),
             );
         }
+        // A value written or restored: read back.
+        if let Some(value) = s.properties.get(&(obj, pid, start)) {
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(obj, pid, 1, start, value),
+            );
+        }
         // Anything else: count 0 (absent).
         return Reaction::Answer(
             A_PROPERTY_VALUE_RESPONSE,
@@ -854,7 +886,8 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             let events = s.lsm_events.len();
             s.device_control_after_events.push(events);
         }
-        // Echo any other property write.
+        // Store and echo any other property write.
+        s.properties.insert((obj, pid, start), value.to_vec());
         return Reaction::Answer(
             A_PROPERTY_VALUE_RESPONSE,
             prop_response(obj, pid, 1, start, value),
@@ -869,6 +902,21 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         let mut answer: Vec<u8> = payload.iter().take(2).copied().collect();
         answer.extend_from_slice(&s.function_answer);
         return Reaction::Answer(A_FUNCTION_PROPERTY_STATE_RESPONSE, answer);
+    }
+
+    // A_PropertyDescription_Read of a property the device stores (issue
+    // #1065: the description ETS reads of a property it leaves out after
+    // the parameter reset): writable, one element of one octet.
+    if req_apci == bussard_mgmt::apci::A_PROPERTY_DESCRIPTION_READ
+        && let [obj, pid, ..] = payload
+    {
+        let s = lock(state);
+        if s.properties.keys().any(|(o, p, _)| o == obj && p == pid) {
+            return Reaction::Answer(
+                bussard_mgmt::apci::A_PROPERTY_DESCRIPTION_RESPONSE,
+                vec![*obj, *pid, 0, 0x80 | 0x11, 0x00, 0x01, 0x33],
+            );
+        }
     }
 
     Reaction::Nak
@@ -5460,6 +5508,152 @@ fn test_plan_flash_sys7_property_write_before_a_reset_is_read_back()
         err.to_string().contains("after a step it would undo"),
         "{err}"
     );
+    Ok(())
+}
+
+/// A session over the System 7 mock that can reconnect after a reset.
+async fn reconnecting_session(
+    state: &Shared,
+) -> Result<(Session<LeaseConnector>, MockGateway), Box<dyn std::error::Error>> {
+    let gw = start_gateway(state).await?;
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
+        ConnectionConfig::tunnel(gw.addr())
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    );
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target: "1.1.99".parse()?,
+        source: "0.0.255".parse()?,
+        timeouts: None,
+    };
+    Ok((Session::open(connector, None, None).await?, gw))
+}
+
+/// A property write after the parameter reset whose value the program's
+/// LoadedImage holds is left out, as ETS leaves the Hager 0701 writes out
+/// after its resets (issue #1065, #951): the mock's reset with erase code 5
+/// puts the LoadedImage value back, and the read-back after the flash finds
+/// it there.
+#[tokio::test]
+async fn test_flash_sys7_write_held_after_the_parameter_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    use bussard_product::application::LoadOp;
+    let mut app = app_with_master_resets()?;
+    app.factory_properties
+        .push(bussard_product::application::FactoryProperty {
+            object: 3,
+            prop_id: 60,
+            start: 0,
+            data: vec![7],
+            mask: Vec::new(),
+        });
+    let ops = &mut app.load_procedures[0].ops;
+    let after_resets = ops
+        .iter()
+        .rposition(|op| matches!(op, LoadOp::MasterReset { .. }))
+        .ok_or("the resets")?;
+    ops.insert(
+        after_resets + 1,
+        LoadOp::WriteProp {
+            obj_idx: Some(3),
+            obj_type: None,
+            prop_id: Some(60),
+            inline_data: Some(vec![7]),
+            start_element: None,
+            count: Some(1),
+            verify: Some(false),
+            occurrence: None,
+        },
+    );
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let plan = plan_flash_default(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(
+        plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::FactoryHeldProp {
+                object: bussard_download::PropObject::Index(3),
+                prop_id: 60,
+                ..
+            }
+        )),
+        "{:?}",
+        plan.steps
+    );
+    let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
+    {
+        let mut s = lock(&state);
+        s.reboot_on_restart = true;
+        // A value from before the download, which the reset replaces.
+        s.properties.insert((3, 60, 1), vec![9]);
+        s.factory_properties.insert((3, 60, 1), vec![7]);
+    }
+    let (mut session, gw) = reconnecting_session(&state).await?;
+    // SAFETY: nextest runs each test in its own process, so this
+    // process-global env write races with no other thread.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    drop(gw);
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "the flash verifies: {outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.properties.get(&(3, 60, 1)), Some(&vec![7]));
+    Ok(())
+}
+
+/// A Master Reset on a session that could not reconnect after the reboot
+/// is refused before the reset goes out (issue #1065,
+/// `master_reset_confirmed`).
+#[tokio::test]
+async fn test_flash_sys7_master_reset_refused_without_a_reconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, _handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let mut plan = plan_flash_default(
+        &app_with_master_resets()?,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    // The pre-download pass restarts and reconnects too; this test is about
+    // the reset.
+    plan.skip_sys7_prelude();
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.99".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = authed_session(l4).await?;
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(lock(&state).master_resets.is_empty(), "no reset went out");
     Ok(())
 }
 

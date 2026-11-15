@@ -816,28 +816,22 @@ pub(super) fn plan_flash_sys7(
                 erase_code,
                 channel_number,
             } => {
-                if let Some(before) = steps.iter().find(|s| !sys7_kept_by_a_reset(s)) {
+                // A reset that erases something comes before the load only:
+                // after a load step it would erase what the steps before it
+                // wrote. The confirmed restart (erase code 1) erases nothing.
+                let restart_only = erase_code
+                    .unwrap_or(1)
+                    .eq(&u32::from(bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART));
+                if !restart_only
+                    && let Some(before) = steps.iter().find(|s| !sys7_kept_by_a_reset(s))
+                {
                     return Err(PlanError::UnsupportedOp {
                         op: format!(
                             "LdCtrlMasterReset after a step it would undo (step {step_no}, after \
-                             \"{}\"): only precondition checks, delays, earlier resets and property \
-                             writes (read back after the flash) may come before it on System 7",
+                             \"{}\"): only precondition checks, delays, MCB reads, earlier resets \
+                             and property writes (read back after the flash) may come before it \
+                             on System 7",
                             super::labels::step_label(before, &super::labels::LabelCtx::default())
-                        ),
-                    });
-                }
-                // A property write before it that the reset puts back to
-                // the program's `LoadedImage` value would be undone: refused
-                // like the other steps a reset undoes, instead of failing
-                // the read-back after every download.
-                let code = u8::try_from(erase_code.unwrap_or(1)).unwrap_or(u8::MAX);
-                let channel = u8::try_from(channel_number.unwrap_or(0)).unwrap_or(u8::MAX);
-                if let Some(write) = device_image.reverted_by(code, channel, app) {
-                    return Err(PlanError::UnsupportedOp {
-                        op: format!(
-                            "LdCtrlMasterReset with EraseCode {code} (step {step_no}) resets the \
-                             parameters and so undoes the property write before it ({write}): the \
-                             program's LoadedImage restores another value there"
                         ),
                     });
                 }
@@ -846,6 +840,8 @@ pub(super) fn plan_flash_sys7(
                     *erase_code,
                     *channel_number,
                     &mut device_image,
+                    app,
+                    true,
                 )?;
                 if let FlashStep::MasterReset { erase_code, .. } = &reset {
                     resets.push((steps.len(), step_no, *erase_code));
@@ -2138,7 +2134,8 @@ pub(super) fn mem_type_for_addr(addr: u32, profile: &bussard_mgmt::Sys7Profile) 
 /// 7 (issue #1065): a step the reset cannot undo, or one whose effect the
 /// flash checks afterwards. Precondition checks, description reads and
 /// delays change nothing; an earlier reset is undone by nothing; a
-/// declaration sends nothing; a property write, held or sent, is read back
+/// declaration sends nothing; an MCB check (`LoadImageProp`) only reads; a
+/// property write, held or sent, is read back
 /// after the flash and compared (`ExpectedProperty::from_flash_plan` takes
 /// every [`FlashStep::written_range`], issue #1073), so a reset that erased
 /// it fails the read-back. The Hager 0701 `M-0009_A-E0ED-10-0B6F` writes the
@@ -2154,55 +2151,58 @@ fn sys7_kept_by_a_reset(step: &FlashStep) -> bool {
         | FlashStep::MasterReset { .. }
         | FlashStep::DeclareProp { .. }
         | FlashStep::DescribeProp { .. }
-        | FlashStep::FactoryHeldProp { .. } => true,
+        | FlashStep::FactoryHeldProp { .. }
+        | FlashStep::LoadImageProp { .. } => true,
         _ => false,
     }
 }
 
 /// What each Master Reset of a lowered System 7 procedure erases is loaded
-/// again to `LoadCompleted` after it (issue #1065). The load-state machines
-/// a reset needs follow its erase code (KNX 3/5/2 §3.7.1.2.3, Table 4): 6
-/// (the links) the address and association tables, LSM 1 and 2; 5 (the
-/// parameters) the application, LSM 3; 4 and 7 every LSM the procedure
-/// loads. A reset followed by no load at all is refused whatever its code.
-/// `resets` holds each reset's step index, the procedure's step number and
-/// its erase code. `Err` names the reset and the machine left behind.
+/// again to `LoadCompleted` after it (issue #1065): the load-state machines
+/// its erase code erases ([`bussard_mgmt::apci::EraseCode::sys7_erased_lsms`],
+/// KNX 3/5/2 §3.7.1.2.3, Table 4): 6 (the links) LSM 1 and 2, 5 (the
+/// parameters) and 4 (the application) LSM 3, 7 all three. A reset that
+/// erases something and is followed by no load at all is refused; the
+/// confirmed restart (1) erases nothing and needs none. A completed load is
+/// a `Sys7LoadCompleted` or a `LoadCompleted` written as a property
+/// ([`FlashStep::load_state_control`], #947). `resets` holds each reset's
+/// step index, the procedure's step number and its erase code (codes Table
+/// 4 does not define are refused when lowered). `Err` names the reset and
+/// the machine left behind.
 fn sys7_reset_reloaded(
     steps: &[FlashStep],
     resets: &[(usize, usize, u8)],
 ) -> std::result::Result<(), String> {
-    let loaded: BTreeSet<u32> = steps
-        .iter()
-        .filter_map(|s| match s {
-            FlashStep::Sys7StartLoading { lsm } => Some(*lsm),
-            _ => None,
-        })
-        .collect();
     for &(at, step_no, erase_code) in resets {
+        let Some(code) = bussard_mgmt::apci::EraseCode::from_code(erase_code) else {
+            return Err(format!(
+                "the Master Reset with EraseCode {erase_code} at step {step_no} erases what KNX \
+                 3/5/2 does not define"
+            ));
+        };
+        let needed = code.sys7_erased_lsms();
+        if needed.is_empty() {
+            continue;
+        }
         let completed: BTreeSet<u32> = steps
             .get(at..)
             .unwrap_or_default()
             .iter()
             .filter_map(|s| match s {
                 FlashStep::Sys7LoadCompleted { lsm } => Some(*lsm),
-                _ => None,
+                _ => match s.load_state_control() {
+                    Some((lsm, bussard_mgmt::LoadControl::LoadCompleted)) => Some(lsm),
+                    _ => None,
+                },
             })
             .collect();
+        let erases = code.erased().unwrap_or("nothing");
         if completed.is_empty() {
             return Err(format!(
-                "the Master Reset with EraseCode {erase_code} at step {step_no} is followed by no \
-                 load to LoadCompleted"
+                "the Master Reset with EraseCode {erase_code} at step {step_no} erases {erases} \
+                 and is followed by no load to LoadCompleted"
             ));
         }
-        let (erases, needed): (&str, BTreeSet<u32>) = match erase_code {
-            bussard_mgmt::apci::ERASE_CODE_RESET_LINKS => ("the links", [1, 2].into()),
-            bussard_mgmt::apci::ERASE_CODE_RESET_PARAM => ("the parameters", [3].into()),
-            bussard_mgmt::apci::ERASE_CODE_RESET_AP
-            | bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA => {
-                ("the application", loaded.clone())
-            }
-            _ => ("nothing a load restores", BTreeSet::new()),
-        };
         if let Some(lsm) = needed.iter().find(|l| !completed.contains(l)) {
             return Err(format!(
                 "the Master Reset with EraseCode {erase_code} at step {step_no} erases {erases}, \
@@ -2486,7 +2486,9 @@ mod tests {
         assert!(with(6, &[1, 2]).is_ok());
         let err = with(6, &[1, 3]).err().unwrap_or_default();
         assert!(
-            err.contains("EraseCode 6 at step 7 erases the links, and LSM 2"),
+            err.contains(
+                "EraseCode 6 at step 7 erases the links (address and association tables), and LSM 2"
+            ),
             "{err}"
         );
         assert!(with(5, &[3]).is_ok());
@@ -2500,8 +2502,31 @@ mod tests {
             .err()
             .unwrap_or_default();
         assert!(err.contains("LSM 3 is not loaded"), "{err}");
-        let err = with(1, &[]).err().unwrap_or_default();
+        // 4 erases the application: LSM 3 only.
+        assert!(with(4, &[3]).is_ok());
+        // 7 erases the links and the application: a load of LSM 3 alone
+        // leaves the links erased.
+        let err = with(7, &[3]).err().unwrap_or_default();
+        assert!(err.contains("LSM 1 is not loaded"), "{err}");
+        assert!(with(7, &[1, 2, 3]).is_ok());
+        let err = with(5, &[]).err().unwrap_or_default();
         assert!(err.contains("followed by no load"), "{err}");
+        // The confirmed restart erases nothing.
+        assert!(with(1, &[]).is_ok());
+        // A LoadCompleted written as a property (#947) counts.
+        let completed = |lsm: u32| FlashStep::WriteProp {
+            object: crate::flash::PropObject::Index(lsm),
+            prop_id: u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL),
+            value: bussard_mgmt::LoadControl::LoadCompleted
+                .encode_full()
+                .to_vec(),
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        let steps = vec![reset(6), completed(1), completed(2)];
+        assert!(sys7_reset_reloaded(&steps, &[(0, 7, 6)]).is_ok());
     }
     use crate::flash::test_support::plan_flash_default;
 
