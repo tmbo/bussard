@@ -277,9 +277,11 @@ impl StepExecutor for System7<'_> {
             // `flash` warns.
             FlashStep::EnableVerifyMode => session.arm_verify_mode(),
             // The confirmed Master Reset of a procedure that resets the
-            // device before its load (issue #1065): the planner places it
-            // ahead of every load step, so after the reboot there is no
-            // load state or allocation to re-establish, unlike System B's.
+            // device before its load (issue #1065): the planner places an
+            // erasing reset ahead of every load step, and a confirmed
+            // restart (code 1) there or after the last LoadCompleted, so
+            // after the reboot there is no load state or allocation to
+            // re-establish, unlike System B's.
             FlashStep::MasterReset {
                 erase_code,
                 channel_number,

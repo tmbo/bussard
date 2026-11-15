@@ -138,6 +138,9 @@ struct DeviceState {
     /// The property values written, by (object, PID, start element), read
     /// back by `A_PropertyValue_Read` (issue #1065).
     properties: HashMap<(u8, u8, u16), Vec<u8>>,
+    /// How many master resets the device had seen at each
+    /// `PID_DEVICE_CONTROL` write (issue #1065).
+    device_control_after_resets: Vec<usize>,
     /// The values a reset of the parameters (erase codes 2, 5, 7) restores:
     /// the program's `LoadedImage`, by (object, PID, start element).
     factory_properties: HashMap<(u8, u8, u16), Vec<u8>>,
@@ -329,6 +332,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         restarts_seen: 0,
         master_resets: Vec::new(),
         properties: HashMap::new(),
+        device_control_after_resets: Vec::new(),
         factory_properties: HashMap::new(),
         die_after_exchanges: None,
         deaths_remaining: 0,
@@ -885,6 +889,8 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             s.device_control_at.push(at);
             let events = s.lsm_events.len();
             s.device_control_after_events.push(events);
+            let resets = s.master_resets.len();
+            s.device_control_after_resets.push(resets);
         }
         // Store and echo any other property write.
         s.properties.insert((obj, pid, start), value.to_vec());
@@ -3997,6 +4003,74 @@ async fn run_parameters_only_refuses_unloaded_lsm3(
     Ok(())
 }
 
+/// A closing confirmed restart (`LdCtrlMasterReset EraseCode="1"`) stays in
+/// the System 7 parameter-only cut as its closing restart and goes out
+/// (issue #1065): the device restarts and the download verifies.
+#[tokio::test]
+async fn test_parameters_only_sys7_keeps_a_closing_confirmed_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    use bussard_product::application::LoadOp;
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
+    let (_app, _) = parameters_only_fixture(&state, LS_LOADED)?;
+    lock(&state).reboot_on_restart = true;
+    let mut app = mdt_app_with_parameters()?;
+    for op in &mut app.load_procedures[0].ops {
+        if matches!(op, LoadOp::Restart) {
+            *op = LoadOp::MasterReset {
+                erase_code: Some(1),
+                channel_number: Some(0),
+            };
+        }
+    }
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "9".to_string())]);
+    let full = plan_flash_default(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let (mut session, gw) = reconnecting_session(&state).await?;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
+    let partial = full.parameters_only(&regions)?;
+    assert!(
+        matches!(
+            partial.steps.last(),
+            Some(FlashStep::MasterReset {
+                erase_code: 1,
+                channel_number: 0
+            })
+        ),
+        "{:?}",
+        partial.steps
+    );
+    // SAFETY: nextest runs each test in its own process, so this
+    // process-global env write races with no other thread.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    drop(gw);
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let s = lock(&state);
+    assert_eq!(
+        s.master_resets.iter().map(|r| r.0).collect::<Vec<_>>(),
+        vec![1],
+        "the closing restart went out"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_parameters_only_sys7_memory_mapped_refuses_unloaded_lsm3()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -5355,19 +5429,7 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
 -> Result<(), Box<dyn std::error::Error>> {
     let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
     lock(&state).reboot_on_restart = true;
-    let gw = start_gateway(&state).await?;
-    let (handle, _actor) = bussard_transport::bus::Bus::connect(
-        ConnectionConfig::tunnel(gw.addr())
-            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
-    );
-    handle.wait_connected(Duration::from_secs(5)).await;
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target: "1.1.99".parse()?,
-        source: "0.0.255".parse()?,
-        timeouts: None,
-    };
-    let mut session = Session::open(connector, None, None).await?;
+    let (mut session, gw) = reconnecting_session(&state).await?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash_default(
         &app_with_master_resets()?,
@@ -5405,14 +5467,22 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
     // One authorized connection at the start, one after the pre-download
     // pass's restart and one after each reset.
     assert_eq!(s.authorizes_seen, 4, "connections authorized");
-    // Verify mode is switched on after the resets, which cleared it, before
-    // the first memory write.
-    assert!(
-        s.device_control_writes
-            .iter()
-            .any(|v| v & DEVICE_CONTROL_VERIFY_MODE != 0),
-        "{:?}",
-        s.device_control_writes
+    // Verify mode is switched on after the last reset, which cleared it,
+    // and before the first memory write.
+    let switch = s
+        .device_control_writes
+        .iter()
+        .position(|v| v & DEVICE_CONTROL_VERIFY_MODE != 0)
+        .ok_or("verify mode switched on")?;
+    assert_eq!(
+        s.device_control_after_resets.get(switch),
+        Some(&2),
+        "after both resets"
+    );
+    assert_eq!(
+        s.device_control_at.get(switch).map(|at| at.1),
+        Some(0),
+        "before the first memory write"
     );
     for lsm in 1..=3 {
         assert_eq!(s.lsm_states.get(&lsm), Some(&LS_LOADED), "LSM {lsm}");
@@ -5652,7 +5722,15 @@ async fn test_flash_sys7_master_reset_refused_without_a_reconnect()
         |_| {},
     )
     .await;
-    assert!(result.is_err(), "{result:?}");
+    assert!(
+        matches!(
+            result,
+            Err(bussard_mgmt::load::WriteError::Mgmt(
+                bussard_mgmt::MgmtError::Transport(bussard_transport::TransportError::Closed)
+            ))
+        ),
+        "{result:?}"
+    );
     assert!(lock(&state).master_resets.is_empty(), "no reset went out");
     Ok(())
 }

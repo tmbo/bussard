@@ -970,7 +970,11 @@ impl FlashPlan {
         }
         if steps.iter().any(|s| {
             matches!(s, FlashStep::MasterReset { erase_code, channel_number }
-                if (*erase_code, *channel_number) != (5, 0))
+            if !super::labels::master_reset_captured(
+                *erase_code,
+                *channel_number,
+                super::labels::ResetContext::SystemBParameterOnly,
+            ))
         }) {
             out.push("a master reset other than erase code 5 on channel 0");
         }
@@ -1168,6 +1172,14 @@ impl FlashPlan {
                 FlashStep::Restart | FlashStep::Delay { .. } => {
                     steps.push(step.clone());
                 }
+                // A confirmed restart (erase code 1) erases nothing: the
+                // planner allows it before the load or after the last
+                // LoadCompleted, so the cut keeps it as the closing restart
+                // (issue #1065); an erasing reset is refused above.
+                FlashStep::MasterReset {
+                    erase_code: bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART,
+                    ..
+                } => steps.push(step.clone()),
                 // No pre-download pass (issue #488): ETS's partial download
                 // into a loaded device sends no unload and no restart before
                 // the procedure (the EK-E72 series,

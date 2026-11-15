@@ -846,25 +846,6 @@ impl EraseCode {
             (false, false) => &[],
         }
     }
-
-    /// Whether an ETS capture shows a product procedure's Master Reset with
-    /// this code on channel 0, on System 7 (`system7`) or System B (the
-    /// sweep, house and synthetic captures, issue #1065): System B 01h,
-    /// 04h, 05h and 06h; System 7 06h then 05h (`syn-s7-master-reset`, the
-    /// Hager `M-0009_A-E0ED-10-0B6F`).
-    pub fn captured(self, system7: bool) -> bool {
-        if system7 {
-            matches!(self, EraseCode::ResetParam | EraseCode::ResetLinks)
-        } else {
-            matches!(
-                self,
-                EraseCode::ConfirmedRestart
-                    | EraseCode::ResetAp
-                    | EraseCode::ResetParam
-                    | EraseCode::ResetLinks
-            )
-        }
-    }
 }
 
 /// A decoded `A_Restart_Response`: the device's verdict on a master-reset

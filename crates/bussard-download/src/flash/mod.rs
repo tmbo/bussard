@@ -1606,17 +1606,18 @@ impl FlashPlan {
     /// Master Reset before the load (the Hager 0701 shape, issue #1065) is
     /// not one. `None` when the plan ends without such a restart.
     fn terminal_restart(&self) -> Option<usize> {
+        // A load step: one that sends a load-state record (the dump's load
+        // controls, [`FlashPlan::load_control_records`]), an allocation or a
+        // memory write.
         let last_load = self.steps.iter().rposition(|s| {
-            matches!(
-                s,
-                FlashStep::LoadCompleted { .. }
-                    | FlashStep::StartLoading { .. }
-                    | FlashStep::Unload { .. }
-                    | FlashStep::Sys7LoadCompleted { .. }
-                    | FlashStep::Sys7StartLoading { .. }
-                    | FlashStep::Sys7Unload { .. }
-                    | FlashStep::TypedLoadControl { .. }
-            ) || s.load_state_control().is_some()
+            !self.load_control_records(s).is_empty()
+                || matches!(
+                    s,
+                    FlashStep::AllocateSegment { .. }
+                        | FlashStep::WriteRelMem { .. }
+                        | FlashStep::WriteMem { .. }
+                        | FlashStep::Sys7AbsSegment { .. }
+                )
         });
         let last_restart = self
             .steps
