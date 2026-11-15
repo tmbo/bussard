@@ -767,6 +767,25 @@ pub enum WriteError {
         end: usize,
     },
 
+    /// A parameter-only write whose plan leaves octets past it to the device
+    /// (issue #1065) found its segment at another base: what the device
+    /// holds in those octets there is not known; nothing was written.
+    #[error(
+        "{address}: segment {segment} moved on the allocation, and octets {start}..{end} past the \
+         write hold a parameter the parameter-only download does not write; nothing was written. \
+         Run a full `bussard flash`"
+    )]
+    HeldTailMoved {
+        /// The device.
+        address: IndividualAddress,
+        /// The code segment.
+        segment: String,
+        /// The first held octet, as an offset into the segment image.
+        start: usize,
+        /// The end of the held octets (exclusive).
+        end: usize,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),

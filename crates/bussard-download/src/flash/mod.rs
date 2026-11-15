@@ -1410,19 +1410,6 @@ impl FlashStep {
             _ => None,
         }
     }
-
-    /// The step with its held tail kept by the device: what a download whose
-    /// allocation keeps the memory sends (the parameter-only cut).
-    pub(crate) fn with_device_held_tail(mut self) -> FlashStep {
-        if let FlashStep::WriteRelMem {
-            held_tail: Some(tail),
-            ..
-        } = &mut self
-        {
-            tail.filled = false;
-        }
-        self
-    }
 }
 
 /// A run of octets of a segment a download does not write, because the load
@@ -1890,13 +1877,28 @@ impl FlashPlan {
         match step.held_tail() {
             Some(tail) if tail.filled => format!(
                 "{label}; octets {}..{} are not written: the allocation fills them with \
-                 {:#04X}, read back after the write",
+                 {:#04X}, read back after the load completes (device-managed octets excepted)",
                 tail.start, tail.end, tail.fill
             ),
             Some(tail) => format!(
-                "{label}; octets {}..{} are not written: the device keeps them, compared with \
-                 the model ({:#04X}), and only a complete download fills them",
-                tail.start, tail.end, tail.fill
+                "{label}; octets {}..{} are not written: the device keeps them; {}",
+                tail.start,
+                tail.end,
+                if tail.managed.len() == tail.end - tail.start {
+                    "they hold a device-managed value, so the device's value is kept".to_string()
+                } else if tail.managed.is_empty() {
+                    format!(
+                        "each must already hold the model's value ({:#04X}), else the plan is \
+                         refused, since only a complete download fills it",
+                        tail.fill
+                    )
+                } else {
+                    format!(
+                        "a device-managed octet keeps the device's value, any other must already \
+                         hold the model's ({:#04X}), else the plan is refused",
+                        tail.fill
+                    )
+                }
             ),
             None => label,
         }
@@ -1991,13 +1993,6 @@ impl FlashPlan {
             .filter_map(|(i, step)| Some((i, step.held_tail()?)))
     }
 
-    /// The held tail of a write into `segment`, if the plan has one.
-    pub fn held_tail_in(&self, segment: &str) -> Option<&HeldTail> {
-        self.held_tails()
-            .map(|(_, t)| t)
-            .find(|t| t.segment == segment)
-    }
-
     /// The per-octet write mask of the `len` octets a System B write of
     /// `image` streams from [`ImageRef::offset`] (`0xFF` = written, `0x00` =
     /// kept, [`KeptOctets`]), when it keeps any of them: the octets no
@@ -2041,6 +2036,38 @@ impl FlashPlan {
         self.kept.retain(|k| !k.unoccupied);
         let found = plan::unoccupied_kept(&self.steps, &self.unoccupied);
         self.kept.extend(found);
+    }
+
+    /// Sets each held tail's [`HeldTail::filled`] from the allocations as
+    /// the steps stand (issue #1065): filled where the allocation the write
+    /// lands in pre-fills (its object's latest allocation before it, else
+    /// the latest one, as the executor resolves it). Called by the planner
+    /// and again after every change of the steps or their fills
+    /// ([`FlashPlan::use_par_procedure`], [`FlashPlan::parameters_only`]),
+    /// so the tail state never outlives the allocation it rests on.
+    pub(super) fn refresh_held_tails(&mut self) {
+        let mut by_object: BTreeMap<Option<u32>, SegmentFill> = BTreeMap::new();
+        let mut last = SegmentFill::NONE;
+        for step in &mut self.steps {
+            match step {
+                FlashStep::AllocateSegment { target, fill, .. } => {
+                    by_object.insert(*target, *fill);
+                    last = *fill;
+                }
+                FlashStep::WriteRelMem {
+                    target,
+                    held_tail: Some(tail),
+                    ..
+                } => {
+                    let fill = target
+                        .filter(|t| *t != 0)
+                        .and_then(|t| by_object.get(&Some(t)).copied())
+                        .unwrap_or(last);
+                    tail.filled = fill.prefill().is_some();
+                }
+                _ => {}
+            }
+        }
     }
 
     /// The System 7 per-octet write mask for `segment_id`, when the segment

@@ -629,7 +629,12 @@ pub fn build_restore_plan(
     let wanted = backup_memory(detail, backup)?;
     let (props, properties) = backup_properties(detail, backup)?;
     let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let managed = device_managed_octets(app, &overrides, &bases);
+    let managed = device_managed_octets(
+        app,
+        &overrides,
+        &bases,
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
     let partial = detail
         .plan
         .parameters_only(&detail.regions)?

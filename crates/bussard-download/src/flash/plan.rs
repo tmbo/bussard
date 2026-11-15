@@ -1276,7 +1276,7 @@ fn plan_flash_as(
                     let end = bytes.len();
                     let managed = managed_octets
                         .get_or_insert_with(|| {
-                            crate::device_managed_octets(app, overrides, base_offsets)
+                            crate::device_managed_octets(app, overrides, base_offsets, memo)
                         })
                         .get(&segment_id)
                         .map(|m| m.range(start..end).copied().collect())
@@ -1769,6 +1769,7 @@ fn plan_flash_as(
         });
     }
     plan.refresh_unoccupied();
+    plan.refresh_held_tails();
     Ok(plan)
 }
 
@@ -2901,6 +2902,11 @@ fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> boo
         .any(|s| s.kind == SegmentKind::Relative && s.load_state_machine == Some(lsm))
 }
 
+/// A write cut short of its image whose tail a complete download's
+/// allocation fills: the octets the step writes (the op's `Size`) and that
+/// fill ([`bound_write_rel_mem`]).
+pub(super) type HeldCut = (usize, u8);
+
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).
 ///
 /// ABB Caldion `M-0002_A-4980-17-A22E-O01EC` declares a 135168-octet
@@ -2910,11 +2916,6 @@ fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> boo
 /// read-back all use the cut image, so they agree on the length. A `Size`
 /// at or above the image length, or none, keeps the image as it is.
 ///
-/// A write cut short of its image whose tail a complete download's
-/// allocation fills: the octets the step writes (the op's `Size`) and that
-/// fill ([`bound_write_rel_mem`]).
-pub(super) type HeldCut = (usize, u8);
-
 /// A parameter octet at or past `Size` refuses: cutting it would drop a
 /// configured value without a word. Unless a complete download's allocation
 /// holds it (issue #1065): an `LdCtrlRelSegment` with `Mode` bit 0 fills the

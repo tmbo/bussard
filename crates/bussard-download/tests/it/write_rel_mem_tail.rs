@@ -107,12 +107,16 @@ async fn test_flash_write_rel_mem_tail_held_by_the_fill_reads_back() -> TestResu
     Ok(())
 }
 
+/// A device that ignores the fill flag holds `0x77` at octet 15, the tail
+/// no step writes: the closing read-back after the load completes reads it
+/// and the flash is not verified (issue #1065). In `syn-writerelmem-tail`
+/// that octet belongs to the device-managed `marker`, which the read-back
+/// leaves out (the application may rewrite it at start), so the test takes
+/// the tail as not device-managed.
 #[tokio::test]
 async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() -> TestResult {
-    let plan = plan()?;
-    // A device that ignores the fill flag: it holds the fill everywhere but
-    // at octet 15, the held tail no step writes. Only the read-back of that
-    // octet can find it.
+    let managed = plan()?;
+    let plan = unmanaged(plan()?);
     let mut held = [0u8; 16];
     held[15] = 0x77;
     let faulty = device()?.with_withheld_fill().with_memory(BASE, &held);
@@ -122,15 +126,38 @@ async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() ->
         vec![0x77],
         "nothing wrote octet 15"
     );
-    // The held tail is read back right after the write, before the
-    // restart: the flash fails there, naming the octet.
-    match outcome {
-        Err(err) => assert!(err.to_string().contains("memory verify failed"), "{err}"),
-        Ok(outcome) => {
-            return Err(format!("a device without the fill verified: {outcome:?}").into());
-        }
-    }
-    assert_eq!(dev.restarts, 0, "the check runs before the restart");
+    let outcome = outcome?;
+    assert!(
+        !outcome.ok(),
+        "a device without the fill verified: {outcome:?}"
+    );
+    assert!(!outcome.spot_checks_match, "{outcome:?}");
+    // No read of the tail mid-load: every memory read of object 4 comes
+    // after the last memory write.
+    let reads = dev
+        .requests
+        .iter()
+        .enumerate()
+        .filter(|(_, (apci, _))| apci & !0x3F == bussard_testkit::consts::A_MEMORY_READ)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    let last_write = dev
+        .requests
+        .iter()
+        .rposition(|(apci, _)| apci & !0x3F == A_MEMORY_WRITE)
+        .ok_or("a memory write")?;
+    assert!(
+        reads.iter().all(|&r| r > last_write),
+        "{reads:?} {last_write}"
+    );
+    // With the marker device-managed, the same device verifies: its value
+    // there is not compared.
+    let (outcome, _) = run(
+        device()?.with_withheld_fill().with_memory(BASE, &held),
+        &managed,
+    )
+    .await?;
+    assert!(outcome?.ok());
     Ok(())
 }
 
@@ -339,14 +366,11 @@ const XML: &str = include_str!(
     "../../../../tests-support/synthetic-products/syn-writerelmem-tail/xml/M-00FA/M-00FA_A-272A-10-0000.xml"
 );
 
-/// The mask's parameter-only procedure (issue #1052) keeps the memory: with
-/// the complete download's allocation `AppliesTo="full"` (`Mode` 1) and a
-/// `par` one in `Mode` 0, as the Gira rockers state them, the `par`
-/// procedure's write of the segment has no filling allocation. The tail is
-/// device-held there, and `parameters_only` plans by that procedure (issue
-/// #1065: it failed with `ParProcedure` before).
-#[test]
-fn test_parameters_only_by_par_procedure_keeps_the_tail() -> TestResult {
+/// The complete download of `syn-writerelmem-tail` with its allocation
+/// stated twice, `AppliesTo="full"` (`Mode` 1) and `AppliesTo="par"`
+/// (`Mode` 0), as the Gira rockers state it, with the built-in 07B0 `par`
+/// procedure lowered.
+fn par_variant_plan() -> TestResult<FlashPlan> {
     let from = r#"<LdCtrlRelSegment LsmIdx="4" Size="16" Mode="1" Fill="0" />"#;
     assert!(XML.contains(from));
     let xml = XML.replace(
@@ -384,6 +408,136 @@ fn test_parameters_only_by_par_procedure_keeps_the_tail() -> TestResult {
         &BTreeMap::new(),
         &memo,
     );
+    Ok(full)
+}
+
+/// `plan` with every held tail taken as not device-managed.
+fn unmanaged(mut plan: FlashPlan) -> FlashPlan {
+    for step in &mut plan.steps {
+        if let FlashStep::WriteRelMem {
+            held_tail: Some(tail),
+            ..
+        } = step
+        {
+            tail.managed.clear();
+        }
+    }
+    plan
+}
+
+/// The fill of object 4's allocation in `plan`.
+fn object_4_fill(plan: &FlashPlan) -> Option<Option<u8>> {
+    plan.steps.iter().find_map(|s| match s {
+        FlashStep::AllocateSegment {
+            target: Some(4),
+            fill,
+            ..
+        } => Some(fill.prefill()),
+        _ => None,
+    })
+}
+
+/// A full download onto a device that already runs the application takes
+/// the product's `par` allocation (`use_par_procedure`, issue #490). Where
+/// every tail octet is device-managed (the `marker`), object 4 takes the
+/// `Mode` 0 allocation and the tail is the device's: the flash verifies and
+/// keeps octet 15, with no refusal after the first write (issue #1065).
+#[tokio::test]
+async fn test_flash_same_application_par_allocation_keeps_a_managed_tail() -> TestResult {
+    let mut plan = par_variant_plan()?;
+    assert!(plan.use_par_procedure(None));
+    assert_eq!(object_4_fill(&plan), Some(None), "the par allocation");
+    assert!(plan.held_tails().all(|(_, t)| !t.filled));
+    let mut memory = [0u8; 16];
+    memory[15] = 0x77;
+    let (outcome, dev) = run(device()?.with_memory(BASE, &memory), &plan).await?;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(dev.read_mem(BASE + 15, 1), vec![0x77], "the device's value");
+    Ok(())
+}
+
+/// Where a tail octet is not device-managed, object 4 keeps the complete
+/// procedure's filling allocation on the same path: the fill puts the
+/// model's value there and the closing read-back compares it (issue #1065).
+/// The same as `flash --full`, which takes the complete procedure whole.
+#[tokio::test]
+async fn test_flash_same_application_keeps_the_fill_for_an_unmanaged_tail() -> TestResult {
+    let mut plan = unmanaged(par_variant_plan()?);
+    plan.use_par_procedure(None);
+    assert_eq!(object_4_fill(&plan), Some(Some(0)), "the full allocation");
+    assert!(plan.held_tails().all(|(_, t)| t.filled));
+    let mut memory = [0u8; 16];
+    memory[15] = 0x77;
+    let (outcome, dev) = run(device()?.with_memory(BASE, &memory), &plan).await?;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(dev.read_mem(BASE + 15, 1), vec![0x00], "the fill");
+    // `--full`: the complete procedure as planned.
+    let full = unmanaged(par_variant_plan()?);
+    let (outcome, dev) = run(device()?.with_memory(BASE, &memory), &full).await?;
+    assert!(outcome?.ok());
+    assert_eq!(dev.read_mem(BASE + 15, 1), vec![0x00]);
+    Ok(())
+}
+
+/// A parameter-only download whose segment moved on the allocation does not
+/// write the tail at the new base, where nothing says what the device holds:
+/// refused before a write when a placed tail octet is not device-managed
+/// (issue #1065).
+#[tokio::test]
+async fn test_parameters_only_moved_segment_with_an_unmanaged_tail_is_refused() -> TestResult {
+    let full = unmanaged(plan()?);
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(&mut session, &full, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "the full flash verifies: {outcome:?}");
+    let mut regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
+    // The base the parameter-only download expects is not where the
+    // device allocates the segment.
+    for region in regions.values_mut() {
+        region.address += 0x100;
+    }
+    let partial = full.parameters_only(&regions)?;
+    let memory_writes = |d: &MockDevice| {
+        d.requests
+            .iter()
+            .filter(|(apci, _)| apci & !0x3F == A_MEMORY_WRITE)
+            .count()
+    };
+    let writes_before = gw.with_device(ia("1.1.1")?, |d| memory_writes(d))?;
+    let outcome = flash(&mut session, &partial, FlashOptions::default(), |_| {}).await;
+    let _ = session.into_disconnect().await;
+    match outcome {
+        Err(WriteError::HeldTailMoved { start, end, .. }) => assert_eq!((start, end), (15, 16)),
+        other => return Err(format!("expected HeldTailMoved, got {other:?}").into()),
+    }
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(
+        memory_writes(&dev),
+        writes_before,
+        "no memory write before the refusal"
+    );
+    Ok(())
+}
+
+/// The mask's parameter-only procedure (issue #1052) keeps the memory: with
+/// the complete download's allocation `AppliesTo="full"` (`Mode` 1) and a
+/// `par` one in `Mode` 0, as the Gira rockers state them, the `par`
+/// procedure's write of the segment has no filling allocation. The tail is
+/// device-held there, and `parameters_only` plans by that procedure (issue
+/// #1065: it failed with `ParProcedure` before).
+#[test]
+fn test_parameters_only_by_par_procedure_keeps_the_tail() -> TestResult {
+    let full = par_variant_plan()?;
     let regions = bussard_download::planned_parameter_regions(&full);
     let region = regions.values().next().ok_or("a parameter region")?;
     assert_eq!(region.bytes.len(), 16, "the planned region covers the tail");

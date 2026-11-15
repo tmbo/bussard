@@ -281,12 +281,6 @@ impl FlashPlan {
         } else {
             self.system_b_parameter_steps(regions)?
         };
-        // A tail a write leaves to its allocation (issue #1065) is kept by
-        // the device here: the parameter-only download fills nothing.
-        let steps: Vec<FlashStep> = steps
-            .into_iter()
-            .map(FlashStep::with_device_held_tail)
-            .collect();
         // The cut drops the full plan's description reads; the pass puts back
         // the ones its own writes need on its connection (issue #1014; no
         // capture of a parameter-only download shows them, the rule is the
@@ -354,33 +348,7 @@ impl FlashPlan {
                 unwritten.insert(segment.clone(), skipped);
             }
         }
-        // A tail no step writes (issue #1065, [`super::HeldTail`]): the
-        // device keeps it. A placed octet of a device-managed parameter takes
-        // the device's value; any other must already hold the model's, since
-        // only a complete download fills it.
-        for tail in steps.iter().filter_map(FlashStep::held_tail) {
-            let (Some(image), Some(current)) =
-                (images.get_mut(&tail.segment), baseline.get(&tail.segment))
-            else {
-                continue;
-            };
-            for octet in tail.start..tail.end {
-                let (Some(byte), Some(&held)) = (image.get_mut(octet), current.get(octet)) else {
-                    continue;
-                };
-                if tail.managed.contains(&octet) {
-                    *byte = held;
-                } else if *byte != held {
-                    return Err(PartialPlanError::HeldTailDiffers {
-                        segment: tail.segment.clone(),
-                        octet,
-                        device: held,
-                        model: *byte,
-                    });
-                }
-            }
-        }
-        Ok(FlashPlan {
+        let mut plan = FlashPlan {
             identity: self.identity.clone(),
             device_mask: self.device_mask,
             steps,
@@ -404,7 +372,45 @@ impl FlashPlan {
             parameters_only: true,
             kept,
             unoccupied: self.unoccupied.clone(),
-        })
+        };
+        // Whether each tail is filled follows this download's allocations
+        // (issue #1065): the parameter-only procedure's keep the memory.
+        plan.refresh_held_tails();
+        // A tail no step writes and no allocation fills (issue #1065,
+        // [`super::HeldTail`]): the device keeps it. A placed octet of a
+        // device-managed parameter takes the device's value; any other must
+        // already hold the model's, since only a complete download fills it.
+        let tails: Vec<super::HeldTail> = plan
+            .steps
+            .iter()
+            .filter_map(FlashStep::held_tail)
+            .filter(|t| !t.filled)
+            .cloned()
+            .collect();
+        for tail in tails {
+            let (Some(image), Some(current)) = (
+                plan.images.get_mut(&tail.segment),
+                plan.baseline.get(&tail.segment),
+            ) else {
+                continue;
+            };
+            for octet in tail.start..tail.end {
+                let (Some(byte), Some(&held)) = (image.get_mut(octet), current.get(octet)) else {
+                    continue;
+                };
+                if tail.managed.contains(&octet) {
+                    *byte = held;
+                } else if *byte != held {
+                    return Err(PartialPlanError::HeldTailDiffers {
+                        segment: tail.segment.clone(),
+                        octet,
+                        device: held,
+                        model: *byte,
+                    });
+                }
+            }
+        }
+        Ok(plan)
     }
 
     /// Whether an octet of `segment` is one no declared parameter occupies in

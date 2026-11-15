@@ -54,21 +54,42 @@ impl FlashPlan {
         {
             return false;
         }
+        // An object whose write leaves a tail to the allocation's fill
+        // (issue #1065, [`super::HeldTail`]) keeps the complete procedure's
+        // filling allocation unless every tail octet is device-managed: the
+        // `par` allocation keeps the memory, so a placed octet there would
+        // keep whatever the device held, which nothing on this path reads or
+        // compares. A tail of device-managed octets only (the Gira rockers'
+        // download flag) is left to the device, as on ETS's `par` path.
+        let needs_fill: Vec<Option<u32>> = self
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem {
+                    target,
+                    held_tail: Some(tail),
+                    ..
+                } if tail.managed.len() < tail.end - tail.start => Some(*target),
+                _ => None,
+            })
+            .collect();
         let mut changed = false;
         for step in &mut self.steps {
             if let FlashStep::AllocateSegment { size, target, fill } = step
                 && let Some(&(par_size, par_fill)) = self.par_allocations.get(target)
                 && par_size == *size
                 && *fill != par_fill
+                && !needs_fill.contains(target)
             {
                 *fill = par_fill;
                 changed = true;
             }
         }
         // The fill decides which octets of a segment without `<Data>` the
-        // device keeps (issue #1084).
+        // device keeps (issue #1084), and whether a held tail is filled.
         if changed {
             self.refresh_unoccupied();
+            self.refresh_held_tails();
         }
         // The objects the plan loads: an allocation or a StartLoading names them.
         let loaded: Vec<Option<u32>> =
