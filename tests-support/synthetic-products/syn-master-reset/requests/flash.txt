@@ -45,6 +45,7 @@ connect T_Connect
 descriptor type0 type=0
 disconnect T_Disconnect
 connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
 alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00
 prop-read obj4/PID_TABLE_REFERENCE count=1 index=1

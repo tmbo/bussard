@@ -28,11 +28,13 @@ connect T_Connect
 descriptor type0 type=0
 disconnect T_Disconnect
 connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
 restart Restart type=master-reset erase_code=5 channel=0
 connect T_Connect
 descriptor type0 type=0
 disconnect T_Disconnect
 connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
 mem-write 0x0104 addr_int=260 len=11 sha=90a5c18c extended=False
 mem-read 0xb6ea addr_int=46826 count=1
 mem-write 0x0104 addr_int=260 len=11 sha=fee1420e extended=False

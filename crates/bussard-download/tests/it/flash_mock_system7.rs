@@ -124,13 +124,8 @@ struct DeviceState {
     memory: HashMap<u16, u8>,
     /// Object-0 PID 78 value the MDT preflight compares against.
     pid78: Vec<u8>,
-    /// Whether the current connection may write: set per T_Connect to the
-    /// free-access level (KNX 08_03_07 §2.11.5: without an authorize the
-    /// device grants the default key's level), so `true` unless `keyed`, and
-    /// set by a granted authorize.
+    /// Whether the current connection has authorized (reset per T_Connect).
     authorized: bool,
-    /// A device with keys set: an unauthorized connection may not write.
-    keyed: bool,
     /// Count of authorize requests, so a test can assert the tool authorized.
     authorizes_seen: usize,
     /// Count of `A_Memory_Write` frames stored (the flash actually wrote).
@@ -323,7 +318,6 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         // The MDT A-000E preflight value: 00000000 03 12 00000000.
         pid78: vec![0x00, 0x00, 0x00, 0x00, 0x03, 0x12, 0x00, 0x00, 0x00, 0x00],
         authorized: false,
-        keyed: false,
         authorizes_seen: 0,
         memory_writes_seen: 0,
         restarts_seen: 0,
@@ -1024,7 +1018,7 @@ fn on_t_connect(state: &Shared) {
         s.device_control &= !DEVICE_CONTROL_VERIFY_MODE;
     }
     s.l4_connects += 1;
-    s.authorized = !s.keyed;
+    s.authorized = false;
     // The tool reconnecting after a reboot: the device is back up and answers
     // the fresh connection normally.
     s.rebooting = false;
@@ -5360,10 +5354,9 @@ async fn test_flash_sys7_master_reset_reconnects_and_verifies()
     let s = lock(&state);
     assert_eq!(s.master_resets, vec![(6, 0), (5, 0)]);
     assert!(s.memory_writes_seen > 0);
-    // One authorized connection at the start and one after the pre-download
-    // pass's restart; the reconnects after the two resets send no authorize,
-    // as ETS does (captures/synthetic/syn-s7-master-reset, issue #1065).
-    assert_eq!(s.authorizes_seen, 2, "connections authorized");
+    // One authorized connection at the start, one after the pre-download
+    // pass's restart and one after each reset.
+    assert_eq!(s.authorizes_seen, 4, "connections authorized");
     // Verify mode is switched on after the resets, which cleared it, before
     // the first memory write.
     assert!(

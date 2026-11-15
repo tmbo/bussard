@@ -69,6 +69,7 @@ connect T_Connect
 descriptor type0 type=0
 disconnect T_Disconnect
 connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
 prop-read obj4/PID_1 count=1 index=1
 prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
 mem-read 0x6000 addr_int=24576 count=4

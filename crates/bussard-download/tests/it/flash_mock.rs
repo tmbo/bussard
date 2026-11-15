@@ -355,10 +355,10 @@ struct DeviceState {
     /// can decide whether to apply `drop_loading_on_reconnect`.
     was_loading_at_disconnect: bool,
     /// Whether the current connection has been authorized (issue #52 finding #1).
-    /// Reset on every `T_Connect` to the free-access level (`true` when
-    /// `grant_level` is 0, KNX 08_03_07 §2.11.5), set `true` when an
-    /// `A_Authorize_Request` is granted. While `false`, config writes
-    /// (property/memory writes) are REFUSED: a keyed device needs the key.
+    /// Reset to `false` on every `T_Connect` (a fresh connection is a fresh
+    /// authorization context), set `true` when an `A_Authorize_Request` is granted.
+    /// While `false`, config writes (property/memory writes) are REFUSED — this
+    /// reproduces the real device semantic and proves authorize is required.
     authorized: bool,
     /// The access level the device grants in its `A_Authorize_Response`. `0` (the
     /// default) means full access; a non-zero value models a keyed device denying
@@ -1521,14 +1521,9 @@ fn on_control(state: &Shared, kind: TpciKind) -> Vec<Step> {
             }
             s.exchanges_this_connection = 0;
             s.write_phase_exchanges = None;
-            // A fresh connection is a fresh authorization context. It has the
-            // access level of the default key (KNX 08_03_07 §2.11.5: without
-            // an authorize, a device grants the level a free-access authorize
-            // would), so a device whose free-access level is 0 takes writes
-            // unauthorized, as after the reconnect following a master reset,
-            // where ETS sends no authorize (issue #1065). A keyed device
-            // (`grant_level` > 0) still refuses them.
-            s.authorized = s.grant_level == 0;
+            // A fresh connection is a fresh authorization context: the
+            // session must re-authorize before any config write.
+            s.authorized = false;
             // A fresh connection after a master-reset reboot: the device
             // is alive again on the new link.
             s.l4_dead_after_master_reset = false;
@@ -3381,13 +3376,10 @@ async fn flash_sends_free_access_authorize_and_the_gate_opens() -> TestResult {
 
 #[tokio::test]
 async fn flash_without_authorize_is_refused_by_the_gate() -> TestResult {
-    // The regression that proves authorize is REQUIRED on a keyed device: wrap
-    // the raw connection in a session WITHOUT authorizing
-    // (Session::from_connection directly), so the first config write hits the
-    // closed gate and is NAKed. A device without keys grants an unauthorized
-    // connection the free-access level (KNX 08_03_07 §2.11.5).
-    let (mut bus, state, handle) = setup(Fault::None).await?;
-    lock(&state)?.grant_level = 1;
+    // The regression that proves authorize is REQUIRED: wrap the raw connection
+    // in a session WITHOUT authorizing (Session::from_connection directly), so the
+    // first config write hits the closed gate and is NAKed.
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
@@ -3677,7 +3669,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
     // the L4 connection), and — modelling KNX Virtual's EraseCode=4 reset — ERASES
     // the app object's load state (back to Unloaded) and DROPS the segment
     // allocated before the reset (the mock's `wipe_app_on_master_reset`, enabled
-    // below). The engine must reconnect, RE-RUN the load-control
+    // below). The engine must reconnect, re-authorize, RE-RUN the load-control
     // sequence (StartLoading + re-allocate) so the segment is re-established at its
     // fresh device-placed base, and only then resume the write — exactly as ETS
     // does after the reset in the real KV capture. A tool that naively resumed
@@ -3766,12 +3758,10 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
             "the engine must reconnect after the reboot (connects = {})",
             s.connects
         );
-        // The reconnect after the master reset sends no authorize with the
-        // free-access key, as ETS does in every master-reset capture (issue
-        // #1065); only the first connection authorized.
-        assert_eq!(
-            s.authorizes_seen, 1,
-            "no authorize after the master-reset reconnect (authorizes = {})",
+        // The tool re-authorized on the fresh connection (one per connection window).
+        assert!(
+            s.authorizes_seen >= 2,
+            "the engine must re-authorize after the reconnect (authorizes = {})",
             s.authorizes_seen
         );
         // The master reset erased the object, so the re-allocation after the
