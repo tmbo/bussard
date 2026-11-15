@@ -820,13 +820,14 @@ VARIANTS: dict[str, dict] = {
               "doc": "the switch object linked to two group addresses and the status object to one "
                      "(driver `link`), then the application download (#478, #540)"},
     "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure", "syn-minimal", "syn-secure-fill",
-                           "syn-bcu2-0021"),
+                           "syn-bcu2-0021", "syn-writerelmem-tail"),
                "doc": "a defaults download, then the same application again over the loaded device; "
                       "the capture is the second download (#488; on syn-secure the second download runs over "
                       "the device the first one activated, with ETS's tool key, #1054; on syn-minimal and "
                       "syn-secure-fill over a programmed System B device, where ETS sends no factory reset, "
                       "#1056, #1081; on syn-bcu2-0021 over a loaded BCU 2, whether ETS sends a Master Reset "
-                      "or unloads first, #525)"},
+                      "or unloads first, #525; on syn-writerelmem-tail what ETS leaves in the octet past the "
+                      "write, #1065)"},
     "other-app": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-minimal", "syn-secure-fill"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
                          "over it; the capture is the second download (#488; on syn-secure-fill another "
@@ -842,10 +843,10 @@ VARIANTS: dict[str, dict] = {
                             "and ETS's partial download; the capture is the partial download, compared with "
                             "`bussard apply`: what ETS sends and how many restarts for a combined change (#1095)"},
     "partial": {"products": ("syn-minimal", "syn-property-param", "syn-property-nopar", "syn-trailing-writeprop",
-                             "syn-s7-0705", "syn-secure"),
+                             "syn-s7-0705", "syn-secure", "syn-writerelmem-tail"),
                 "doc": "a defaults download, a parameter changed in ETS's parameter editor, then ETS's "
                        "partial download; the capture is the partial download (#543, #490; property-only "
-                       "programs #944, #1052, #1038; Data Secure #1054)"},
+                       "programs #944, #1052, #1038; Data Secure #1054; the octet past the write #1065)"},
     "calc-input": {"products": ("syn-param-calculation",),
                    "doc": "the input of the ParameterCalculation changed in ETS's parameter editor, then the "
                           "application download into a fresh device (#427)"},

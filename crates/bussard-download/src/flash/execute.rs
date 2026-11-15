@@ -635,20 +635,6 @@ impl StepExecutor for SystemB<'_> {
                     .and_then(|obj| self.segment_fills.get(&obj).copied())
                     .unwrap_or(self.last_alloc_fill)
                     .prefill();
-                // A tail the plan leaves to this write's allocation (issue
-                // #1065, [`super::HeldTail`]) needs an allocation that fills:
-                // without one nothing would put the fill there, so nothing
-                // is written.
-                if let Some(tail) = held_tail.as_ref().filter(|t| t.filled)
-                    && fill.is_none()
-                {
-                    return Err(WriteError::HeldTailNotFilled {
-                        address: session.l4().target(),
-                        segment: image.segment_id.clone(),
-                        start: tail.start,
-                        end: tail.end,
-                    });
-                }
                 // The device-supplied segment base plus the vendor offset must fit
                 // the 24-bit extended-memory space. `write_image` picks the plain
                 // A_Memory_Write (≤0xFFFF, byte-identical to before) or the
@@ -717,18 +703,16 @@ impl StepExecutor for SystemB<'_> {
                         // written; at the new base nothing says what the
                         // device holds there, so a placed octet of it that
                         // is not device-managed could not be trusted.
-                        if let Some(tail) = held_tail.as_ref() {
-                            let placed = plan.placed.get(&image.segment_id);
-                            if (tail.start..tail.end).any(|o| {
-                                placed.is_some_and(|p| p.contains(&o)) && !tail.managed.contains(&o)
-                            }) {
-                                return Err(WriteError::HeldTailMoved {
-                                    address: session.l4().target(),
-                                    segment: image.segment_id.clone(),
-                                    start: tail.start,
-                                    end: tail.end,
-                                });
-                            }
+                        if let Some(tail) = held_tail.as_ref().filter(|t| {
+                            t.needs_model_value(image, plan.placed.get(&image.segment_id))
+                        }) {
+                            let range = tail.range(image);
+                            return Err(WriteError::HeldTailMoved {
+                                address: session.l4().target(),
+                                segment: image.segment_id.clone(),
+                                start: range.start,
+                                end: range.end,
+                            });
                         }
                         self.warnings.push(format!(
                             "segment {} moved from {} to {addr:#X} on the allocation; \
@@ -835,34 +819,34 @@ impl StepExecutor for SystemB<'_> {
                     ));
                 }
                 // The held tail (issue #1065, [`super::HeldTail`]): the
-                // octets past the op's `Size` that the filling allocation
-                // holds. Nothing writes them, so they join the closing
-                // read-back after the load completes, where the other samples
-                // are read (no read mid-load, which ETS never sends), the
-                // octets of a device-managed parameter masked out (the
-                // application may rewrite those at start). A device that did
-                // not fill fails that read-back. A device-held tail (the
-                // parameter-only download) is read and compared by the
-                // parameter read-back instead.
-                if let Some(tail) = held_tail.as_ref().filter(|t| t.filled) {
-                    let segment = obj.map(|obj| (obj, image.segment_id.clone()));
-                    for (k, chunk) in (tail.start..tail.end)
-                        .collect::<Vec<_>>()
-                        .chunks(HELD_TAIL_SAMPLE)
-                        .enumerate()
-                    {
-                        let mask: Vec<u8> = chunk
-                            .iter()
-                            .map(|o| if tail.managed.contains(o) { 0x00 } else { 0xFF })
-                            .collect();
-                        if mask.iter().all(|m| *m == 0) {
-                            continue;
-                        }
-                        let first = tail.start + k * HELD_TAIL_SAMPLE;
+                // octets past the op's `Size` that a filling allocation holds.
+                // Nothing writes them, so they join the closing read-back
+                // after the load completes, where the other samples are read
+                // (no read mid-load, which ETS never sends), the octets of a
+                // device-managed parameter masked out (the application may
+                // rewrite those at start); a tail of such octets only is not
+                // read. A device that did not fill fails that read-back. A
+                // tail no allocation fills is a range the device keeps
+                // ([`super::KeptOctets::held_tail`]).
+                if let Some(tail) = held_tail.as_ref()
+                    && let Some(fill) = fill
+                {
+                    let range = tail.range(image);
+                    let mask: Vec<u8> = range
+                        .clone()
+                        .map(|o| {
+                            if tail.managed.contains(&o) {
+                                0x00
+                            } else {
+                                0xFF
+                            }
+                        })
+                        .collect();
+                    if mask.contains(&0xFF) {
                         self.written_samples.push(WrittenSample {
-                            address: addr + (first - image.offset) as u32,
-                            bytes: vec![tail.fill; chunk.len()],
-                            segment: segment.clone(),
+                            address: addr + (range.start - image.offset) as u32,
+                            bytes: vec![fill; mask.len()],
+                            segment: obj.map(|obj| (obj, image.segment_id.clone())),
                             mask: Some(mask),
                         });
                     }
@@ -1844,10 +1828,6 @@ async fn run_system_b<C: Connector, F: FnMut(Progress)>(
     outcome.warnings = exec.warnings;
     Ok(outcome)
 }
-
-/// The octets of a held tail (issue #1065) one read-back sample spans, as
-/// many as [`super::verify::take_sample`] keeps of a write.
-const HELD_TAIL_SAMPLE: usize = 4;
 
 /// The historic merge gap: runs separated by at most this many octets are
 /// written as one. System 7 parameter-only downloads keep it (their

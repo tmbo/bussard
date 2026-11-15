@@ -451,8 +451,16 @@ pub fn add_par_procedure(
     // (issue #1065): the parameter-only procedure keeps the memory there, so
     // the device holds what the complete download left.
     let complete_tails: BTreeMap<String, (u8, usize)> = plan
-        .held_tails()
-        .map(|(_, t)| (t.segment.clone(), (t.fill, t.end)))
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::WriteRelMem {
+                image,
+                held_tail: Some(t),
+                ..
+            } => Some((image.segment_id.clone(), (t.fill, t.end))),
+            _ => None,
+        })
         .collect();
     plan.par_steps = Some(
         plan_flash_as(
@@ -1281,14 +1289,7 @@ fn plan_flash_as(
                         .get(&segment_id)
                         .map(|m| m.range(start..end).copied().collect())
                         .unwrap_or_default();
-                    super::HeldTail {
-                        segment: segment_id.clone(),
-                        start,
-                        end,
-                        fill,
-                        filled: prefill.is_some(),
-                        managed,
-                    }
+                    super::HeldTail { end, fill, managed }
                 });
                 images.insert(segment_id.clone(), bytes);
                 let image = ImageRef {
@@ -1769,7 +1770,6 @@ fn plan_flash_as(
         });
     }
     plan.refresh_unoccupied();
-    plan.refresh_held_tails();
     Ok(plan)
 }
 
@@ -2484,6 +2484,7 @@ fn kept_from(
                 ranges,
                 address: None,
                 unoccupied: false,
+                held_tail: None,
             })
         })
         .collect()
@@ -2623,6 +2624,7 @@ pub(super) fn unoccupied_kept(
                     ranges,
                     address: None,
                     unoccupied: true,
+                    held_tail: None,
                 });
             }
             _ => {}
@@ -2993,23 +2995,29 @@ pub(super) fn bound_write_rel_mem(
 /// tail is never written.
 fn check_held_tails(steps: &[FlashStep]) -> std::result::Result<(), PlanError> {
     for (i, step) in steps.iter().enumerate() {
-        let Some(tail) = step.held_tail() else {
+        let FlashStep::WriteRelMem {
+            image: held_image,
+            held_tail: Some(tail),
+            ..
+        } = step
+        else {
             continue;
         };
+        let held = tail.range(held_image);
         for (j, other) in steps.iter().enumerate() {
             let FlashStep::WriteRelMem { image, .. } = other else {
                 continue;
             };
             let (start, end) = (image.offset, image.offset.saturating_add(image.len));
-            if image.segment_id == tail.segment && start < tail.end && tail.start < end {
+            if image.segment_id == held_image.segment_id && start < held.end && held.start < end {
                 return Err(PlanError::UnresolvableImage {
                     step: j + 1,
                     reason: format!(
                         "segment {} octets {start}..{end} overlap octets {}..{} that step {} \
                          leaves to the allocation's fill",
-                        tail.segment,
-                        tail.start,
-                        tail.end,
+                        image.segment_id,
+                        held.start,
+                        held.end,
                         i + 1
                     ),
                 });
@@ -3017,6 +3025,48 @@ fn check_held_tails(steps: &[FlashStep]) -> std::result::Result<(), PlanError> {
         }
     }
     Ok(())
+}
+
+/// The [`KeptOctets`] of the tails past the writes of `steps` (issue #1065,
+/// [`super::HeldTail`]) whose allocation ([`write_allocation`]) does not
+/// fill them: the device keeps those octets, as it keeps the unoccupied
+/// octets of such an allocation ([`unoccupied_kept`]). A write the plan
+/// cannot bind to an allocation is taken as not filled.
+pub(super) fn held_tails_kept(steps: &[FlashStep]) -> Vec<KeptOctets> {
+    let mut allocs: Vec<(Option<u32>, SegmentFill, u32)> = Vec::new();
+    let mut out: Vec<KeptOctets> = Vec::new();
+    for step in steps {
+        match step {
+            FlashStep::AllocateSegment { target, fill, size } => {
+                allocs.push((*target, *fill, *size));
+            }
+            FlashStep::WriteRelMem {
+                image,
+                target,
+                held_tail: Some(tail),
+                ..
+            } => {
+                let bound = write_allocation(&allocs, *target);
+                if bound.is_some_and(|(_, fill, _)| fill.prefill().is_some()) {
+                    continue;
+                }
+                let range = tail.range(image);
+                out.push(KeptOctets {
+                    object: target
+                        .or(bound.and_then(|(object, _, _)| object))
+                        .unwrap_or(0),
+                    segment: image.segment_id.clone(),
+                    allocated: tail.end,
+                    ranges: vec![(range.start, range.end)],
+                    address: None,
+                    unoccupied: false,
+                    held_tail: Some(tail.managed.clone()),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Resolves the bytes a `WriteRelMem` streams from its `AppliesTo` hint. `full`
@@ -3521,11 +3571,8 @@ mod tests {
             },
             target: Some(4),
             held_tail: held.then(|| super::super::HeldTail {
-                segment: "RS".to_string(),
-                start: offset + len,
                 end: 16,
                 fill: 0,
-                filled: true,
                 managed: Default::default(),
             }),
         };

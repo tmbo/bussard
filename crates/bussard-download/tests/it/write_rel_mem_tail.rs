@@ -108,13 +108,14 @@ async fn test_flash_write_rel_mem_tail_held_by_the_fill_reads_back() -> TestResu
 }
 
 /// A device that ignores the fill flag holds `0x77` at octet 15, the tail
-/// no step writes: the closing read-back after the load completes reads it
-/// and the flash is not verified (issue #1065). In `syn-writerelmem-tail`
-/// that octet belongs to the device-managed `marker`, which the read-back
-/// leaves out (the application may rewrite it at start), so the test takes
-/// the tail as not device-managed.
+/// no step writes: where that octet is not device-managed, the closing
+/// read-back after the load completes reads it and the flash is not
+/// verified (issue #1065). In `syn-writerelmem-tail` the octet belongs to
+/// the device-managed `marker`: then nothing reads the tail at all (the
+/// application may rewrite it at start), and the same device verifies.
 #[tokio::test]
-async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() -> TestResult {
+async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back_unless_managed()
+-> TestResult {
     let managed = plan()?;
     let plan = unmanaged(plan()?);
     let mut held = [0u8; 16];
@@ -168,6 +169,47 @@ async fn test_flash_write_rel_mem_tail_without_the_fill_fails_the_read_back() ->
 async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult {
     let mut plan = plan()?;
     let image = plan
+        .held_tails()
+        .map(|(_, image, _)| image.clone())
+        .next()
+        .ok_or("a held tail")?;
+    assert_eq!(image.len, 15, "the step writes the op's Size");
+    assert_eq!(
+        plan.image_bytes(&image.segment_id).map(<[u8]>::len),
+        Some(16)
+    );
+    with_object_4_mcb_check(&mut plan)?;
+    let (outcome, _) = run(device()?.with_mcb_tables(), &plan).await?;
+    let outcome = outcome?;
+    assert!(
+        outcome.ok(),
+        "the MCB check and the read-back pass: {outcome:?}"
+    );
+    Ok(())
+}
+
+/// The plan records the held tail on its write step (issue #1065): its end,
+/// the fill and the octets of the device-managed `marker` (`Access="None"`,
+/// octets 12 to 15). The complete download's allocation fills it, so no
+/// range is kept.
+#[test]
+fn test_plan_flash_write_rel_mem_tail_is_plan_state() -> TestResult {
+    let plan = plan()?;
+    let tails: Vec<_> = plan.held_tails().collect();
+    assert_eq!(tails.len(), 1, "{tails:?}");
+    let (index, image, tail) = tails[0];
+    assert!(matches!(&plan.steps[index], FlashStep::WriteRelMem { .. }));
+    assert_eq!((image.offset, image.len), (0, 15));
+    assert_eq!((tail.range(image), tail.fill), (15..16, 0));
+    assert_eq!(tail.managed.iter().copied().collect::<Vec<_>>(), vec![15]);
+    assert!(!plan.keeps_held_tail(image));
+    assert!(plan.kept().is_empty());
+    Ok(())
+}
+
+/// Puts a check of object 4's MCB before the plan's closing restart.
+fn with_object_4_mcb_check(plan: &mut FlashPlan) -> TestResult {
+    let image = plan
         .steps
         .iter()
         .find_map(|s| match s {
@@ -177,11 +219,6 @@ async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult
             _ => None,
         })
         .ok_or("a parameter write")?;
-    assert_eq!(image.len, 15, "the step writes the op's Size");
-    assert_eq!(
-        plan.image_bytes(&image.segment_id).map(<[u8]>::len),
-        Some(16)
-    );
     let restart = plan
         .steps
         .iter()
@@ -196,64 +233,6 @@ async fn test_flash_write_rel_mem_tail_mcb_covers_the_allocation() -> TestResult
             image: Some(image),
             advisory: false,
         },
-    );
-    let (outcome, _) = run(device()?.with_mcb_tables(), &plan).await?;
-    let outcome = outcome?;
-    assert!(
-        outcome.ok(),
-        "the MCB check and the read-back pass: {outcome:?}"
-    );
-    Ok(())
-}
-
-/// The plan records the held tail on its write step (issue #1065): range,
-/// fill, filled by the step's own allocation, and the octets of the
-/// device-managed `marker` (`Access="None"`, octets 12 to 15).
-#[test]
-fn test_plan_flash_write_rel_mem_tail_is_plan_state() -> TestResult {
-    let plan = plan()?;
-    let tails: Vec<(usize, &bussard_download::HeldTail)> = plan.held_tails().collect();
-    assert_eq!(tails.len(), 1, "{tails:?}");
-    let (index, tail) = tails[0];
-    assert!(matches!(
-        &plan.steps[index],
-        FlashStep::WriteRelMem { image, .. } if image.len == 15 && image.offset == 0
-    ));
-    assert_eq!(
-        (tail.start, tail.end, tail.fill, tail.filled),
-        (15, 16, 0, true)
-    );
-    assert_eq!(tail.managed.iter().copied().collect::<Vec<_>>(), vec![15]);
-    assert!(plan.kept().is_empty());
-    Ok(())
-}
-
-/// A write whose tail the plan leaves to the allocation is refused before
-/// a byte goes out when the allocation fills nothing (issue #1065).
-#[tokio::test]
-async fn test_flash_write_rel_mem_tail_without_a_filling_allocation_fails() -> TestResult {
-    let mut plan = plan()?;
-    for step in &mut plan.steps {
-        if let FlashStep::AllocateSegment {
-            target: Some(4),
-            fill,
-            ..
-        } = step
-        {
-            *fill = bussard_download::flash::SegmentFill::NONE;
-        }
-    }
-    let (outcome, dev) = run(device()?, &plan).await?;
-    match outcome {
-        Err(WriteError::HeldTailNotFilled { start, end, .. }) => {
-            assert_eq!((start, end), (15, 16));
-        }
-        other => return Err(format!("expected HeldTailNotFilled, got {other:?}").into()),
-    }
-    assert_eq!(
-        last_written_octet(&dev),
-        None,
-        "nothing written to object 4"
     );
     Ok(())
 }
@@ -316,7 +295,11 @@ async fn test_parameters_only_write_rel_mem_tail_is_device_held() -> TestResult 
     assert_eq!(region.bytes[15], 0x77);
     let partial = partial?;
     assert_eq!(partial.changed_octets(), 0);
-    assert!(partial.held_tails().all(|(_, t)| !t.filled));
+    assert!(
+        partial
+            .held_tails()
+            .all(|(_, image, _)| partial.keeps_held_tail(image))
+    );
     let outcome = outcome.ok_or("the parameter-only download ran")?;
     assert!(
         outcome.ok(),
@@ -447,10 +430,19 @@ async fn test_flash_same_application_par_allocation_keeps_a_managed_tail() -> Te
     let mut plan = par_variant_plan()?;
     assert!(plan.use_par_procedure(None));
     assert_eq!(object_4_fill(&plan), Some(None), "the par allocation");
-    assert!(plan.held_tails().all(|(_, t)| !t.filled));
+    assert!(
+        plan.held_tails()
+            .all(|(_, image, _)| plan.keeps_held_tail(image))
+    );
+    // The MCB covers the device's 0x77 in the tail: read, not compared.
+    with_object_4_mcb_check(&mut plan)?;
     let mut memory = [0u8; 16];
     memory[15] = 0x77;
-    let (outcome, dev) = run(device()?.with_memory(BASE, &memory), &plan).await?;
+    let (outcome, dev) = run(
+        device()?.with_mcb_tables().with_memory(BASE, &memory),
+        &plan,
+    )
+    .await?;
     let outcome = outcome?;
     assert!(outcome.ok(), "{outcome:?}");
     assert_eq!(dev.read_mem(BASE + 15, 1), vec![0x77], "the device's value");
@@ -466,7 +458,10 @@ async fn test_flash_same_application_keeps_the_fill_for_an_unmanaged_tail() -> T
     let mut plan = unmanaged(par_variant_plan()?);
     plan.use_par_procedure(None);
     assert_eq!(object_4_fill(&plan), Some(Some(0)), "the full allocation");
-    assert!(plan.held_tails().all(|(_, t)| t.filled));
+    assert!(
+        plan.held_tails()
+            .all(|(_, image, _)| !plan.keeps_held_tail(image))
+    );
     let mut memory = [0u8; 16];
     memory[15] = 0x77;
     let (outcome, dev) = run(device()?.with_memory(BASE, &memory), &plan).await?;
@@ -547,9 +542,10 @@ fn test_parameters_only_by_par_procedure_keeps_the_tail() -> TestResult {
         bussard_download::ProcedureKind::ParametersByPar
     );
     assert_eq!(partial.changed_octets(), 0);
-    let tails: Vec<_> = partial.held_tails().map(|(_, t)| t.clone()).collect();
+    let tails: Vec<_> = partial.held_tails().collect();
     assert_eq!(tails.len(), 1, "{tails:?}");
-    assert!(!tails[0].filled);
-    assert_eq!((tails[0].start, tails[0].end, tails[0].fill), (15, 16, 0));
+    let (_, image, tail) = tails[0];
+    assert!(partial.keeps_held_tail(image));
+    assert_eq!((tail.range(image), tail.fill), (15..16, 0));
     Ok(())
 }

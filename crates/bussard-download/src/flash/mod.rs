@@ -1369,37 +1369,49 @@ pub(super) struct Unoccupied {
 
 /// The octets of a segment image past a `WriteRelMem`'s `Size` that the step
 /// does not write (issue #1065: the Gira push-button rockers place a 32-bit
-/// `_Allg_Download` whose last octet lies past the write). A complete
-/// download's allocation fills them (`LdCtrlRelSegment` `Mode` bit 0) with
-/// the value the image holds there; the plan refuses a tail that holds
-/// anything else.
+/// `_Allg_Download` whose last octet lies past the write), from the end of
+/// the step's part ([`ImageRef::offset`] + [`ImageRef::len`]) to
+/// [`Self::end`]. A complete download's allocation fills them
+/// (`LdCtrlRelSegment` `Mode` bit 0) with the value the image holds there;
+/// the plan refuses a tail that holds anything else.
 ///
-/// - **Filled** ([`Self::filled`]): the write's own allocation fills the
-///   tail. The executor refuses the write when that allocation fills
-///   nothing, and reads the tail back right after the write, before any
-///   restart, failing the flash when the device does not hold the fill.
-/// - **Device-held** (the parameter-only download, an allocation that keeps
-///   the memory): nothing fills and nothing writes the tail. The parameter
-///   read-back reads it from the device; the parameter-only plan compares it
-///   with the model, except the octets of a device-managed parameter
-///   ([`Self::managed`]), and refuses a difference, since only a complete
-///   download fills it.
+/// Whether a download fills the tail follows the allocation the write binds
+/// to ([`plan::write_allocation`]), as the steps stand:
+///
+/// - **Filled**: the closing read-back after the load completes compares
+///   the tail with the fill, the octets of a device-managed parameter
+///   ([`Self::managed`]) left out; a tail of such octets only is not read.
+/// - **Not filled** (the parameter-only download, the `par` allocation of a
+///   same-application download): the tail is a [`KeptOctets`] range the
+///   device keeps, with the managed octets ([`KeptOctets::held_tail`]). The
+///   parameter-only plan compares each placed octet that is not managed
+///   with the model ([`Self::needs_model_value`]) and refuses a difference,
+///   since only a complete download fills it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldTail {
-    /// The code-segment id of the segment.
-    pub segment: String,
-    /// The held octets, `[start, end)` as offsets into the segment image:
-    /// `start` is where the write ends.
-    pub start: usize,
-    /// See [`Self::start`].
+    /// The end of the held octets (exclusive), as an offset into the
+    /// segment image.
     pub end: usize,
     /// The fill a complete download's allocation leaves in every held octet.
     pub fill: u8,
-    /// Whether this download's allocation fills the tail.
-    pub filled: bool,
     /// The held octets of a device-managed parameter (`Access="None"`, the
     /// ones `bussard restore --parameters` leaves alone): never compared.
     pub managed: BTreeSet<usize>,
+}
+
+impl HeldTail {
+    /// The held octets of the write of `image`, `[start, end)` as offsets
+    /// into the segment image.
+    pub fn range(&self, image: &ImageRef) -> std::ops::Range<usize> {
+        image.offset.saturating_add(image.len)..self.end
+    }
+
+    /// Whether the tail needs the model's value: an octet of it carries a
+    /// parameter (`placed`) that is not device-managed.
+    pub fn needs_model_value(&self, image: &ImageRef, placed: Option<&BTreeSet<usize>>) -> bool {
+        self.range(image)
+            .any(|o| placed.is_some_and(|p| p.contains(&o)) && !self.managed.contains(&o))
+    }
 }
 
 impl FlashStep {
@@ -1469,6 +1481,10 @@ pub struct KeptOctets {
     /// branch's gap (issue #411). No parameter lives in them, so the model
     /// holds no value there to compare or report.
     pub unoccupied: bool,
+    /// For the tail of a write that the download does not fill (issue
+    /// #1065, [`HeldTail`]): its device-managed octets. `None` for any other
+    /// kept range.
+    pub held_tail: Option<BTreeSet<usize>>,
 }
 
 impl KeptOctets {
@@ -1874,34 +1890,47 @@ impl FlashPlan {
         );
         // The held tail of a write (issue #1065): named, so a download that
         // leaves octets to the allocation says so.
-        match step.held_tail() {
-            Some(tail) if tail.filled => format!(
-                "{label}; octets {}..{} are not written: the allocation fills them with \
-                 {:#04X}, read back after the load completes (device-managed octets excepted)",
-                tail.start, tail.end, tail.fill
-            ),
-            Some(tail) => format!(
-                "{label}; octets {}..{} are not written: the device keeps them; {}",
-                tail.start,
-                tail.end,
-                if tail.managed.len() == tail.end - tail.start {
-                    "they hold a device-managed value, so the device's value is kept".to_string()
-                } else if tail.managed.is_empty() {
-                    format!(
-                        "each must already hold the model's value ({:#04X}), else the plan is \
-                         refused, since only a complete download fills it",
-                        tail.fill
-                    )
+        let FlashStep::WriteRelMem {
+            image,
+            held_tail: Some(tail),
+            ..
+        } = step
+        else {
+            return label;
+        };
+        let range = tail.range(image);
+        let all_managed = range.clone().all(|o| tail.managed.contains(&o));
+        let what = match (self.keeps_held_tail(image), all_managed) {
+            (false, false) => format!(
+                "the allocation fills them with {:#04X}, compared by the read-back after the load \
+                 completes (device-managed octets excepted){}",
+                tail.fill,
+                if self.par_procedure {
+                    "; this object keeps the complete procedure's filling allocation on a \
+                     same-application download (not confirmed by a capture)"
                 } else {
-                    format!(
-                        "a device-managed octet keeps the device's value, any other must already \
-                         hold the model's ({:#04X}), else the plan is refused",
-                        tail.fill
-                    )
+                    ""
                 }
             ),
-            None => label,
-        }
+            (false, true) => format!(
+                "the allocation fills them with {:#04X}; they hold a device-managed value, so no \
+                 read-back compares them",
+                tail.fill
+            ),
+            (true, true) => "the device keeps them; they hold a device-managed value, so the \
+                             device's value is kept (not confirmed by a capture)"
+                .to_string(),
+            (true, false) => format!(
+                "the device keeps them; a device-managed octet keeps the device's value, any other \
+                 placed octet must already hold the model's ({:#04X}), else the plan is refused, \
+                 since only a complete download fills it (not confirmed by a capture)",
+                tail.fill
+            ),
+        };
+        format!(
+            "{label}; octets {}..{} are not written: {what}",
+            range.start, range.end
+        )
     }
 
     /// Whether this plan only reads and writes interface-object properties
@@ -1986,11 +2015,26 @@ impl FlashPlan {
 
     /// The held tails of the plan's writes by step index (issue #1065,
     /// [`HeldTail`]).
-    pub fn held_tails(&self) -> impl Iterator<Item = (usize, &HeldTail)> + '_ {
+    pub fn held_tails(&self) -> impl Iterator<Item = (usize, &ImageRef, &HeldTail)> + '_ {
         self.steps
             .iter()
             .enumerate()
-            .filter_map(|(i, step)| Some((i, step.held_tail()?)))
+            .filter_map(|(i, step)| match step {
+                FlashStep::WriteRelMem {
+                    image,
+                    held_tail: Some(tail),
+                    ..
+                } => Some((i, image, tail)),
+                _ => None,
+            })
+    }
+
+    /// Whether the device keeps the tail past the write of `image` (issue
+    /// #1065): no allocation fills it ([`KeptOctets::held_tail`]).
+    pub fn keeps_held_tail(&self, image: &ImageRef) -> bool {
+        self.kept
+            .iter()
+            .any(|k| k.held_tail.is_some() && k.segment == image.segment_id)
     }
 
     /// The per-octet write mask of the `len` octets a System B write of
@@ -2018,56 +2062,28 @@ impl FlashPlan {
 
     /// Whether a `LoadImageProp` of `image` compares the device's MCB CRC
     /// with the image: not for a segment the device keeps octets of where no
-    /// parameter lives (issue #1084), whose CRC covers what the device held
-    /// there. The check then reads the MCB, as ETS does, without comparing.
+    /// parameter lives (issue #1084), or the tail past a write the download
+    /// does not fill (issue #1065, [`HeldTail`]): the CRC covers what the
+    /// device held there. The check then reads the MCB, as ETS does, without
+    /// comparing.
     pub fn compares_mcb(&self, image: &ImageRef) -> bool {
         !self
             .kept
             .iter()
-            .any(|k| k.unoccupied && k.segment == image.segment_id)
+            .any(|k| (k.unoccupied || k.held_tail.is_some()) && k.segment == image.segment_id)
     }
 
-    /// Rebuilds the [`KeptOctets::unoccupied`] entries of [`Self::kept`] from
-    /// the plan's allocations as they stand (issue #1084): the unoccupied
-    /// octets of a parameter write are kept when the allocation the write
-    /// lands in keeps the memory. Called by the planner and again when
+    /// Rebuilds the [`KeptOctets::unoccupied`] and [`KeptOctets::held_tail`]
+    /// entries of [`Self::kept`] from the plan's allocations as they stand
+    /// (issues #1084, #1065): the unoccupied octets of a parameter write, and
+    /// the tail past a write, are kept when the allocation the write lands
+    /// in keeps the memory. Called by the planner and again when
     /// [`FlashPlan::use_par_procedure`] swaps an allocation's fill.
     pub(super) fn refresh_unoccupied(&mut self) {
-        self.kept.retain(|k| !k.unoccupied);
+        self.kept.retain(|k| !k.unoccupied && k.held_tail.is_none());
         let found = plan::unoccupied_kept(&self.steps, &self.unoccupied);
         self.kept.extend(found);
-    }
-
-    /// Sets each held tail's [`HeldTail::filled`] from the allocations as
-    /// the steps stand (issue #1065): filled where the allocation the write
-    /// lands in pre-fills (its object's latest allocation before it, else
-    /// the latest one, as the executor resolves it). Called by the planner
-    /// and again after every change of the steps or their fills
-    /// ([`FlashPlan::use_par_procedure`], [`FlashPlan::parameters_only`]),
-    /// so the tail state never outlives the allocation it rests on.
-    pub(super) fn refresh_held_tails(&mut self) {
-        let mut by_object: BTreeMap<Option<u32>, SegmentFill> = BTreeMap::new();
-        let mut last = SegmentFill::NONE;
-        for step in &mut self.steps {
-            match step {
-                FlashStep::AllocateSegment { target, fill, .. } => {
-                    by_object.insert(*target, *fill);
-                    last = *fill;
-                }
-                FlashStep::WriteRelMem {
-                    target,
-                    held_tail: Some(tail),
-                    ..
-                } => {
-                    let fill = target
-                        .filter(|t| *t != 0)
-                        .and_then(|t| by_object.get(&Some(t)).copied())
-                        .unwrap_or(last);
-                    tail.filled = fill.prefill().is_some();
-                }
-                _ => {}
-            }
-        }
+        self.kept.extend(plan::held_tails_kept(&self.steps));
     }
 
     /// The System 7 per-octet write mask for `segment_id`, when the segment

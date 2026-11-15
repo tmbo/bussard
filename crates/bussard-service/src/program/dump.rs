@@ -409,9 +409,10 @@ pub fn write_dump(
                     .as_ref()
                     .map_or(image.len, |tail| tail.end - image.offset);
                 let part = (image.offset != 0 || len != whole).then_some((image.offset, len));
-                let held = held_tail
-                    .as_ref()
-                    .map(|t| (t.start - image.offset, t.end - image.offset));
+                let held = held_tail.as_ref().map(|t| {
+                    let range = t.range(image);
+                    (range.start - image.offset, range.end - image.offset)
+                });
                 let (rec, mask) = image_record(
                     dir,
                     &mut used,
@@ -851,16 +852,30 @@ pub fn write_dump(
             "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
             "label": k.label(),
         })).collect::<Vec<_>>(),
-        // The octets past a write's `Size` its filling allocation holds
-        // (issue #1065): not written, read back after a filling allocation.
-        "held_tails": plan.held_tails().map(|(i, t)| json!({
-            "step": i + 1,
-            "segment_id": t.segment,
-            "range": [t.start, t.end],
-            "fill": t.fill,
-            "filled": t.filled,
-            "managed": t.managed,
-        })).collect::<Vec<_>>(),
+        // The octets past a write's `Size` (issue #1065): never written; a
+        // filling allocation holds the fill there, compared after the load
+        // unless every octet is device-managed; otherwise the device keeps
+        // them (`kept`).
+        "held_tails": plan.held_tails().map(|(i, image, t)| {
+            let range = t.range(image);
+            let kept = plan.keeps_held_tail(image);
+            let read_back = if kept {
+                "none: the device keeps them"
+            } else if range.clone().all(|o| t.managed.contains(&o)) {
+                "none: every octet is device-managed"
+            } else {
+                "compared after the load completes, device-managed octets excepted"
+            };
+            json!({
+                "step": i + 1,
+                "segment_id": image.segment_id,
+                "range": [range.start, range.end],
+                "fill": t.fill,
+                "filled": !kept,
+                "managed": t.managed,
+                "read_back": read_back,
+            })
+        }).collect::<Vec<_>>(),
     });
     let path = dir.join("plan.json");
     let text = serde_json::to_string_pretty(&doc).ctx(|| "rendering plan.json".to_string())?;

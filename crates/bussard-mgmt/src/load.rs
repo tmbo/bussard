@@ -748,32 +748,16 @@ pub enum WriteError {
         error_code: u8,
     },
 
-    /// A write whose plan leaves octets past it to the allocation's fill
-    /// (issue #1065) followed an allocation that fills nothing; nothing was
-    /// written.
-    #[error(
-        "{address}: the plan leaves octets {start}..{end} of segment {segment} to the \
-         allocation's fill, but the allocation before the write fills nothing; nothing was \
-         written"
-    )]
-    HeldTailNotFilled {
-        /// The device.
-        address: IndividualAddress,
-        /// The code segment.
-        segment: String,
-        /// The first held octet, as an offset into the segment image.
-        start: usize,
-        /// The end of the held octets (exclusive).
-        end: usize,
-    },
-
     /// A parameter-only write whose plan leaves octets past it to the device
     /// (issue #1065) found its segment at another base: what the device
-    /// holds in those octets there is not known; nothing was written.
+    /// holds in those octets there is not known. The load was started (the
+    /// object unloaded, opened for loading and allocated) and is left
+    /// `Loading`; no memory of the segment was written.
     #[error(
         "{address}: segment {segment} moved on the allocation, and octets {start}..{end} past the \
-         write hold a parameter the parameter-only download does not write; nothing was written. \
-         Run a full `bussard flash`"
+         write hold a parameter the parameter-only download does not write, so the download \
+         stopped before writing the segment. The application object was unloaded and opened for \
+         loading and is left Loading: run a full `bussard flash` to load it again"
     )]
     HeldTailMoved {
         /// The device.

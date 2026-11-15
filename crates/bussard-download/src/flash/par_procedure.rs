@@ -54,22 +54,27 @@ impl FlashPlan {
         {
             return false;
         }
-        // An object whose write leaves a tail to the allocation's fill
-        // (issue #1065, [`super::HeldTail`]) keeps the complete procedure's
-        // filling allocation unless every tail octet is device-managed: the
-        // `par` allocation keeps the memory, so a placed octet there would
-        // keep whatever the device held, which nothing on this path reads or
-        // compares. A tail of device-managed octets only (the Gira rockers'
-        // download flag) is left to the device, as on ETS's `par` path.
+        // An object whose write leaves a tail that needs the model's value
+        // (issue #1065, [`super::HeldTail::needs_model_value`]: a placed
+        // octet that is not device-managed) keeps the complete procedure's
+        // filling allocation: the `par` allocation keeps the memory, and on
+        // this path nothing reads what the device holds there before the
+        // write. Any other tail (device-managed or unplaced octets, the Gira
+        // rockers' download flag) takes the `par` allocation and is kept by
+        // the device ([`super::KeptOctets::held_tail`]). No capture shows a
+        // same-application download of such a program; the plan says so.
         let needs_fill: Vec<Option<u32>> = self
             .steps
             .iter()
             .filter_map(|s| match s {
                 FlashStep::WriteRelMem {
+                    image,
                     target,
                     held_tail: Some(tail),
                     ..
-                } if tail.managed.len() < tail.end - tail.start => Some(*target),
+                } if tail.needs_model_value(image, self.placed.get(&image.segment_id)) => {
+                    Some(*target)
+                }
                 _ => None,
             })
             .collect();
@@ -86,10 +91,9 @@ impl FlashPlan {
             }
         }
         // The fill decides which octets of a segment without `<Data>` the
-        // device keeps (issue #1084), and whether a held tail is filled.
+        // device keeps (issue #1084), and whether it keeps a held tail.
         if changed {
             self.refresh_unoccupied();
-            self.refresh_held_tails();
         }
         // The objects the plan loads: an allocation or a StartLoading names them.
         let loaded: Vec<Option<u32>> =

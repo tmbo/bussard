@@ -145,3 +145,10 @@ params = [
     { page = "General", label = "Nap length", kind = "number", value = "7", key = "nap-length", model = 7, expect = "hidden" },
     { page = "General", label = "Operating mode", kind = "dropdown", value = "automatic", key = "operating-mode", model = "automatic" },
 ]
+
+# #1065: a parameter change downloaded as parameters only; what ETS does with
+# the octet past the write (the device-managed marker).
+[syn-writerelmem-tail]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
