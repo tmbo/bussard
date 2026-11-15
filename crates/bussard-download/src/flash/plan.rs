@@ -88,8 +88,10 @@ pub(super) const PID_PROGRAM_VERSION: u32 = 13;
 /// (and this engine) overwrite it with the real application id.
 pub(super) const APP_ID_PLACEHOLDER: [u8; 5] = [0, 0, 0, 0, 0];
 
-/// Refuses an application that declares an `ObjectSize` with no value field
-/// type code (issue #545): its descriptor would otherwise go out as 1 bit.
+/// Refuses an application in which a group-object descriptor would take an
+/// `ObjectSize` with no value field type code (issues #545, #1065): the
+/// ref's size, else the object's. Such a descriptor would otherwise go out
+/// as 1 bit.
 pub(super) fn check_object_sizes(app: &ApplicationProgram) -> Result<(), PlanError> {
     let unknown = crate::compute::unknown_object_sizes(app);
     if unknown.is_empty() {
@@ -98,9 +100,9 @@ pub(super) fn check_object_sizes(app: &ApplicationProgram) -> Result<(), PlanErr
     Err(PlanError::UnknownObjectSize {
         sizes: unknown
             .iter()
-            .map(|(id, size)| format!("{id}: {size:?}"))
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .join(", "),
+            .join("; "),
     })
 }
 

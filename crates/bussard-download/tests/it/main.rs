@@ -22,6 +22,7 @@ mod golden_tables;
 mod knxnet_ip_mock;
 mod module_procedures;
 mod no_group_objects_mock;
+mod object_size_ref;
 mod par_memory_partial;
 mod param_readback_roundtrip;
 mod partial_segment;
