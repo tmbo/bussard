@@ -276,6 +276,17 @@ pub enum ParamKind {
 }
 
 impl ProductModel {
+    /// The definition a device-file parameter key names
+    /// ([`key_to_param_id`]): `Err(None)` for a malformed key, `Err(Some(id))`
+    /// for a parameter id the product does not define.
+    pub fn parameter_for_key(&self, key: &str) -> Result<&ParamDef, Option<String>> {
+        let id = key_to_param_id(key).ok_or(None)?;
+        match self.parameters.get(&id) {
+            Some(def) => Ok(def),
+            None => Err(Some(id)),
+        }
+    }
+
     /// The vendor's description of com-object ref `reference` (app-relative):
     /// its own entry when the ref is not the one `com_objects` describes, else
     /// that of its number.

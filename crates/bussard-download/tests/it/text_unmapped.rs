@@ -122,22 +122,31 @@ async fn test_flash_unmapped_text_character_reads_back() -> TestResult {
 fn test_lossy_text_notes_name_every_replaced_default() -> TestResult {
     let (product, _tmp) = synthetic_product("syn-text-unmapped")?;
     let app = product.applications.first().ok_or("one application")?;
-    let plan = plan_synthetic_07b0(&product, app, &BTreeMap::new())?;
-    let notes = bussard_download::lossy_text_notes(&plan, app, &BTreeMap::new());
+    let notes = bussard_download::param_plan(
+        app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_download::CurrentMemory::new(),
+    )
+    .lossy_text;
     // "Temp ℃" and the probes ℃ Ł Ā Ａ ≤ 中 Ж Ω 😀.
     assert_eq!(notes.len(), 10, "{notes:#?}");
     assert!(
         notes
             .iter()
-            .any(|n| n.contains("\"Temp ℃\" is written as \"Temp ?\"")),
+            .any(|n| n.contains("= \"Temp ℃\" is written as \"Temp ?\"")),
         "{notes:#?}"
     );
     assert!(!notes.iter().any(|n| n.contains('€')), "{notes:#?}");
     // A value the device file stores is the stored-value note's.
     let overrides: BTreeMap<String, String> =
         [("P-3_R-3".to_string(), "Temp ✓".to_string())].into();
-    let stored = plan_synthetic_07b0(&product, app, &overrides)?;
-    let notes = bussard_download::lossy_text_notes(&stored, app, &overrides);
+    let notes = bussard_download::param_decode::lossy_text_notes(
+        app,
+        &overrides,
+        &BTreeMap::new(),
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
     assert_eq!(notes.len(), 9, "{notes:#?}");
     Ok(())
 }

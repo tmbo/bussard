@@ -740,6 +740,12 @@ pub fn parameter_plan(
     let mut params = if plan.is_sys7() {
         ParamPlan {
             note: Some(bussard_download::SYS7_NOTE.to_string()),
+            lossy_text: bussard_download::param_decode::lossy_text_notes(
+                app,
+                inputs.overrides(),
+                inputs.base_offsets(),
+                &bussard_product::dynamic::DynamicMemo::new(app),
+            ),
             ..Default::default()
         }
     } else {

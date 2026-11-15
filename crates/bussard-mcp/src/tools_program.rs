@@ -1063,6 +1063,14 @@ impl BussardMcp {
                     }
                 }
             }
+            // Issue #1065: a text value the download writes with replaced
+            // characters (W051).
+            device_plan.notes.extend(
+                f.summary
+                    .text_warnings
+                    .iter()
+                    .map(|line| format!("warning W051: {line}")),
+            );
             // Issue #326: name what the full download writes.
             if let Some(full) = device_plan.writes.full_image.as_mut() {
                 full.segments = f.plan.written_segments();

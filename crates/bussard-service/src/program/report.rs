@@ -26,6 +26,7 @@ fn param_plan_text(out: &mut String, params: &ParamPlan) {
     if let Some(note) = &params.note {
         w!(out, "  note        : {note}");
     }
+    lossy_text_lines(out, params);
     kept_params_text(out, params);
     if params.changes.is_empty() {
         w!(out, "  parameters  : no parameter change");
@@ -43,6 +44,14 @@ fn param_plan_text(out: &mut String, params: &ParamPlan) {
     );
     for change in &params.changes {
         w!(out, "      {}", change.line());
+    }
+}
+
+/// The text values the download writes with replaced characters (issue
+/// #1065, W051), one `warning` line each.
+fn lossy_text_lines(out: &mut String, params: &ParamPlan) {
+    for line in &params.lossy_text {
+        w!(out, "  warning     : W051 {line}");
     }
 }
 
@@ -222,6 +231,9 @@ pub struct FlashPlanReport {
     pub parameters: Vec<ParameterValues>,
     /// Why the parameters were not compared, when they were not.
     pub parameter_note: Option<String>,
+    /// The text values the download writes with replaced characters (issue
+    /// #1065, W051).
+    pub text_warnings: Vec<String>,
     /// The parameters the download keeps on the device (issue #411).
     pub kept_parameters: Vec<KeptParameter>,
     /// The octets the download keeps on the device (issue #411).
@@ -256,6 +268,7 @@ impl FlashPlanReport {
             },
             parameters: params.changes.iter().map(ParameterValues::of).collect(),
             parameter_note: params.note.clone(),
+            text_warnings: params.lossy_text.clone(),
             kept_parameters: params
                 .kept
                 .iter()
@@ -410,6 +423,7 @@ pub fn params_plan_text(target: IndividualAddress, planned: &ParamsPlanned) -> S
         partial.identity.id,
         partial.identity.name.as_deref().unwrap_or("")
     );
+    lossy_text_lines(out, params);
     if params.changes.is_empty() {
         w!(out, "  parameters  : no parameter change");
     } else {
@@ -520,6 +534,10 @@ pub struct ParamsPlanReport {
     /// The parameters that change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Vec<ParameterValues>>,
+    /// The text values the download writes with replaced characters (issue
+    /// #1065, W051).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub text_warnings: Vec<String>,
     /// The regions compared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub regions: Option<Vec<RegionRow>>,
@@ -552,6 +570,7 @@ impl ParamsPlanReport {
             dry_run: false,
             application: partial.identity.id.clone(),
             parameters: Some(params.changes.iter().map(ParameterValues::of).collect()),
+            text_warnings: params.lossy_text.clone(),
             regions: Some(
                 region_rows(partial, regions)
                     .into_iter()
@@ -601,6 +620,7 @@ impl ParamsPlanReport {
             dry_run: true,
             application: partial.identity.id.clone(),
             parameters: None,
+            text_warnings: Vec::new(),
             regions: None,
             unwritten: None,
             properties: None,
@@ -819,6 +839,36 @@ mod tests {
         let without =
             serde_json::to_value(FlashPlanReport::new(target, 0x07B0, &plan, &params, None))?;
         assert!(without["security_object"].is_null(), "{without}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_flash_plan_json_carries_the_text_warnings() -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1065: `flash --json` and the parameter-only plan carry the
+        // W051 notes of the parameter plan, and the text output prints them.
+        let app = app("M-0083_A-0001-01-0001")?;
+        let plan = bussard_download::plan_flash(
+            &app,
+            "1.1.10",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
+        )?;
+        let params = ParamPlan {
+            lossy_text: vec!["`Unit` (P-2_R-3) = \"T ℃\" is written as \"T ?\"".to_string()],
+            ..Default::default()
+        };
+        let target: IndividualAddress = "1.1.10".parse()?;
+        let json =
+            serde_json::to_value(FlashPlanReport::new(target, 0x07B0, &plan, &params, None))?;
+        assert_eq!(json["text_warnings"][0], params.lossy_text[0], "{json}");
+        let mut text = String::new();
+        param_plan_text(&mut text, &params);
+        assert!(text.contains("warning     : W051 `Unit`"), "{text}");
         Ok(())
     }
 }

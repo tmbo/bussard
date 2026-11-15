@@ -1342,20 +1342,6 @@ pub fn allocation_refusal(target: IndividualAddress, why: &str) -> String {
     )
 }
 
-/// The notes of the vendor-default text values the full flash `plan`
-/// writes with replaced characters (issue #1065; a stored value is named by
-/// [`ignored_override_notes`],
-/// [`bussard_download::lossy_text_notes`]).
-pub fn lossy_text_notes(
-    plan: &FlashPlan,
-    app: &ApplicationProgram,
-    model: Option<&Model>,
-    target: IndividualAddress,
-) -> Vec<String> {
-    let (overrides, _) = bussard_download::parameter_overrides(model, target);
-    bussard_download::lossy_text_notes(plan, app, &overrides)
-}
-
 /// The plan lines of the values the file of `target` stores for parameter
 /// refs the configuration does not show under its current values (issue
 /// #321): the image holds one slot per shown ref, so neither a parameter
@@ -1381,7 +1367,15 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
     let ignored = analysis.ignored_overrides();
     let assigned = analysis.assigned_overrides();
     // A stored text value the code page cannot hold in full is written with
-    // `?` (issue #1065, W051): named here so the flash is never silent.
+    // a look-alike or `?` (issue #1065, W051): named here so the flash is
+    // never silent. A value named above as ignored or replaced by an
+    // `<Assign>` is not written, so it gets no second line.
+    let not_written = |key: &str| {
+        ignored.iter().any(|i| i.key == key)
+            || assigned
+                .iter()
+                .any(|a| a.key == key || key.split_once('@').is_some_and(|(_, r)| r == a.reference))
+    };
     let lossy: Vec<String> = model
         .devices
         .get(&target)
@@ -1391,10 +1385,9 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
                 .device
                 .parameters
                 .iter()
+                .filter(|(key, _)| !not_written(key))
                 .filter_map(|(key, value)| {
-                    let def = product
-                        .parameters
-                        .get(&bussard_model::param_model::key_to_param_id(key)?)?;
+                    let def = product.parameter_for_key(key).ok()?;
                     let why = bussard_model::validate::text_substitution(&def.kind, value)?;
                     Some(format!("`{key}`: {why}"))
                 })
@@ -1629,6 +1622,16 @@ pub fn build_device_plan(
                 }
             }
             Some(detail) => {
+                // Issue #1065: a text value the write carries with replaced
+                // characters (W051), named in the plan the CLI and the MCP
+                // server show.
+                notes.extend(
+                    detail
+                        .decoded
+                        .lossy_text
+                        .iter()
+                        .map(|line| format!("warning W051: {line}")),
+                );
                 // Issue #319: a model value on a ref the configuration does
                 // not show is never written, so it is in no change either.
                 // Say so instead of dropping it (issue #321 refuses the edit).

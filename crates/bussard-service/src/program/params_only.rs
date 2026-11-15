@@ -381,6 +381,7 @@ pub fn plan_parameters_only(
             unknown: decoded.unknown,
             note: decoded.incomplete,
             kept: decoded.kept,
+            lossy_text: decoded.lossy_text,
         },
         properties,
         read_properties: read.properties.clone(),

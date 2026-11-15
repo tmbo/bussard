@@ -12,7 +12,7 @@ use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::{ApduSize, Dpt};
 use crate::flags::Flags;
 use crate::loader::Model;
-use crate::param_model::{ParamKind, ProductModels, key_to_param_id};
+use crate::param_model::{ParamKind, ProductModels};
 
 /// The severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -242,7 +242,8 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 /// * **W050** — a reached `<Assign>` replaces a stored value with another
 ///   (issue #1070): the download writes the assigned value, as ETS does.
 /// * **W051** — a text value holds characters the program's code page has no
-///   octet for, which the download writes as `?` (issue #1065).
+///   octet for, which the download writes as Windows' best-fit look-alike or
+///   `?` (issue #1065).
 fn check_parameters(
     model: &Model,
     models: &ProductModels,
@@ -295,27 +296,29 @@ fn check_parameters(
         for (key, value) in &dev.parameters {
             let loc = format!("{file} parameters.{key:?}");
 
-            let Some(param_id) = key_to_param_id(key) else {
-                diags.push(Diagnostic::new(
-                    "E016",
-                    Severity::Error,
-                    loc,
-                    format!("parameter key {key:?} is malformed (expected `<name>@<ref-id>`)"),
-                ));
-                continue;
-            };
-
-            let Some(def) = product_model.parameters.get(&param_id) else {
-                diags.push(Diagnostic::new(
-                    "E016",
-                    Severity::Error,
-                    loc,
-                    format!(
-                        "unknown parameter {param_id:?} (from key {key:?}); the product {} has no such parameter",
-                        app_ref.unwrap_or("?")
-                    ),
-                ));
-                continue;
+            let def = match product_model.parameter_for_key(key) {
+                Ok(def) => def,
+                Err(None) => {
+                    diags.push(Diagnostic::new(
+                        "E016",
+                        Severity::Error,
+                        loc,
+                        format!("parameter key {key:?} is malformed (expected `<name>@<ref-id>`)"),
+                    ));
+                    continue;
+                }
+                Err(Some(param_id)) => {
+                    diags.push(Diagnostic::new(
+                        "E016",
+                        Severity::Error,
+                        loc,
+                        format!(
+                            "unknown parameter {param_id:?} (from key {key:?}); the product {} has no such parameter",
+                            app_ref.unwrap_or("?")
+                        ),
+                    ));
+                    continue;
+                }
             };
 
             if let Some(reason) = value_error(&def.kind, value) {
