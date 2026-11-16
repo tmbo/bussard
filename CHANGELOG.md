@@ -8,7 +8,61 @@ Changes that have merged but are not yet folded into this file live as
 fragments under `changelog.d/`; `scripts/changelog.py render` prints the
 Unreleased section with them included.
 
-## [Unreleased]
+## [0.12.0] - 2026-11-16
+
+### Added
+
+- The first ETS capture of a BCU 2 download, `syn-bcu2-0021`, is committed
+  and replayed by knx-sim's calibration; bussard still refuses System 2, so
+  its oracle row is pinned `not-comparable` (#525). knx-sim's BCU 2 device
+  takes the association table ETS stretches up to the next segment for a
+  program with dynamic table management.
+
+### Fixed
+
+- A property write that carries `InlineData` and comes before the procedure
+  declares the property now carries the values of the parameters placed in
+  it, as ETS writes them, instead of the `InlineData` defaults; the
+  parameter-only download lowers it the same way. The Hager TYMS646R
+  (`M-0009_A-E802-13-7620`) downloaded "Emission" of object 9 at its default
+  and reported the write verified, and `apply` did not see the change
+  (#1049). A program whose parameters all hold their defaults plans as
+  before. A plan is refused, naming the parameter, only when a parameter set
+  away from its default cannot be placed with certainty: no write of known
+  extent to its property carries it, it names the object by type where the
+  procedure names it by index, or the parameter-only procedure writes its
+  property without the parameters' value.
+- `flash` no longer refuses a program whose com-object declares a size without a
+  type code (`LegacyVarData`) when every ref of the object states a size that has
+  one: the descriptor takes the ref's size (#1065, the Jung fan coil controller
+  `A-1111-11-A356`).
+- `flash` plans `LdCtrlMasterReset` on System 7 when the procedure resets the
+  device before its load: the confirmed Master Reset with the op's erase code,
+  then a reconnect, as ETS sends it (#1065, the Hager 0701 `A-E0ED-10-0B6F`).
+  A reset after the load has begun stays refused. Also refused: a reset that
+  would undo an earlier step of the procedure (a property write is read back,
+  unless the program's `LoadedImage` restores another value there), a reset
+  whose erased load-state machines are not loaded again after it, a reset of
+  the individual address (erase codes 2 and 3) and a value beyond one octet.
+  The parameter-only download refuses a System 7 reset instead of dropping it.
+- `flash` no longer refuses a program whose parameter reaches past its
+  `LdCtrlWriteRelMem` `Size` when the octets past it hold the fill byte of the
+  segment's filled allocation: the device holds them without a write, as in
+  ETS's download (#1065, the Gira push-button rockers `A-1161-23-518D` and
+  `A-1162-21-2E13`).
+- A parameter-only download now writes the octets of a device-managed
+  parameter (`Access="None"`, such as a download flag) at your project's
+  value even when the device held that value when bussard read it, the way
+  a complete download writes them. A Jung heating actuator (`A-20E0`)
+  cleared its download flag during the load, so the MCB check of the
+  octet's entry failed and the restart was not sent (#1168). No capture
+  shows yet whether ETS's own partial download rewrites the flag (capture
+  plan #572). The octets ride along with a download that changes something
+  else: a device whose only difference is such an octet still plans as
+  nothing to write (#289), an octet the download keeps is still not
+  written, a restore leaves them as the device holds them, and the closing
+  read-back does not compare them. The plan counts them among the
+  parameter octets and says how many there are.
 
 ## [0.11.0] - 2026-11-14
 
