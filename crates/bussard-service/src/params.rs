@@ -1907,18 +1907,28 @@ mod tests {
     fn test_forced_note_names_the_device_managed_octets_written_again()
     -> Result<(), Box<dyn std::error::Error>> {
         let app = flag_app()?;
-        let plan = |value: &str| {
-            bussard_download::plan_flash(
+        let plan = |value: &str| -> Result<FlashPlan, Box<dyn std::error::Error>> {
+            let overrides = BTreeMap::from([("P-1_R-1".to_string(), value.to_string())]);
+            let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+            let mut plan = bussard_download::plan_flash(
                 &app,
                 "1.1.1",
                 0x07B0,
-                &BTreeMap::from([("P-1_R-1".to_string(), value.to_string())]),
+                &overrides,
                 &BTreeMap::new(),
                 None,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
-                &bussard_product::dynamic::DynamicMemo::new(&app),
-            )
+                &memo,
+            )?;
+            bussard_download::add_device_managed(
+                &mut plan,
+                &app,
+                &overrides,
+                &BTreeMap::new(),
+                &memo,
+            );
+            Ok(plan)
         };
         let device = plan("5")?;
         let regions = bussard_download::planned_parameter_regions(&device);

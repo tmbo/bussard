@@ -515,7 +515,8 @@ impl FlashPlan {
         let mut plan = self.clone();
         plan.unwritten = BTreeMap::new();
         plan.force_managed = false;
-        let skip = &self.managed;
+        let skip = self.managed.clone().unwrap_or_default();
+        let skip = &skip;
         for (segment, current) in &self.baseline {
             let Some(image) = plan.images.get_mut(segment) else {
                 continue;
@@ -1323,11 +1324,20 @@ impl FlashPlan {
     pub fn forced_octets(&self) -> BTreeMap<String, Vec<usize>> {
         let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for step in &self.steps {
-            let image = match step {
-                FlashStep::WriteMem { image, .. } | FlashStep::WriteRelMem { image, .. } => image,
+            use super::execute::WriteKind;
+            let sys7 = |kind| {
+                if self.is_sys7() {
+                    WriteKind::System7
+                } else {
+                    kind
+                }
+            };
+            let (image, kind) = match step {
+                FlashStep::WriteMem { image, .. } => (image, sys7(WriteKind::Absolute)),
+                FlashStep::WriteRelMem { image, .. } => (image, WriteKind::Relative),
                 FlashStep::Sys7AbsSegment {
                     image: Some(image), ..
-                } => image,
+                } => (image, WriteKind::System7),
                 _ => continue,
             };
             let (Some(desired), Some(current)) = (
@@ -1337,7 +1347,7 @@ impl FlashPlan {
                 continue;
             };
             let len = super::execute::image_part(desired, image).len();
-            let equal = super::execute::forced_in_part(self, image, len)
+            let equal = super::execute::forced_in_part(self, image, len, kind)
                 .into_iter()
                 .map(|i| i + image.offset)
                 .filter(|&o| desired.get(o).is_some() && current.get(o) == desired.get(o));
@@ -1725,7 +1735,7 @@ mod tests {
             std::collections::BTreeSet::from([0usize]),
         )]);
         let mut managed = partial.clone();
-        managed.managed = skip;
+        managed.managed = Some(skip);
         let restore = managed.restoring(&wanted);
         assert_eq!(restore.changed_octets(), 0);
         assert_eq!(restore.image_bytes(segment), Some(&[7u8][..]));

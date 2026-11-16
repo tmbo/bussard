@@ -464,7 +464,12 @@ async fn stream_sys7_image<C: Connector, F: FnMut(Progress)>(
             bytes,
             current,
             mask,
-            &super::execute::forced_in_part(plan, image, bytes.len()),
+            &super::execute::forced_in_part(
+                plan,
+                image,
+                bytes.len(),
+                super::execute::WriteKind::System7,
+            ),
             super::execute::LEGACY_MERGE_GAP,
             &|_, _| usize::MAX,
         );

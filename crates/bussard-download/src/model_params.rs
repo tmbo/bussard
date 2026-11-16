@@ -130,8 +130,9 @@ pub fn plan_for_readback(
 /// [`plan_for_readback`] for a parameter write (`apply`, `restore
 /// --parameters`): with the mask's parameter-only procedure added
 /// ([`crate::add_par_procedure`], issues #1052, #1085), so the write, its
-/// backup and its read-back run what that procedure writes. Both lowerings
-/// take the same inputs, computed once.
+/// backup and its read-back run what that procedure writes, and with the
+/// device-managed octets ([`crate::add_device_managed`], issue #1168). Both
+/// lowerings take the same inputs, computed once.
 ///
 /// # Errors
 ///
@@ -174,6 +175,11 @@ fn plan_from_model(
         &object_flags,
         memo,
     )?;
+    // A parameter write forces the device-managed octets (issue #1168) and
+    // a restore leaves them alone: both read them from the plan.
+    if par {
+        crate::add_device_managed(&mut plan, app, &overrides, &bases, memo);
+    }
     if par && plan.takes_par_procedure() {
         crate::add_par_procedure(
             &mut plan,

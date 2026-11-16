@@ -419,6 +419,30 @@ pub fn plan_flash(
     )
 }
 
+/// Records the device-managed octets of `app` under `overrides` on `plan`
+/// ([`crate::device_managed_octets`], [`FlashPlan::device_managed`]): what a
+/// parameter-only download cut from it writes whatever the baseline holds
+/// and a restore leaves alone (issue #1168). Only a caller that plans a
+/// parameter write asks for it, with the inputs `plan` was built from, so a
+/// full-flash plan does not walk the placements for them. A plan that has
+/// them (a held tail needed them) keeps them.
+pub fn add_device_managed(
+    plan: &mut FlashPlan,
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) {
+    if plan.managed.is_none() {
+        plan.managed = Some(crate::device_managed_octets(
+            app,
+            overrides,
+            base_offsets,
+            memo,
+        ));
+    }
+}
+
 /// Adds to `plan` (a [`plan_flash`] of the same inputs) the lowering of the
 /// mask's parameter-only procedure `par_ops` (issues #1052, #1085): what
 /// [`FlashPlan::parameters_only`] then runs for a System B program spliced
@@ -608,6 +632,11 @@ fn plan_flash_as(
     // The octets a `<choose>` branch leaves unwritten stay as the device holds
     // them, as in ETS's download (issue #411, [`KeptOctets`]).
     let kept = kept_from(app, &ops, &branch_gaps);
+    // The device-managed octets, for a write that leaves a tail (issue
+    // #1065, [`super::HeldTail::managed`]); computed on the first one, so a
+    // plan without a held tail does not walk the placements again. A plan
+    // that computed them keeps them ([`FlashPlan::device_managed`]).
+    let mut managed_octets: Option<bussard_product::PlacedOctets> = None;
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -615,23 +644,12 @@ fn plan_flash_as(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    //
-    // The same pass records the device-managed octets: a write that leaves a
-    // tail keeps them out of its comparison (issue #1065,
-    // [`super::HeldTail::managed`]), and a parameter-only download writes
-    // them whatever the baseline holds (issue #1168,
-    // [`FlashPlan::device_managed`]). No second walk of the placements.
-    let (param_images, mut placed, managed_octets) =
-        bussard_product::compute_parameter_image_placed_managed_with(
-            app,
-            overrides,
-            base_offsets,
-            memo,
-        )
-        .map_err(|e| PlanError::UnresolvableImage {
-            step: 0,
-            reason: format!("computing the parameter image: {e}"),
-        })?;
+    let (param_images, mut placed) =
+        bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
+            .map_err(|e| PlanError::UnresolvableImage {
+                step: 0,
+                reason: format!("computing the parameter image: {e}"),
+            })?;
 
     // A program that is not Data Secure enabled has its objects named by
     // type written at the index the device's object list gives them, on the
@@ -1291,6 +1309,9 @@ fn plan_flash_as(
                 let held_tail = held.map(|(start, fill)| {
                     let end = bytes.len();
                     let managed = managed_octets
+                        .get_or_insert_with(|| {
+                            crate::device_managed_octets(app, overrides, base_offsets, memo)
+                        })
                         .get(&segment_id)
                         .map(|m| m.range(start..end).copied().collect())
                         .unwrap_or_default();

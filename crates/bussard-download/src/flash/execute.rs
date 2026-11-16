@@ -665,7 +665,7 @@ impl StepExecutor for SystemB<'_> {
                 let runs = written_runs(kept.as_deref(), bytes.len());
                 // The device-managed octets a parameter-only download writes
                 // whatever the baseline holds (issue #1168).
-                let forced = forced_in_part(plan, image, bytes.len());
+                let forced = forced_in_part(plan, image, bytes.len(), WriteKind::Relative);
                 let partial = plan.baseline.get(&image.segment_id).map(|current| {
                     (
                         image_part(current, image),
@@ -896,8 +896,8 @@ impl StepExecutor for SystemB<'_> {
                         let regions = diff_regions_forcing(
                             &bytes,
                             current,
-                            diff_mask(plan, image, bytes.len()).as_deref(),
-                            &forced_in_part(plan, image, bytes.len()),
+                            None,
+                            &forced_in_part(plan, image, bytes.len(), WriteKind::Absolute),
                             sparse_merge_gap(),
                             &chunk,
                         );
@@ -916,7 +916,7 @@ impl StepExecutor for SystemB<'_> {
                 if !bytes.is_empty() {
                     // A forced device-managed octet is never compared (issue
                     // #1168).
-                    let forced = forced_in_part(plan, image, bytes.len());
+                    let forced = forced_in_part(plan, image, bytes.len(), WriteKind::Absolute);
                     self.written_samples.extend(without_forced(
                         WrittenSample {
                             address: addr,
@@ -2003,37 +2003,52 @@ pub(super) fn kept_mask(
     mask
 }
 
-/// The mask a parameter-only write of the part `image` (`len` octets)
-/// diffs under: `0xFF` where it may write, `0x00` on an octet it keeps. On
-/// System 7 the segment's `<Mask>` ([`super::FlashPlan::segment_mask`]), on
-/// System B the octets the plan keeps ([`kept_mask`], issues #411, #1084).
-/// `None` when the step may write the whole part.
+/// Which write step streams a part: what decides the mask its diff runs
+/// under ([`diff_mask`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriteKind {
+    /// A System B `WriteRelMem` into a relative segment: the octets the
+    /// plan keeps ([`kept_mask`], issues #411, #1084) are not written.
+    Relative,
+    /// A System B absolute `WriteMem`: its diff runs unmasked, as before.
+    Absolute,
+    /// A System 7 segment write: the segment's `<Mask>`.
+    System7,
+}
+
+/// The mask a parameter-only write of the part `image` (`len` octets) by a
+/// `kind` step diffs under: `0xFF` where it may write, `0x00` on an octet
+/// it keeps. `None` when the step may write the whole part.
 pub(super) fn diff_mask(
     plan: &super::FlashPlan,
     image: &super::ImageRef,
     len: usize,
+    kind: WriteKind,
 ) -> Option<Vec<u8>> {
-    if plan.is_sys7() {
-        plan.segment_mask(&image.segment_id)
-            .map(|m| image_part(m, image).to_vec())
-    } else {
-        kept_mask(plan, image, len)
+    match kind {
+        WriteKind::System7 => plan
+            .segment_mask(&image.segment_id)
+            .map(|m| image_part(m, image).to_vec()),
+        WriteKind::Relative => kept_mask(plan, image, len),
+        WriteKind::Absolute => None,
     }
 }
 
 /// The octets of the part `image` (`len` octets) of a parameter-only write
-/// that go out whatever the baseline holds, as offsets into the part (issue
-/// #1168): the device-managed octets ([`super::FlashPlan::device_managed`])
-/// [`diff_mask`] lets the write touch. Empty unless the plan forces them (a
-/// parameter-only download, not a restore) and holds a baseline of the
-/// segment. The one source of the forced set: the executors diff with it
-/// and [`super::FlashPlan::forced_octets`] reports it. A System B write
-/// whose segment moved writes the whole part anyway, so it is used only
-/// where the baseline address holds.
+/// by a `kind` step that go out whatever the baseline holds, as offsets
+/// into the part (issue #1168): the device-managed octets
+/// ([`super::FlashPlan::device_managed`]) the step's [`diff_mask`] lets it
+/// touch. Empty unless the plan forces them (a parameter-only download,
+/// not a restore) and holds a baseline of the segment. The one source of
+/// the forced set: the executors diff with it and
+/// [`super::FlashPlan::forced_octets`] reports it. A System B write whose
+/// segment moved writes the whole part anyway, so it is used only where
+/// the baseline address holds.
 pub(super) fn forced_in_part(
     plan: &super::FlashPlan,
     image: &super::ImageRef,
     len: usize,
+    kind: WriteKind,
 ) -> BTreeSet<usize> {
     if !plan.force_managed || !plan.baseline.contains_key(&image.segment_id) {
         return BTreeSet::new();
@@ -2041,7 +2056,7 @@ pub(super) fn forced_in_part(
     let Some(managed) = plan.device_managed(&image.segment_id) else {
         return BTreeSet::new();
     };
-    let mask = diff_mask(plan, image, len);
+    let mask = diff_mask(plan, image, len, kind);
     let end = image.offset.saturating_add(len);
     managed
         .range(image.offset..end)

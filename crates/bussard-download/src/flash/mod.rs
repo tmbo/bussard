@@ -137,7 +137,10 @@ pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::{PartialPlanError, ProcedureKind};
 pub(crate) use plan::fills_application_program_2;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
-pub use plan::{add_par_procedure, kept_octets, plan_flash, same_program, select_application};
+pub use plan::{
+    add_device_managed, add_par_procedure, kept_octets, plan_flash, same_program,
+    select_application,
+};
 pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
@@ -1285,12 +1288,15 @@ pub struct FlashPlan {
     placed: bussard_product::PlacedOctets,
     /// The octets of each segment that hold a device-managed value under the
     /// configuration the plan was built for (`Access="None"` parameters the
-    /// configuration reaches, [`crate::device_managed_octets`]). The device
-    /// application may rewrite such an octet between the baseline read and
-    /// the load (a download flag), so a parameter-only download writes each
-    /// one it does not keep at the model's value, whatever the baseline
-    /// holds (issue #1168). It never causes a download on its own (#289).
-    managed: bussard_product::PlacedOctets,
+    /// configuration reaches, [`crate::device_managed_octets`], the one
+    /// definition). The device application may rewrite such an octet between
+    /// the baseline read and the load (a download flag), so a parameter-only
+    /// download writes each one it does not keep at the model's value,
+    /// whatever the baseline holds (issue #1168); it never causes a download
+    /// on its own (#289). `None` until a caller that plans a parameter write
+    /// asks for them ([`crate::add_device_managed`]) or a held tail needed
+    /// them: a full-flash plan does not walk the placements for them.
+    managed: Option<bussard_product::PlacedOctets>,
     /// Whether this plan writes the [`Self::managed`] octets whatever the
     /// baseline holds (issue #1168, [`FlashPlan::forced_octets`]): set by
     /// [`FlashPlan::parameters_only`], whose image holds the model's value
@@ -2152,7 +2158,10 @@ impl FlashPlan {
     /// parameter-only download writes each one it does not keep at the
     /// model's value, whatever the baseline holds (issue #1168).
     pub fn device_managed(&self, segment_id: &str) -> Option<&BTreeSet<usize>> {
-        self.managed.get(segment_id).filter(|m| !m.is_empty())
+        self.managed
+            .as_ref()
+            .and_then(|m| m.get(segment_id))
+            .filter(|m| !m.is_empty())
     }
 
     /// The resident octets a parameter-only download diffs `segment_id`'s image

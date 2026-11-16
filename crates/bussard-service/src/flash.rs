@@ -187,6 +187,14 @@ impl<'a> FlashInputs<'a> {
         // has one (issues #1052, #1085); only it pays for the second
         // lowering, on the same inputs.
         if self.parameters_only {
+            // The device-managed octets the download forces (issue #1168).
+            bussard_download::add_device_managed(
+                &mut plan,
+                self.app,
+                &self.overrides,
+                &self.base_offsets,
+                &memo,
+            );
             bussard_download::add_par_procedure(
                 &mut plan,
                 self.app,

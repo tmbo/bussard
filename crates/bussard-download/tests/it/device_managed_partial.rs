@@ -102,12 +102,13 @@ const APP_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
       </Dynamic>
      </ApplicationProgram></KNX>"#;
 
-/// The complete download of [`app`] for 1.1.1 with `value` set.
+/// The complete download of [`app`] for 1.1.1 with `value` set, planned for
+/// a parameter write.
 fn plan_of(app: &ApplicationProgram, value: Option<u8>) -> TestResult<FlashPlan> {
     let overrides: BTreeMap<String, String> = value
         .map(|v| BTreeMap::from([(VALUE.to_string(), v.to_string())]))
         .unwrap_or_default();
-    Ok(plan_flash_default(
+    let mut plan = plan_flash_default(
         app,
         "1.1.1",
         0x07B0,
@@ -116,7 +117,17 @@ fn plan_of(app: &ApplicationProgram, value: Option<u8>) -> TestResult<FlashPlan>
         None,
         &BTreeMap::new(),
     )
-    .map_err(|e| e.to_string())?)
+    .map_err(|e| e.to_string())?;
+    // A parameter write's plan carries the device-managed octets (issue
+    // #1168), as `plan_for_parameters` and `flash --parameters-only` add them.
+    bussard_download::add_device_managed(
+        &mut plan,
+        app,
+        &overrides,
+        &BTreeMap::new(),
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan)
 }
 
 /// The device: object 4's MCB in the actuator's two entries (the parameter
@@ -358,5 +369,33 @@ async fn test_flash_parameters_only_does_not_compare_the_forced_octet() -> TestR
     // The application cleared the flag after the write.
     assert_eq!(dev.read_mem(BASE + FLAG as u32, 1), vec![0x00]);
     assert_eq!(dev.read_mem(BASE, 1), vec![9]);
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_records_no_device_managed_octets_without_a_parameter_write() -> TestResult {
+    // A full-flash plan does not walk the placements for them (no held tail
+    // here); `add_device_managed` records them for a parameter write.
+    let app = app()?;
+    let plan = plan_flash_default(
+        &app,
+        "1.1.1",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .map_err(|e| e.to_string())?;
+    assert_eq!(plan.device_managed(SEGMENT), None);
+    let mut regions = bussard_download::planned_parameter_regions(&plan);
+    for region in regions.values_mut() {
+        region.address = BASE;
+    }
+    assert!(plan.parameters_only(&regions)?.forced_octets().is_empty());
+    assert_eq!(
+        plan_of(&app, None)?.device_managed(SEGMENT),
+        Some(&BTreeSet::from([FLAG]))
+    );
     Ok(())
 }
