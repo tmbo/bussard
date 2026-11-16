@@ -390,6 +390,7 @@ impl FlashPlan {
             confirmed_restart: self.confirmed_restart,
             baseline,
             placed: self.placed.clone(),
+            managed: self.managed.clone(),
             unwritten,
             baseline_address,
             security_capacity: self.security_capacity,
@@ -1307,6 +1308,53 @@ impl FlashPlan {
                 (segment.clone(), changed)
             })
             .filter(|(_, changed)| !changed.is_empty())
+            .collect()
+    }
+
+    /// The device-managed octets ([`FlashPlan::device_managed`]) this
+    /// parameter-only download writes although the baseline already holds
+    /// the model's value there (issue #1168), per code segment, as offsets
+    /// into the segment image. The device application may rewrite such an
+    /// octet after the baseline read (the Jung download flag), so the write
+    /// sends it again, as a complete download does. These octets are not in
+    /// [`FlashPlan::changed_octets`] and never cause a download on their
+    /// own (#289); a kept octet ([`FlashPlan::kept`]) is never among them.
+    pub fn forced_octets(&self) -> BTreeMap<String, Vec<usize>> {
+        self.baseline
+            .iter()
+            .filter_map(|(segment, current)| {
+                let managed = self.device_managed(segment)?;
+                let desired = self.images.get(segment)?;
+                let mask = self.segment_mask(segment);
+                let parts: Vec<std::ops::Range<usize>> = self
+                    .steps
+                    .iter()
+                    .filter_map(|step| match step {
+                        FlashStep::WriteMem { image, .. }
+                        | FlashStep::WriteRelMem { image, .. }
+                            if &image.segment_id == segment =>
+                        {
+                            Some(image.offset..image.offset.saturating_add(image.len))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let forced: Vec<usize> = managed
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        desired.get(i).is_some()
+                            && current.get(i) == desired.get(i)
+                            && mask.is_none_or(|m| m.get(i) == Some(&0xFF))
+                            && parts.iter().any(|p| p.contains(&i))
+                            && !self
+                                .kept
+                                .iter()
+                                .any(|k| &k.segment == segment && k.contains(i))
+                    })
+                    .collect();
+                (!forced.is_empty()).then(|| (segment.clone(), forced))
+            })
             .collect()
     }
 }

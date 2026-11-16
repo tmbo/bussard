@@ -457,10 +457,14 @@ async fn stream_sys7_image<C: Connector, F: FnMut(Progress)>(
         let mut owned = vec![0u8; bytes.len()];
         // The historic gap on System 7 (see `LEGACY_MERGE_GAP`): any join
         // within it counts as saving a request, as before issue #210.
-        let regions = super::execute::diff_regions(
+        // A device-managed octet goes out whatever the baseline holds, as
+        // on System B (issue #1168); the segment's mask still keeps it out
+        // where the mask says so.
+        let regions = super::execute::diff_regions_forcing(
             bytes,
             current,
             mask,
+            &super::execute::forced_in_part(plan, image, bytes.len()),
             super::execute::LEGACY_MERGE_GAP,
             &|_, _| usize::MAX,
         );

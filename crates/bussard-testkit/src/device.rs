@@ -281,6 +281,14 @@ pub struct MockDevice {
     /// (see [`MockDevice::with_mcb_split`]); one entry over the whole
     /// segment when absent.
     pub mcb_splits: HashMap<u8, Vec<u32>>,
+    /// The CRC control octet of each `PID_MCB_TABLE` entry, per object
+    /// index, in entry order (see [`MockDevice::with_mcb_crc_controls`]);
+    /// `0x00` for an entry it does not name.
+    pub mcb_crc_controls: HashMap<u8, Vec<u8>>,
+    /// The octets an object's application rewrites on its own when the
+    /// object receives `StartLoading`, per object index: offset into its
+    /// segment and the value (see [`MockDevice::with_load_rewrite`]).
+    pub load_rewrites: HashMap<u8, Vec<(u32, u8)>>,
     /// Hold every application-layer answer back this long after the `T_ACK`,
     /// as a real device on a busy line does (about 200 ms per request on the
     /// Data Secure devices of the speed deep dive, 2026-09-24).
@@ -689,6 +697,8 @@ impl MockDevice {
             single_element_reads: false,
             mcb_tables: false,
             mcb_splits: HashMap::new(),
+            mcb_crc_controls: HashMap::new(),
+            load_rewrites: HashMap::new(),
             response_delay: None,
             descriptions: HashMap::new(),
             properties: HashMap::new(),
@@ -804,6 +814,31 @@ impl MockDevice {
         self
     }
 
+    /// Reports `controls` as the CRC control octets of `object_index`'s
+    /// `PID_MCB_TABLE` entries, in entry order (Resources 03_05_01
+    /// §4.2.27.1.1: bit 0 set marks memory the application may change after
+    /// the load), and turns [`MockDevice::with_mcb_tables`] on. The CRC is
+    /// still computed over the memory as it stands at the read.
+    pub fn with_mcb_crc_controls(mut self, object_index: u8, controls: &[u8]) -> Self {
+        self.mcb_tables = true;
+        self.mcb_crc_controls
+            .insert(object_index, controls.to_vec());
+        self
+    }
+
+    /// Sets octet `offset` of `object_index`'s segment to `value` whenever
+    /// the object receives `StartLoading`, as an application that owns a
+    /// value at runtime does (issue #1168: a Jung actuator clears its
+    /// download flag during the load, after a parameter-only download read
+    /// it). No segment yet, no rewrite.
+    pub fn with_load_rewrite(mut self, object_index: u8, offset: u32, value: u8) -> Self {
+        self.load_rewrites
+            .entry(object_index)
+            .or_default()
+            .push((offset, value));
+        self
+    }
+
     /// The `PID_MCB_TABLE` entries `object_index` answers now (see
     /// [`MockDevice::with_mcb_tables`]): none unless it is `Loaded` with a
     /// segment.
@@ -819,15 +854,18 @@ impl MockDevice {
             .get(&object_index)
             .cloned()
             .unwrap_or_else(|| vec![size]);
+        let controls = self.mcb_crc_controls.get(&object_index);
         let mut offset = 0u32;
         sizes
             .iter()
-            .map(|&len| {
+            .enumerate()
+            .map(|(i, &len)| {
                 let bytes = self.read_mem(base.wrapping_add(offset), len as usize);
                 offset = offset.wrapping_add(len);
                 let crc = crate::consts::crc16_system_b(&bytes).to_be_bytes();
                 let l = len.to_be_bytes();
-                [l[0], l[1], l[2], l[3], 0x00, 0x33, crc[0], crc[1]]
+                let control = controls.and_then(|c| c.get(i)).copied().unwrap_or(0);
+                [l[0], l[1], l[2], l[3], control, 0x33, crc[0], crc[1]]
             })
             .collect()
     }
@@ -1915,6 +1953,14 @@ impl MockDevice {
             return answer(self.load_state(oi));
         }
         let prior = self.load_state(oi);
+        if event == LE_START_LOADING
+            && let (Some(&(base, _)), Some(rewrites)) =
+                (self.segments.get(&oi), self.load_rewrites.get(&oi))
+        {
+            for &(offset, value) in rewrites {
+                self.memory.insert(base.wrapping_add(offset), value);
+            }
+        }
         let new_state = match event {
             LE_START_LOADING => LS_LOADING,
             LE_LOAD_COMPLETED => LS_LOADED,

@@ -964,6 +964,7 @@ pub(super) fn plan_flash_properties(
         confirmed_restart: false,
         baseline: BTreeMap::new(),
         placed: BTreeMap::new(),
+        managed: BTreeMap::new(),
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),

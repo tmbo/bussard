@@ -10,6 +10,7 @@ mod builtin_template;
 mod com_object_descriptors;
 mod compare_rel_mem;
 mod dataless_segment;
+mod device_managed_partial;
 mod enum_default_plan;
 mod ets_golden;
 mod flash_corpus;

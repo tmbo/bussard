@@ -693,8 +693,18 @@ impl StepExecutor for SystemB<'_> {
                     }
                     // Where the base read before the download holds,
                     // write only the octets that differ from it.
+                    // A device-managed octet goes out whatever the baseline
+                    // holds (issue #1168): the application may rewrite it
+                    // after the baseline read. A kept octet stays unwritten.
                     (Some((current, expected)), _) if expected == Some(addr) => {
-                        diff_regions(&bytes, current, kept.as_deref(), sparse_merge_gap(), &chunk)
+                        diff_regions_forcing(
+                            &bytes,
+                            current,
+                            kept.as_deref(),
+                            &forced_in_part(plan, image, bytes.len()),
+                            sparse_merge_gap(),
+                            &chunk,
+                        )
                     }
                     // The device placed the segment elsewhere: what it
                     // holds there is unknown, so the whole image goes.
@@ -874,8 +884,16 @@ impl StepExecutor for SystemB<'_> {
                     Some(current) => {
                         let caps = ChunkCaps::of(session.l4());
                         let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
-                        let regions =
-                            diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
+                        // A device-managed octet goes out whatever the
+                        // baseline holds (issue #1168).
+                        let regions = diff_regions_forcing(
+                            &bytes,
+                            current,
+                            None,
+                            &forced_in_part(plan, image, bytes.len()),
+                            sparse_merge_gap(),
+                            &chunk,
+                        );
                         for (start, end) in regions {
                             write_image(
                                 session,
@@ -1971,6 +1989,25 @@ pub(super) fn kept_mask(
     mask
 }
 
+/// The device-managed octets ([`super::FlashPlan::device_managed`]) inside
+/// the part `image` of a write step, `len` octets, as offsets into the part:
+/// the octets a parameter-only download writes whatever its baseline holds
+/// (issue #1168). The caller's mask still keeps a kept octet unwritten.
+pub(super) fn forced_in_part(
+    plan: &super::FlashPlan,
+    image: &super::ImageRef,
+    len: usize,
+) -> BTreeSet<usize> {
+    let end = image.offset.saturating_add(len);
+    plan.device_managed(&image.segment_id)
+        .map(|m| {
+            m.range(image.offset..end)
+                .map(|&o| o - image.offset)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The runs `[start, end)` of a part of `len` octets a write step sends:
 /// the octets `mask` ([`kept_mask`]) marks `0xFF`, else the whole part (one
 /// run, empty for an empty part).
@@ -1995,8 +2032,24 @@ pub(super) fn diff_regions(
     max_gap: usize,
     chunk: &dyn Fn(usize, usize) -> usize,
 ) -> Vec<(usize, usize)> {
+    diff_regions_forcing(image, current, mask, &BTreeSet::new(), max_gap, chunk)
+}
+
+/// [`diff_regions`], with each octet of `forced` that `mask` lets the write
+/// touch counted as differing whatever `current` holds (issue #1168: a
+/// device-managed octet, [`forced_in_part`]). A forced octet the mask keeps
+/// is not written.
+pub(super) fn diff_regions_forcing(
+    image: &[u8],
+    current: &[u8],
+    mask: Option<&[u8]>,
+    forced: &BTreeSet<usize>,
+    max_gap: usize,
+    chunk: &dyn Fn(usize, usize) -> usize,
+) -> Vec<(usize, usize)> {
     let writable = |i: usize| mask.is_none_or(|m| m.get(i) == Some(&0xFF));
-    let differs = |i: usize| writable(i) && current.get(i) != Some(&image[i]);
+    let differs =
+        |i: usize| writable(i) && (forced.contains(&i) || current.get(i) != Some(&image[i]));
     let runs = differing_runs(image.len(), differs);
     merge_runs(runs, max_gap, chunk, |end, start| {
         (end..start).all(writable)
@@ -2327,6 +2380,46 @@ mod tests {
         mask[3] = 0x00;
         assert_eq!(regions(&image, Some(&mask)), vec![(1, 2), (4, 5), (10, 11)]);
         assert!(regions(&current, None).is_empty());
+    }
+
+    /// Issue #1168: a device-managed octet goes out whatever the baseline
+    /// holds, unless the mask keeps it; with nothing else to write, a forced
+    /// octet is its own write (the caller decides whether a download runs).
+    #[test]
+    fn test_diff_regions_forcing_writes_forced_octets_the_mask_allows() {
+        let legacy = |_: usize, _: usize| usize::MAX;
+        let current: [u8; 20] = std::array::from_fn(|i| i as u8);
+        let mut image = current;
+        image[1] = 0xAA;
+        let forced = BTreeSet::from([8usize, 18]);
+        let regions = |mask: Option<&[u8]>| {
+            diff_regions_forcing(&image, &current, mask, &forced, LEGACY_MERGE_GAP, &legacy)
+        };
+        // The equal octets 8 and 18 are written besides the change at 1.
+        assert_eq!(regions(None), vec![(1, 2), (8, 9), (18, 19)]);
+        // A forced octet the plan keeps (mask 0x00) is never written.
+        let mut mask = [0xFFu8; 20];
+        mask[18] = 0x00;
+        assert_eq!(regions(Some(&mask)), vec![(1, 2), (8, 9)]);
+        mask[8] = 0x00;
+        assert_eq!(regions(Some(&mask)), vec![(1, 2)]);
+        // Without forced octets the diff is `diff_regions`'s.
+        assert_eq!(
+            diff_regions_forcing(
+                &image,
+                &current,
+                None,
+                &BTreeSet::new(),
+                LEGACY_MERGE_GAP,
+                &legacy
+            ),
+            diff_regions(&image, &current, None, LEGACY_MERGE_GAP, &legacy)
+        );
+        // An unchanged image with a forced octet writes only that octet.
+        assert_eq!(
+            diff_regions_forcing(&current, &current, None, &forced, LEGACY_MERGE_GAP, &legacy),
+            vec![(8, 9), (18, 19)]
+        );
     }
 
     #[test]

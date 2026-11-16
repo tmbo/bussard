@@ -1283,6 +1283,14 @@ pub struct FlashPlan {
     /// parameter-only download compares and writes. Every other octet keeps
     /// what the device holds, as in ETS's download.
     placed: bussard_product::PlacedOctets,
+    /// The octets of each segment that hold a device-managed value under the
+    /// configuration the plan was built for (`Access="None"` parameters the
+    /// configuration reaches, [`crate::device_managed_octets`]). The device
+    /// application may rewrite such an octet between the baseline read and
+    /// the load (a download flag), so a parameter-only download writes each
+    /// one it does not keep at the model's value, whatever the baseline
+    /// holds (issue #1168). It never causes a download on its own (#289).
+    managed: bussard_product::PlacedOctets,
     /// The octets a parameter-only download leaves as the device holds them
     /// although the model's image differs there (issue #290): per segment,
     /// each octet's offset and the model's byte. Empty for a full flash.
@@ -2129,6 +2137,15 @@ impl FlashPlan {
         self.sys7
             .iter()
             .flat_map(|s| s.code_segments.iter().map(String::as_str))
+    }
+
+    /// The octets of `segment_id` that hold a device-managed value
+    /// (`Access="None"`, [`crate::device_managed_octets`]) under the
+    /// configuration the plan was built for, `None` when it holds none. A
+    /// parameter-only download writes each one it does not keep at the
+    /// model's value, whatever the baseline holds (issue #1168).
+    pub fn device_managed(&self, segment_id: &str) -> Option<&BTreeSet<usize>> {
+        self.managed.get(segment_id).filter(|m| !m.is_empty())
     }
 
     /// The resident octets a parameter-only download diffs `segment_id`'s image

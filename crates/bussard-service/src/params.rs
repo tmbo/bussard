@@ -1269,6 +1269,21 @@ pub fn device_managed_only(ranges: &[OctetAttribution]) -> bool {
         })
 }
 
+/// The plan note for the device-managed octets a parameter-only download
+/// writes although the device already holds your project's value there
+/// (issue #1168, [`FlashPlan::forced_octets`]): they are not in the count of
+/// parameter octets, which counts the octets that differ.
+fn forced_note(plan: &FlashPlan) -> Option<String> {
+    let forced: usize = plan.forced_octets().values().map(Vec::len).sum();
+    (forced > 0).then(|| {
+        let s = if forced == 1 { "" } else { "s" };
+        format!(
+            "{forced} device-managed parameter octet{s} written again at your project's value              besides the octets that differ (the application may change {} during the load)",
+            if forced == 1 { "it" } else { "them" }
+        )
+    })
+}
+
 /// The plan note for parameter octets that differ only where the
 /// application owns the value at runtime (issue #289): not written on their
 /// own, written with the next table or parameter write as ETS does at a
@@ -1707,12 +1722,13 @@ pub fn build_device_plan(
                                     notes.push(device_managed_note(octets, &octet_ranges));
                                 } else {
                                     parameter_octets = octets;
-                                    partial = Some(p);
                                     notes.extend(octet_notes(
                                         parameter_octets,
                                         parameters.len(),
                                         &octet_ranges,
                                     ));
+                                    notes.extend(forced_note(&p));
+                                    partial = Some(p);
                                 }
                             }
                         }

@@ -608,9 +608,11 @@ fn plan_flash_as(
     // The octets a `<choose>` branch leaves unwritten stay as the device holds
     // them, as in ETS's download (issue #411, [`KeptOctets`]).
     let kept = kept_from(app, &ops, &branch_gaps);
-    // The device-managed octets, for a write that leaves a tail (issue
-    // #1065, [`super::HeldTail::managed`]); computed on the first one.
-    let mut managed_octets: Option<bussard_product::PlacedOctets> = None;
+    // The device-managed octets: a write that leaves a tail keeps them out
+    // of its comparison (issue #1065, [`super::HeldTail::managed`]), and a
+    // parameter-only download writes them whatever the baseline holds
+    // (issue #1168, [`FlashPlan::device_managed`]).
+    let managed_octets = crate::device_managed_octets(app, overrides, base_offsets, memo);
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -1283,9 +1285,6 @@ fn plan_flash_as(
                 let held_tail = held.map(|(start, fill)| {
                     let end = bytes.len();
                     let managed = managed_octets
-                        .get_or_insert_with(|| {
-                            crate::device_managed_octets(app, overrides, base_offsets, memo)
-                        })
                         .get(&segment_id)
                         .map(|m| m.range(start..end).copied().collect())
                         .unwrap_or_default();
@@ -1750,6 +1749,7 @@ fn plan_flash_as(
         confirmed_restart: form.is_confirmed(),
         baseline: BTreeMap::new(),
         placed,
+        managed: managed_octets,
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
