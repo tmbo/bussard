@@ -1269,17 +1269,28 @@ pub fn device_managed_only(ranges: &[OctetAttribution]) -> bool {
         })
 }
 
+/// How many device-managed octets a parameter-only download writes
+/// although the device already holds your project's value there (issue
+/// #1168, [`FlashPlan::forced_octets`]).
+pub fn forced_count(plan: &FlashPlan) -> usize {
+    plan.forced_octets().values().map(Vec::len).sum()
+}
+
 /// The plan note for the device-managed octets a parameter-only download
 /// writes although the device already holds your project's value there
-/// (issue #1168, [`FlashPlan::forced_octets`]): they are not in the count of
-/// parameter octets, which counts the octets that differ.
-fn forced_note(plan: &FlashPlan) -> Option<String> {
-    let forced: usize = plan.forced_octets().values().map(Vec::len).sum();
+/// (issue #1168, [`forced_count`]). The plan's count of parameter octets
+/// includes them; the note says which part they are.
+pub fn forced_note(plan: &FlashPlan) -> Option<String> {
+    let forced = forced_count(plan);
     (forced > 0).then(|| {
-        let s = if forced == 1 { "" } else { "s" };
+        let (s, them) = if forced == 1 {
+            ("", "it")
+        } else {
+            ("s", "them")
+        };
         format!(
-            "{forced} device-managed parameter octet{s} written again at your project's value              besides the octets that differ (the application may change {} during the load)",
-            if forced == 1 { "it" } else { "them" }
+            "{forced} device-managed parameter octet{s} written again at your project's value \
+             besides the octets that differ (the application may change {them} during the load)"
         )
     })
 }
@@ -1708,7 +1719,11 @@ pub fn build_device_plan(
                                 // Issue #944: a program whose parameters all
                                 // live in properties; the download matches
                                 // ETS's parameter-only one (the run=params
-                                // row of the ETS sweep's E804 capture).
+                                // row of the ETS sweep's E804 capture). A
+                                // device-managed octet in its memory goes out
+                                // with it (issue #1168), counted and noted.
+                                parameter_octets = forced_count(&p);
+                                notes.extend(forced_note(&p));
                                 partial = Some(p);
                             } else if octets > 0 {
                                 if report.is_noop()
@@ -1721,9 +1736,12 @@ pub fn build_device_plan(
                                     // listed, but never written on their own.
                                     notes.push(device_managed_note(octets, &octet_ranges));
                                 } else {
-                                    parameter_octets = octets;
+                                    // The octets that differ, and the
+                                    // device-managed ones written besides
+                                    // them (issue #1168), named in a note.
+                                    parameter_octets = octets + forced_count(&p);
                                     notes.extend(octet_notes(
-                                        parameter_octets,
+                                        octets,
                                         parameters.len(),
                                         &octet_ranges,
                                     ));
@@ -1832,6 +1850,93 @@ pub fn build_device_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 07B0 application with `value` at octet 0 and a download flag
+    /// (`Access="None"`, `Value="1"`) at octet 7 of an 8-octet segment.
+    fn flag_app()
+    -> Result<bussard_product::application::ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-00FA_A-1168" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Flag" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-00FA_A-1168_RS-04-00000" Size="8" LoadStateMachine="4" Offset="0"><Data>AAAAAAAAAAA=</Data></RelativeSegment>
+       </Code>
+       <ParameterTypes>
+        <ParameterType Id="M-00FA_A-1168_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="M-00FA_A-1168_P-1" Name="value" ParameterType="M-00FA_A-1168_PT-1" Value="5"><Memory CodeSegment="M-00FA_A-1168_RS-04-00000" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="M-00FA_A-1168_P-2" Name="flag" ParameterType="M-00FA_A-1168_PT-1" Access="None" Value="1"><Memory CodeSegment="M-00FA_A-1168_RS-04-00000" Offset="7" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="M-00FA_A-1168_P-1_R-1" RefId="M-00FA_A-1168_P-1" />
+        <ParameterRef Id="M-00FA_A-1168_P-2_R-2" RefId="M-00FA_A-1168_P-2" />
+       </ParameterRefs>
+       <LoadProcedures>
+        <LoadProcedure MergeId="1">
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="8" Mode="0" Fill="0" />
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="8" Verify="false" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+      <Dynamic>
+       <ChannelIndependentBlock>
+        <ParameterBlock Id="M-00FA_A-1168_PB-1" Name="general">
+         <ParameterRefRef RefId="M-00FA_A-1168_P-1_R-1" />
+         <ParameterRefRef RefId="M-00FA_A-1168_P-2_R-2" />
+        </ParameterBlock>
+       </ChannelIndependentBlock>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+        Ok(bussard_product::application::parse_application_program(
+            "M-00FA_A-1168",
+            xml.as_bytes(),
+        )?)
+    }
+
+    /// Issue #1168: the note and the count of the device-managed octets a
+    /// parameter-only download writes besides the ones that differ.
+    #[test]
+    fn test_forced_note_names_the_device_managed_octets_written_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = flag_app()?;
+        let plan = |value: &str| {
+            bussard_download::plan_flash(
+                &app,
+                "1.1.1",
+                0x07B0,
+                &BTreeMap::from([("P-1_R-1".to_string(), value.to_string())]),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &bussard_product::dynamic::DynamicMemo::new(&app),
+            )
+        };
+        let device = plan("5")?;
+        let regions = bussard_download::planned_parameter_regions(&device);
+        let partial = plan("9")?.parameters_only(&regions)?;
+        assert_eq!(partial.changed_octets(), 1);
+        assert_eq!(forced_count(&partial), 1);
+        assert_eq!(
+            forced_note(&partial).as_deref(),
+            Some(
+                "1 device-managed parameter octet written again at your project's value besides \
+                 the octets that differ (the application may change it during the load)"
+            )
+        );
+        // Nothing differs: no download, so no note either (issue #289).
+        let same = device.parameters_only(&regions)?;
+        assert_eq!(same.changed_octets(), 0);
+        Ok(())
+    }
 
     fn catalog(ids: &[&str]) -> ProductCatalog {
         ProductCatalog {

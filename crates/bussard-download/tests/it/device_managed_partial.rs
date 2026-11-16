@@ -17,8 +17,8 @@ use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
 use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::consts::{
-    A_MEMORY_WRITE, LS_LOADED, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE,
-    OT_DEVICE, OT_GROUP_OBJECT_TABLE,
+    A_MEMORY_WRITE, LE_LOAD_COMPLETED, LE_START_LOADING, LS_LOADED, OT_ADDRESS_TABLE,
+    OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
 };
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -45,7 +45,22 @@ const BASE: u32 = 0x6000;
 /// (`Access="None"`, `Value="1"`) at octet 7, a Mode 0 allocation and the MCB
 /// check of object 4 over two entries.
 fn app() -> TestResult<ApplicationProgram> {
-    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+    Ok(parse_application_program(APP_ID, APP_XML.as_bytes())?)
+}
+
+/// [`app`] with its segment declared without `<Data>` and no MCB check: the
+/// octets 1 to 6 no parameter occupies are kept on the device (issue
+/// #1084), so the write's read-back samples what it wrote.
+fn dataless_app() -> TestResult<ApplicationProgram> {
+    let xml = APP_XML.replace("<Data>AAAAAAAAAAA=</Data>", "").replace(
+        r#"<LdCtrlLoadImageProp ObjIdx="4" PropId="27" Count="2" />"#,
+        "",
+    );
+    Ok(parse_application_program(APP_ID, xml.as_bytes())?)
+}
+
+/// The XML of [`app`].
+const APP_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-00FA_A-1168" ApplicationNumber="1" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="Flag" LoadProcedureStyle="MergedProcedure">
       <Static>
@@ -86,8 +101,6 @@ fn app() -> TestResult<ApplicationProgram> {
        </ChannelIndependentBlock>
       </Dynamic>
      </ApplicationProgram></KNX>"#;
-    Ok(parse_application_program(APP_ID, xml.as_bytes())?)
-}
 
 /// The complete download of [`app`] for 1.1.1 with `value` set.
 fn plan_of(app: &ApplicationProgram, value: Option<u8>) -> TestResult<FlashPlan> {
@@ -110,6 +123,18 @@ fn plan_of(app: &ApplicationProgram, value: Option<u8>) -> TestResult<FlashPlan>
 /// memory, CRC control `0x00`, then the flag, CRC control `0x01`), and an
 /// application that clears the flag when object 4 starts loading.
 fn device() -> TestResult<MockDevice> {
+    Ok(mcb_device()?.with_load_rewrite(4, LE_START_LOADING, FLAG as u32, 0x00))
+}
+
+/// [`device`] without the application that clears the flag.
+fn mcb_device() -> TestResult<MockDevice> {
+    Ok(plain_device()?
+        .with_mcb_split(4, &[FLAG as u32, 1])
+        .with_mcb_crc_controls(4, &[0x00, 0x01]))
+}
+
+/// A System B device of 1.1.1 with the objects the product loads.
+fn plain_device() -> TestResult<MockDevice> {
     Ok(MockDevice::system_b(ia("1.1.1")?)
         .with_object_types(&[
             OT_DEVICE,
@@ -118,10 +143,7 @@ fn device() -> TestResult<MockDevice> {
             OT_GROUP_OBJECT_TABLE,
             OT_APPLICATION_PROGRAM,
         ])
-        .with_segment_base(4, BASE)
-        .with_mcb_split(4, &[FLAG as u32, 1])
-        .with_mcb_crc_controls(4, &[0x00, 0x01])
-        .with_load_rewrite(4, FLAG as u32, 0x00))
+        .with_segment_base(4, BASE))
 }
 
 /// Opens `$session` to 1.1.1 behind `$gw` over the transport `$bus`.
@@ -249,5 +271,92 @@ async fn test_flash_parameters_only_writes_the_device_managed_flag_the_baseline_
     assert_eq!(dev.read_mem(BASE, 8), vec![9, 0, 0, 0, 0, 0, 0, 1]);
     assert_eq!(dev.load_state(4), LS_LOADED);
     assert_eq!(dev.restarts, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_restoring_writes_no_request_covering_the_device_managed_octet() -> TestResult {
+    // A restore leaves a device-managed octet as the device holds it: it is
+    // never forced, even when the restore writes other octets (issue #1168).
+    let app = app()?;
+    let gw = MockGateway::builder().device(mcb_device()?).start().await?;
+    open!(gw, bus, session);
+    let defaults = plan_of(&app, None)?;
+    let outcome = flash(&mut session, &defaults, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    gw.with_device(ia("1.1.1")?, |d| d.requests.clear())?;
+    let regions = read_parameter_regions(session.l4(), &defaults, &[]).await;
+    let partial = defaults.parameters_only(&regions)?;
+    assert!(!partial.forced_octets().is_empty());
+    let mut backup = bussard_download::regions_memory(&regions);
+    if let Some(bytes) = backup.get_mut(SEGMENT) {
+        bytes[0] = 3;
+    }
+    let restore = partial.restoring(&backup);
+    assert_eq!(restore.changed_octets(), 1);
+    assert!(restore.forced_octets().is_empty());
+    let outcome = flash(&mut session, &restore, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let _ = session.into_disconnect().await;
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    let writes = segment_writes(&dev);
+    assert_eq!(writes, vec![(BASE, 1)], "{writes:?}");
+    assert!(
+        writes
+            .iter()
+            .all(|&(a, n)| !(a..a + n as u32).contains(&(BASE + FLAG as u32))),
+        "{writes:?}"
+    );
+    assert_eq!(dev.read_mem(BASE, 8), vec![3, 0, 0, 0, 0, 0, 0, 1]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_parameters_only_does_not_compare_the_forced_octet() -> TestResult {
+    // A segment with kept octets (issue #1084) and no verify-mode echo: the
+    // closing read-back samples what the write sent. The application
+    // rewrites the forced flag after the write, at LoadCompleted; the
+    // download still verifies, because the forced octet is written, never
+    // compared (issue #1168).
+    let app = dataless_app()?;
+    let gw = MockGateway::builder()
+        .device(plain_device()?)
+        .start()
+        .await?;
+    open!(gw, bus, session);
+    let defaults = plan_of(&app, None)?;
+    let outcome = flash(&mut session, &defaults, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    gw.with_device(ia("1.1.1")?, |d| {
+        d.requests.clear();
+        // From here on the application clears the flag at LoadCompleted.
+        d.load_rewrites
+            .insert((4, LE_LOAD_COMPLETED), vec![(FLAG as u32, 0x00)]);
+    })?;
+    let full = plan_of(&app, Some(9))?;
+    let regions = read_parameter_regions(session.l4(), &full, &[]).await;
+    let partial = full.parameters_only(&regions)?;
+    assert!(
+        partial.kept().iter().any(|k| k.segment == SEGMENT),
+        "{:?}",
+        partial.kept()
+    );
+    assert_eq!(
+        partial.forced_octets(),
+        BTreeMap::from([(SEGMENT.to_string(), vec![FLAG])])
+    );
+    let outcome = flash(&mut session, &partial, FlashOptions::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let _ = session.into_disconnect().await;
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    // `value` and the flag, each on its own: the kept octets between them
+    // are never written.
+    assert_eq!(
+        segment_writes(&dev),
+        vec![(BASE, 1), (BASE + FLAG as u32, 1)]
+    );
+    // The application cleared the flag after the write.
+    assert_eq!(dev.read_mem(BASE + FLAG as u32, 1), vec![0x00]);
+    assert_eq!(dev.read_mem(BASE, 1), vec![9]);
     Ok(())
 }

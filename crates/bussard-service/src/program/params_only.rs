@@ -288,13 +288,18 @@ impl ParamsPlanned {
     /// The one question before the write.
     pub fn question(&self, target: IndividualAddress, gateway: &str) -> Question {
         let octets = self.partial.changed_octets();
-        let what = if self.properties.is_empty() {
+        // The device-managed octets written besides the ones that differ
+        // (issue #1168): never a question of "0 octets" while memory goes.
+        let forced = crate::params::forced_count(&self.partial);
+        let octets = if forced == 0 {
             format!("{octets} octet(s)")
         } else {
-            format!(
-                "{octets} octet(s), {} propert(y/ies)",
-                self.properties.len()
-            )
+            format!("{octets} octet(s) and {forced} device-managed octet(s) written again")
+        };
+        let what = if self.properties.is_empty() {
+            octets
+        } else {
+            format!("{octets}, {} propert(y/ies)", self.properties.len())
         };
         let note = parameter_write_note(&self.partial);
         let note = if note.is_empty() {

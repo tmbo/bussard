@@ -293,7 +293,7 @@ async fn test_parameters_only_and_restore_leave_the_unoccupied_octets_alone() ->
 
     // The restore puts the backup's delay back, and nothing else.
     let partial = full.parameters_only(&regions(&mut session, &full).await)?;
-    let restore = partial.restoring(&backup, &bussard_product::PlacedOctets::new());
+    let restore = partial.restoring(&backup);
     assert!(
         restore.unwritten_bits().is_empty(),
         "{:?}",

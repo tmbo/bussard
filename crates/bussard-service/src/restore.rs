@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 
 use bussard_download::backup::ParameterBackup;
-use bussard_download::{FlashPlan, PartialPlanError, attribute_octets, device_managed_octets};
+use bussard_download::{FlashPlan, PartialPlanError, attribute_octets};
 use bussard_model::{IndividualAddress, Model};
 use bussard_product::ApplicationProgram;
 
@@ -629,19 +629,13 @@ pub fn build_restore_plan(
     let wanted = backup_memory(detail, backup)?;
     let (props, properties) = backup_properties(detail, backup)?;
     let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let managed = device_managed_octets(
-        app,
-        &overrides,
-        &bases,
-        &bussard_product::dynamic::DynamicMemo::new(app),
-    );
     // `restoring` never writes a held tail (issue #1065), so a tail the
     // device holds differently from the model does not stop a restore.
     let partial = detail
         .plan
         .parameters_only_with_tails(&detail.regions)?
         .0
-        .restoring(&wanted, &managed)
+        .restoring(&wanted)
         .with_property_values(&props);
     let current = bussard_download::regions_memory(&detail.regions);
     let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {

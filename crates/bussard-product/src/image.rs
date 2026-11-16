@@ -343,11 +343,32 @@ pub fn compute_parameter_image_placed_with(
     base_offsets: &BTreeMap<String, u32>,
     memo: &crate::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<(BTreeMap<String, Vec<u8>>, PlacedOctets)> {
+    compute_parameter_image_placed_managed_with(app, overrides, base_offsets, memo)
+        .map(|(images, placed, _)| (images, placed))
+}
+
+/// [`compute_parameter_image_placed_with`], with the octets of the
+/// device-managed placements apart: a parameter the configuration reaches
+/// (a placement with a `ParameterRef`) whose effective `Access` (the ref's,
+/// else the parameter's) is `None`, a value the application owns at runtime
+/// such as a download flag (issues #290, #1168). Recorded in the same pass
+/// that places the values, so a planner gets them without another walk.
+///
+/// # Errors
+///
+/// As [`compute_parameter_image`].
+pub fn compute_parameter_image_placed_managed_with(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    memo: &crate::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Result<(BTreeMap<String, Vec<u8>>, PlacedOctets, PlacedOctets)> {
     let mut placed = PlacedOctets::new();
+    let mut managed = PlacedOctets::new();
     if uses_dynamic_image(app) {
         let config = memo.evaluate_for(app, overrides);
-        let images = dynamic_image(app, &config, &mut placed)?;
-        return Ok((images, placed));
+        let images = dynamic_image(app, &config, &mut placed, &mut managed)?;
+        return Ok((images, placed, managed));
     }
     // Calculations run inside the Dynamic evaluation, which this path does
     // not do. ETS runs one only once an input leaves its vendor default (the
@@ -375,6 +396,9 @@ pub fn compute_parameter_image_placed_with(
             ValueSource::VendorDefault
         };
         let range = write_slot(app, &mut images, &slot.slot, slot.value.as_deref(), source)?;
+        if device_managed_slot(app, &slot.slot) {
+            mark(&mut managed, slot.slot.segment, range.clone());
+        }
         mark(&mut placed, slot.slot.segment, range);
     }
 
@@ -386,7 +410,22 @@ pub fn compute_parameter_image_placed_with(
         &mut images,
         &placed,
     );
-    Ok((images, placed))
+    Ok((images, placed, managed))
+}
+
+/// Whether `slot` places a device-managed value: the configuration reaches
+/// it (it has a `ParameterRef`) and its effective `Access` (the ref's, else
+/// the parameter's) is `None` (see
+/// [`compute_parameter_image_placed_managed_with`]).
+fn device_managed_slot(app: &ApplicationProgram, slot: &ParameterSlot<'_>) -> bool {
+    let Some(ref_id) = slot.param_ref_id.as_deref() else {
+        return false;
+    };
+    app.parameter_refs
+        .get(&format!("{}_{ref_id}", app.id))
+        .and_then(|r| r.access.as_deref())
+        .or(slot.parameter.access.as_deref())
+        .is_some_and(|a| a.trim().eq_ignore_ascii_case("none"))
 }
 
 /// One value the static image builder writes (an application without a
@@ -811,7 +850,12 @@ pub fn compute_dynamic_parameter_image(
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let config = crate::dynamic::evaluate_dynamic(app, overrides);
-    dynamic_image(app, &config, &mut PlacedOctets::new())
+    dynamic_image(
+        app,
+        &config,
+        &mut PlacedOctets::new(),
+        &mut PlacedOctets::new(),
+    )
 }
 
 /// [`compute_dynamic_parameter_image`] from the evaluated configuration
@@ -821,6 +865,7 @@ fn dynamic_image(
     app: &ApplicationProgram,
     config: &crate::dynamic::DynamicConfig,
     placed: &mut PlacedOctets,
+    managed: &mut PlacedOctets,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     validate_segments(app)?;
     if let Some(key) = config.unresolved_overrides.first() {
@@ -943,6 +988,9 @@ fn dynamic_image(
                     _ => err,
                 }
             })?;
+        if device_managed_slot(app, &slot) {
+            mark(managed, slot.segment, range.clone());
+        }
         mark(placed, slot.segment, range);
     }
 

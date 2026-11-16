@@ -608,11 +608,6 @@ fn plan_flash_as(
     // The octets a `<choose>` branch leaves unwritten stay as the device holds
     // them, as in ETS's download (issue #411, [`KeptOctets`]).
     let kept = kept_from(app, &ops, &branch_gaps);
-    // The device-managed octets: a write that leaves a tail keeps them out
-    // of its comparison (issue #1065, [`super::HeldTail::managed`]), and a
-    // parameter-only download writes them whatever the baseline holds
-    // (issue #1168, [`FlashPlan::device_managed`]).
-    let managed_octets = crate::device_managed_octets(app, overrides, base_offsets, memo);
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -620,12 +615,23 @@ fn plan_flash_as(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let (param_images, mut placed) =
-        bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
-            .map_err(|e| PlanError::UnresolvableImage {
-                step: 0,
-                reason: format!("computing the parameter image: {e}"),
-            })?;
+    //
+    // The same pass records the device-managed octets: a write that leaves a
+    // tail keeps them out of its comparison (issue #1065,
+    // [`super::HeldTail::managed`]), and a parameter-only download writes
+    // them whatever the baseline holds (issue #1168,
+    // [`FlashPlan::device_managed`]). No second walk of the placements.
+    let (param_images, mut placed, managed_octets) =
+        bussard_product::compute_parameter_image_placed_managed_with(
+            app,
+            overrides,
+            base_offsets,
+            memo,
+        )
+        .map_err(|e| PlanError::UnresolvableImage {
+            step: 0,
+            reason: format!("computing the parameter image: {e}"),
+        })?;
 
     // A program that is not Data Secure enabled has its objects named by
     // type written at the index the device's object list gives them, on the
@@ -1750,6 +1756,7 @@ fn plan_flash_as(
         baseline: BTreeMap::new(),
         placed,
         managed: managed_octets,
+        force_managed: false,
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),

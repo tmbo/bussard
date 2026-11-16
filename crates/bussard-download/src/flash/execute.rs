@@ -663,6 +663,9 @@ impl StepExecutor for SystemB<'_> {
                 // `<Data>`) go out in no request, written or diffed.
                 let kept = kept_mask(plan, image, bytes.len());
                 let runs = written_runs(kept.as_deref(), bytes.len());
+                // The device-managed octets a parameter-only download writes
+                // whatever the baseline holds (issue #1168).
+                let forced = forced_in_part(plan, image, bytes.len());
                 let partial = plan.baseline.get(&image.segment_id).map(|current| {
                     (
                         image_part(current, image),
@@ -701,7 +704,7 @@ impl StepExecutor for SystemB<'_> {
                             &bytes,
                             current,
                             kept.as_deref(),
-                            &forced_in_part(plan, image, bytes.len()),
+                            &forced,
                             sparse_merge_gap(),
                             &chunk,
                         )
@@ -811,6 +814,10 @@ impl StepExecutor for SystemB<'_> {
                             mask: None,
                         }),
                 };
+                // A forced device-managed octet is written, never compared:
+                // the application may rewrite it after the write (issue
+                // #1168), as the held tail below leaves such octets out.
+                let sample = sample.and_then(|s| without_forced(s, addr, &forced));
                 let own = sample.clone();
                 self.written_samples.extend(sample);
                 // The octets a sparse write skipped hold the fill only if the
@@ -889,7 +896,7 @@ impl StepExecutor for SystemB<'_> {
                         let regions = diff_regions_forcing(
                             &bytes,
                             current,
-                            None,
+                            diff_mask(plan, image, bytes.len()).as_deref(),
                             &forced_in_part(plan, image, bytes.len()),
                             sparse_merge_gap(),
                             &chunk,
@@ -907,12 +914,19 @@ impl StepExecutor for SystemB<'_> {
                     None => write_image(session, addr, &bytes, &mut *progress).await?,
                 }
                 if !bytes.is_empty() {
-                    self.written_samples.push(WrittenSample {
-                        address: addr,
-                        bytes: take_sample(&bytes),
-                        segment: None,
-                        mask: None,
-                    });
+                    // A forced device-managed octet is never compared (issue
+                    // #1168).
+                    let forced = forced_in_part(plan, image, bytes.len());
+                    self.written_samples.extend(without_forced(
+                        WrittenSample {
+                            address: addr,
+                            bytes: take_sample(&bytes),
+                            segment: None,
+                            mask: None,
+                        },
+                        addr,
+                        &forced,
+                    ));
                 }
             }
             // A property write naming an object by index goes to that index,
@@ -1989,23 +2003,74 @@ pub(super) fn kept_mask(
     mask
 }
 
-/// The device-managed octets ([`super::FlashPlan::device_managed`]) inside
-/// the part `image` of a write step, `len` octets, as offsets into the part:
-/// the octets a parameter-only download writes whatever its baseline holds
-/// (issue #1168). The caller's mask still keeps a kept octet unwritten.
+/// The mask a parameter-only write of the part `image` (`len` octets)
+/// diffs under: `0xFF` where it may write, `0x00` on an octet it keeps. On
+/// System 7 the segment's `<Mask>` ([`super::FlashPlan::segment_mask`]), on
+/// System B the octets the plan keeps ([`kept_mask`], issues #411, #1084).
+/// `None` when the step may write the whole part.
+pub(super) fn diff_mask(
+    plan: &super::FlashPlan,
+    image: &super::ImageRef,
+    len: usize,
+) -> Option<Vec<u8>> {
+    if plan.is_sys7() {
+        plan.segment_mask(&image.segment_id)
+            .map(|m| image_part(m, image).to_vec())
+    } else {
+        kept_mask(plan, image, len)
+    }
+}
+
+/// The octets of the part `image` (`len` octets) of a parameter-only write
+/// that go out whatever the baseline holds, as offsets into the part (issue
+/// #1168): the device-managed octets ([`super::FlashPlan::device_managed`])
+/// [`diff_mask`] lets the write touch. Empty unless the plan forces them (a
+/// parameter-only download, not a restore) and holds a baseline of the
+/// segment. The one source of the forced set: the executors diff with it
+/// and [`super::FlashPlan::forced_octets`] reports it. A System B write
+/// whose segment moved writes the whole part anyway, so it is used only
+/// where the baseline address holds.
 pub(super) fn forced_in_part(
     plan: &super::FlashPlan,
     image: &super::ImageRef,
     len: usize,
 ) -> BTreeSet<usize> {
+    if !plan.force_managed || !plan.baseline.contains_key(&image.segment_id) {
+        return BTreeSet::new();
+    }
+    let Some(managed) = plan.device_managed(&image.segment_id) else {
+        return BTreeSet::new();
+    };
+    let mask = diff_mask(plan, image, len);
     let end = image.offset.saturating_add(len);
-    plan.device_managed(&image.segment_id)
-        .map(|m| {
-            m.range(image.offset..end)
-                .map(|&o| o - image.offset)
-                .collect()
-        })
-        .unwrap_or_default()
+    managed
+        .range(image.offset..end)
+        .map(|&o| o - image.offset)
+        .filter(|&i| mask.as_deref().is_none_or(|m| m.get(i) == Some(&0xFF)))
+        .collect()
+}
+
+/// `sample` of a write streamed at `base` with the octets `forced` (offsets
+/// from `base`, [`forced_in_part`]) masked out of the comparison: a forced
+/// device-managed octet is written, never compared (issue #1168). `None`
+/// when no octet is left to compare.
+fn without_forced(
+    mut sample: WrittenSample,
+    base: u32,
+    forced: &BTreeSet<usize>,
+) -> Option<WrittenSample> {
+    let start = sample.address.saturating_sub(base) as usize;
+    let len = sample.bytes.len();
+    if forced.range(start..start + len).next().is_none() {
+        return Some(sample);
+    }
+    let mask = sample.mask.get_or_insert_with(|| vec![0xFF; len]);
+    for &o in forced.range(start..start + len) {
+        if let Some(m) = mask.get_mut(o - start) {
+            *m = 0x00;
+        }
+    }
+    mask.iter().any(|&m| m != 0).then_some(sample)
 }
 
 /// The runs `[start, end)` of a part of `len` octets a write step sends:

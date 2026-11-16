@@ -286,9 +286,9 @@ pub struct MockDevice {
     /// `0x00` for an entry it does not name.
     pub mcb_crc_controls: HashMap<u8, Vec<u8>>,
     /// The octets an object's application rewrites on its own when the
-    /// object receives `StartLoading`, per object index: offset into its
-    /// segment and the value (see [`MockDevice::with_load_rewrite`]).
-    pub load_rewrites: HashMap<u8, Vec<(u32, u8)>>,
+    /// object receives a load event, per object index and event: offset
+    /// into its segment and the value (see [`MockDevice::with_load_rewrite`]).
+    pub load_rewrites: HashMap<(u8, u8), Vec<(u32, u8)>>,
     /// Hold every application-layer answer back this long after the `T_ACK`,
     /// as a real device on a busy line does (about 200 ms per request on the
     /// Data Secure devices of the speed deep dive, 2026-09-24).
@@ -827,13 +827,20 @@ impl MockDevice {
     }
 
     /// Sets octet `offset` of `object_index`'s segment to `value` whenever
-    /// the object receives `StartLoading`, as an application that owns a
-    /// value at runtime does (issue #1168: a Jung actuator clears its
-    /// download flag during the load, after a parameter-only download read
-    /// it). No segment yet, no rewrite.
-    pub fn with_load_rewrite(mut self, object_index: u8, offset: u32, value: u8) -> Self {
+    /// the object receives the load event `event` (`LE_START_LOADING`,
+    /// `LE_LOAD_COMPLETED`, ...), as an application that owns a value at
+    /// runtime does (issue #1168: a Jung actuator clears its download flag
+    /// during the load, after a parameter-only download read it). No
+    /// segment yet, no rewrite.
+    pub fn with_load_rewrite(
+        mut self,
+        object_index: u8,
+        event: u8,
+        offset: u32,
+        value: u8,
+    ) -> Self {
         self.load_rewrites
-            .entry(object_index)
+            .entry((object_index, event))
             .or_default()
             .push((offset, value));
         self
@@ -1953,9 +1960,8 @@ impl MockDevice {
             return answer(self.load_state(oi));
         }
         let prior = self.load_state(oi);
-        if event == LE_START_LOADING
-            && let (Some(&(base, _)), Some(rewrites)) =
-                (self.segments.get(&oi), self.load_rewrites.get(&oi))
+        if let (Some(&(base, _)), Some(rewrites)) =
+            (self.segments.get(&oi), self.load_rewrites.get(&(oi, event)))
         {
             for &(offset, value) in rewrites {
                 self.memory.insert(base.wrapping_add(offset), value);

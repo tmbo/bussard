@@ -296,12 +296,18 @@ pub(super) fn plan_flash_sys7(
     // Resolve parameter images up front: each parameter segment's <Data> is only
     // the vendor's template, and the image streamed for it is that template with
     // the parameters laid over it.
-    let (param_images, mut placed) =
-        bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
-            .map_err(|e| PlanError::UnresolvableImage {
-                step: 0,
-                reason: format!("computing the parameter image: {e}"),
-            })?;
+    // The same pass records the device-managed octets (issue #1168).
+    let (param_images, mut placed, managed) =
+        bussard_product::compute_parameter_image_placed_managed_with(
+            app,
+            overrides,
+            base_offsets,
+            memo,
+        )
+        .map_err(|e| PlanError::UnresolvableImage {
+            step: 0,
+            reason: format!("computing the parameter image: {e}"),
+        })?;
 
     // The data-driven mask profile: from `HawkConfigurationData` when the import
     // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
@@ -970,7 +976,8 @@ pub(super) fn plan_flash_sys7(
         confirmed_restart: false,
         baseline: BTreeMap::new(),
         placed,
-        managed: crate::device_managed_octets(app, overrides, base_offsets, memo),
+        managed,
+        force_managed: false,
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),

@@ -1291,6 +1291,13 @@ pub struct FlashPlan {
     /// one it does not keep at the model's value, whatever the baseline
     /// holds (issue #1168). It never causes a download on its own (#289).
     managed: bussard_product::PlacedOctets,
+    /// Whether this plan writes the [`Self::managed`] octets whatever the
+    /// baseline holds (issue #1168, [`FlashPlan::forced_octets`]): set by
+    /// [`FlashPlan::parameters_only`], whose image holds the model's value
+    /// there. A restore ([`FlashPlan::restoring`]) leaves those octets as
+    /// the device holds them and clears it; a full flash writes everything
+    /// anyway.
+    force_managed: bool,
     /// The octets a parameter-only download leaves as the device holds them
     /// although the model's image differs there (issue #290): per segment,
     /// each octet's offset and the model's byte. Empty for a full flash.

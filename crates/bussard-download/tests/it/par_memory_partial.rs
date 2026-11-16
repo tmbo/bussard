@@ -339,7 +339,7 @@ async fn test_restoring_memory_program_backup_round_trips() -> TestResult {
 
     // The restore puts the backup's octets back through the same procedure.
     let partial = full.parameters_only(&read_parameter_regions(session.l4(), &full, &[]).await)?;
-    let restore = partial.restoring(&backup, &bussard_product::PlacedOctets::new());
+    let restore = partial.restoring(&backup);
     assert_eq!(restore.procedure_kind(), ProcedureKind::ParametersByPar);
     gw.with_device(ia("1.1.1")?, |d| d.requests.clear())?;
     let outcome = run(&mut session, &restore).await?;
