@@ -1072,6 +1072,24 @@ pub async fn master_reset<Ch: L4Channel>(
     Ok(response)
 }
 
+/// The octets of an `LdCtrlCompareProp` `InlineData` a device's answer is
+/// compared against: the first `held` octets when `expected` is longer than
+/// the `held` octets the device returned and every octet past them is zero,
+/// else `expected` unchanged.
+///
+/// Products state a property's value padded with trailing zeros: the Ekinex
+/// EK-E72-TP (`M-00B6_A-4537-03`) compares the six-octet `PID_HARDWARE_TYPE`
+/// against ten octets `45370201000000000000`, and the device answers
+/// `45 37 02 01 00 00`. ETS downloads that program.
+#[must_use]
+pub fn zero_padded_prefix(expected: &[u8], held: usize) -> &[u8] {
+    if held > 0 && held < expected.len() && expected[held..].iter().all(|&b| b == 0) {
+        &expected[..held]
+    } else {
+        expected
+    }
+}
+
 /// Reads an interface-object property and compares it byte-for-byte against
 /// `expected`, honouring an optional `mask` — the execution of a vendor
 /// `LdCtrlCompareProp` op (the verify twin of [`write_property`]).
@@ -1088,8 +1106,10 @@ pub async fn master_reset<Ch: L4Channel>(
 ///
 /// A device that answers a zero-count response, or fewer octets than `expected`,
 /// is a mismatch too (the precondition property is not readable / not present as
-/// declared). Reading the property itself failing surfaces the underlying
-/// [`MgmtError`].
+/// declared), unless every octet of `expected` past the answer is zero: such
+/// `InlineData` is the property padded with trailing zeros, and only the octets
+/// the device returned are compared (see [`zero_padded_prefix`]). Reading the
+/// property itself failing surfaces the underlying [`MgmtError`].
 pub async fn compare_property<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
@@ -1100,6 +1120,9 @@ pub async fn compare_property<Ch: L4Channel>(
 ) -> Result<()> {
     let address = l4.target();
     let resp = property_request(l4, object_index, property_id, start, 1).await?;
+
+    // `InlineData` padded past the property with trailing zeros.
+    let expected = zero_padded_prefix(expected, resp.data.len());
 
     let actual: Vec<u8> = resp.data.iter().take(expected.len()).copied().collect();
     let mask_note = match mask {
@@ -2549,5 +2572,17 @@ mod tests {
         assert!(!rel_mem_compare_passes(&[0xFF, 0xFF], &[0xFF], None, true));
         assert!(!rel_mem_compare_passes(&[0xFF], &[], None, false));
         Ok(())
+    }
+
+    #[test]
+    fn test_zero_padded_prefix_cuts_trailing_zero_padding() {
+        // Ekinex EK-E72-TP: ten octets compared, the device holds six.
+        let expected = [0x45, 0x37, 0x02, 0x01, 0, 0, 0, 0, 0, 0];
+        assert_eq!(zero_padded_prefix(&expected, 6), &expected[..6]);
+        // Non-zero octets past the held length are not padding.
+        assert_eq!(zero_padded_prefix(&[1, 2, 3], 2), &[1, 2, 3]);
+        // An empty answer or a full-length one leaves expected as it is.
+        assert_eq!(zero_padded_prefix(&[1, 0], 0), &[1, 0]);
+        assert_eq!(zero_padded_prefix(&[1, 0], 2), &[1, 0]);
     }
 }

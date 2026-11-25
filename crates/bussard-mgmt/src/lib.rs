@@ -91,6 +91,7 @@ pub use load::{
     read_manufacturer_id, read_mcb_entries_for, read_mcb_table, read_program_version,
     read_property_elements, read_table_reference, restart_process_wait, write_load_control,
     write_load_control_unless_absent, write_load_control_with_poll, write_property,
+    zero_padded_prefix,
 };
 // The memory primitives moved out of `load` into their own module (issue #80);
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still

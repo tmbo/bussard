@@ -325,7 +325,9 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         lsm_states: HashMap::new(),
         memory: HashMap::new(),
         // The MDT A-000E preflight value: 00000000 03 12 00000000.
-        pid78: vec![0x00, 0x00, 0x00, 0x00, 0x03, 0x12, 0x00, 0x00, 0x00, 0x00],
+        // PID_HARDWARE_TYPE is six octets on a real device; the products'
+        // compares pad it to ten with trailing zeros (EK-E72-TP, issue #1171).
+        pid78: vec![0x00, 0x00, 0x00, 0x00, 0x03, 0x12],
         authorized: false,
         authorizes_seen: 0,
         memory_writes_seen: 0,

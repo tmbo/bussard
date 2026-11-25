@@ -468,8 +468,10 @@ pub async fn describe_property<Ch: L4Channel>(
 
 /// Executes an `LdCtrlCompareProp`: reads element `start` (1-based) of
 /// `object`/`prop_id` and compares its first `expected.len()` octets under
-/// `mask`. An index-addressed object keeps the historical
-/// [`bussard_mgmt::compare_property`].
+/// `mask`. When the device answers fewer octets and every octet of `expected`
+/// past the answer is zero, only the octets it returned are compared (see
+/// [`bussard_mgmt::zero_padded_prefix`]). An index-addressed object keeps the
+/// historical [`bussard_mgmt::compare_property`].
 ///
 /// # Errors
 ///
@@ -488,6 +490,7 @@ pub async fn compare_property_value<Ch: L4Channel>(
         return bussard_mgmt::compare_property(l4, index, pid, start, expected, mask).await;
     }
     let held = read_property_value(l4, object, prop_id, start, 1, expected.len().max(1)).await?;
+    let expected = bussard_mgmt::zero_padded_prefix(expected, held.len());
     let actual: Vec<u8> = held.iter().take(expected.len()).copied().collect();
     if masked_equal(expected, &actual, mask) {
         Ok(())

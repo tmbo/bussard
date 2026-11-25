@@ -758,3 +758,99 @@ async fn test_describe_property_checks_a_property_left_unwritten() -> TestResult
     }
     Ok(())
 }
+
+/// A property-only program whose one step compares `inline_data` against
+/// the type-addressed vendor property 50001/212.
+fn vendor_compare_app(inline_data: &str) -> TestResult<ApplicationProgram> {
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="M-0004_A-2" ApplicationNumber="23" ApplicationVersion="16"
+        MaskVersion="MV-0021" Name="IP">
+      <Static>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlCompareProp InlineData="{inline_data}" ObjType="50001" PropId="212" />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    Ok(parse_application_program("M-0004_A-2", xml.as_bytes())?)
+}
+
+/// Flashes [`vendor_compare_app`] for `inline_data` (the executor's
+/// `compare_property_value` on a `PropObject::Type`) against a device whose
+/// vendor property 50001/212 answers the six octets `45 37 02 01 00 00`.
+async fn compare_type_addressed(inline_data: &str) -> TestResult<Result<(), WriteError>> {
+    let app = vendor_compare_app(inline_data)?;
+    let plan = plan_for(&app, 0x0021)?;
+    assert!(
+        plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::CompareProp {
+                object: PropObject::Type {
+                    object_type: OT_VENDOR,
+                    ..
+                },
+                ..
+            }
+        )),
+        "the compare must stay type-addressed: {:?}",
+        plan.steps
+    );
+    let device = MockDevice::new(ia("1.1.200")?)
+        .with_mask(0x0021)
+        .with_property_ext(OT_VENDOR, 212, 6, &[0x45, 0x37, 0x02, 0x01, 0x00, 0x00]);
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = connect(&gw).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .map(|_| ());
+    let _ = session.into_disconnect().await;
+    Ok(result)
+}
+
+#[tokio::test]
+async fn test_flash_compare_prop_passes_a_zero_padded_type_addressed_compare() -> TestResult {
+    // The EK-E72-TP shape: ten octets compared, the device answers six, and
+    // the four octets past the answer are zero padding.
+    compare_type_addressed("45370201000000000000").await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_compare_prop_fails_a_type_addressed_compare_with_a_non_zero_tail() -> TestResult
+{
+    // The device answers six octets that match, but the InlineData's tail past
+    // them holds a non-zero octet: it is not padding, so the compare fails.
+    let expected = [0x45, 0x37, 0x02, 0x01, 0, 0, 0, 0, 0, 0x01];
+    let err = compare_type_addressed("45370201000000000001")
+        .await?
+        .err()
+        .ok_or("a non-zero tail must fail the compare")?;
+    match err {
+        WriteError::PropertyMismatch {
+            expected: e,
+            actual,
+            ..
+        } => {
+            assert_eq!(e, expected.to_vec());
+            assert_eq!(actual, vec![0x45, 0x37, 0x02, 0x01, 0x00, 0x00]);
+        }
+        other => return Err(format!("expected PropertyMismatch, got {other:?}").into()),
+    }
+    Ok(())
+}

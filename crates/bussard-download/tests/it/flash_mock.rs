@@ -2026,6 +2026,14 @@ fn app_with_image_prop() -> TestResult<ApplicationProgram> {
 /// segment. The compare gates the flash: only a device whose property matches
 /// proceeds. `mask`, when set, is emitted as the op's hex `Mask` attribute.
 fn app_with_compare_prop(mask: Option<&str>) -> TestResult<ApplicationProgram> {
+    app_with_compare_prop_data("00010203", mask)
+}
+
+/// [`app_with_compare_prop`] with the compare's hex `InlineData` given.
+fn app_with_compare_prop_data(
+    inline_data: &str,
+    mask: Option<&str>,
+) -> TestResult<ApplicationProgram> {
     let mask_attr = mask.map(|m| format!(" Mask=\"{m}\"")).unwrap_or_default();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -2039,7 +2047,7 @@ fn app_with_compare_prop(mask: Option<&str>) -> TestResult<ApplicationProgram> {
         <LoadProcedure MergeId="1">
          <LdCtrlConnect />
          <LdCtrlUnload LsmIdx="4" />
-         <LdCtrlCompareProp InlineData="00010203"{mask_attr} ObjIdx="0" PropId="78">
+         <LdCtrlCompareProp InlineData="{inline_data}"{mask_attr} ObjIdx="0" PropId="78">
           <OnError Cause="CompareMismatch" MessageRef="M-3_A-8_M-1" />
          </LdCtrlCompareProp>
          <LdCtrlLoad LsmIdx="4" />
@@ -3204,6 +3212,93 @@ async fn flash_compare_prop_aborts_when_property_differs() -> TestResult {
         "flash must not have completed the load"
     );
     drop(handle);
+    Ok(())
+}
+
+/// Flashes the `app_with_compare_prop_data(inline_data, None)` program
+/// against a device whose object-0 PID-78 property answers `held`, and
+/// returns the flash result with the device's app load state.
+async fn flash_compare_prop_against(
+    inline_data: &str,
+    held: Vec<u8>,
+) -> TestResult<(Result<(), bussard_mgmt::load::WriteError>, u8)> {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.compare_props.insert((0, 78), held);
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let app = app_with_compare_prop_data(inline_data, None)?;
+    let plan = plan_flash_default(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = authed_session(l4).await?;
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .map(|_| ());
+    let _ = session.into_disconnect().await;
+    let load_state = lock(&state)?.app_load_state;
+    drop(handle);
+    Ok((result, load_state))
+}
+
+#[tokio::test]
+async fn test_flash_compare_prop_aborts_on_a_short_answer_with_a_non_zero_tail() -> TestResult {
+    // The InlineData is eight octets, the device answers four. The octets past
+    // the answer (00 00 00 01) are not all zero, so they are not padding: the
+    // compare fails on the full InlineData before the segment is written.
+    let (result, load_state) =
+        flash_compare_prop_against("0001020300000001", vec![0x00, 0x01, 0x02, 0x03]).await?;
+    match result {
+        Err(bussard_mgmt::load::WriteError::PropCompareMismatch {
+            expected, actual, ..
+        }) => {
+            assert_eq!(
+                expected,
+                vec![0x00, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x01]
+            );
+            assert_eq!(actual, vec![0x00, 0x01, 0x02, 0x03]);
+        }
+        other => return Err(format!("expected PropCompareMismatch, got {other:?}").into()),
+    }
+    assert_ne!(
+        load_state, LS_LOADED,
+        "flash must not have completed the load"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_compare_prop_passes_a_full_length_answer_to_a_zero_padded_compare() -> TestResult
+{
+    // The InlineData carries trailing zeros and the device answers all seven
+    // octets, zeros included: the compare passes and the flash reaches Loaded.
+    let (result, load_state) = flash_compare_prop_against(
+        "00010203000000",
+        vec![0x00, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00],
+    )
+    .await?;
+    result?;
+    assert_eq!(load_state, LS_LOADED, "flash must have completed the load");
     Ok(())
 }
 
